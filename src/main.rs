@@ -45,7 +45,7 @@ const GRID_CELL: f32 = 52.0;
 const WAVE_SECS: f32 = 180.0; // 3-minute waves — survive the timer to advance
 const POP_BASE: i32 = 5; // asteroids on screen = POP_BASE + wave...
 const POP_CAP: i32 = 18; // ...capped so the field never becomes an unavoidable wall
-const BIG_FLOOR: i32 = 3; // always keep at least this many LARGE (size-3) rocks around: keeps the
+const BIG_FLOOR: i32 = 4; // always keep at least this many LARGE (size-3) rocks around: keeps the
                           // field from silting up with small debris, and gives the boss big rocks to grab
 const SPAWN_INTERVAL: f32 = 1.6; // seconds between streamed-in replacement rocks (manageable rate)
 
@@ -865,7 +865,7 @@ fn roll_dense(level: i32, rng: &mut impl Rng) -> bool {
 fn spawn_edge_asteroid(commands: &mut Commands, half: Vec2, rng: &mut impl Rng, dense: bool, force_big: bool) {
     // mostly LARGE rocks (break into mid → small), with some MID ones mixed in. `force_big`
     // guarantees a LARGE one (used to refill the big-rock floor).
-    let size = if force_big || rng.gen_bool(0.7) { 3 } else { 2 };
+    let size = if force_big || rng.gen_bool(0.8) { 3 } else { 2 };
     let r = asteroid_radius(size);
     let inward = rng.gen_range(50.0..110.0);
     let jitter = rng.gen_range(-40.0..40.0);
@@ -1184,10 +1184,10 @@ fn ship_bounds(arena: Res<Arena>, mut q: Query<(&mut Transform, &mut Velocity), 
     }
 }
 
-fn asteroid_bounds(arena: Res<Arena>, mut q: Query<(&mut Transform, &mut Velocity, &Asteroid), Without<Shielded>>) {
+fn asteroid_bounds(mut commands: Commands, arena: Res<Arena>, mut q: Query<(Entity, &mut Transform, &mut Velocity, &Asteroid), Without<Shielded>>) {
     let h = arena.half;
     let mut rng = rand::thread_rng();
-    for (mut t, mut v, a) in &mut q {
+    for (e, mut t, mut v, a) in &mut q {
         // never let a rock sit dead-still — elastic hits (or the boss shield) can zero
         // its velocity, which reads as "stuck". Keep a slow drift going.
         let sp = v.0.length();
@@ -1201,6 +1201,20 @@ fn asteroid_bounds(arena: Res<Arena>, mut q: Query<(&mut Transform, &mut Velocit
         let r = asteroid_radius(a.size);
         let p = t.translation.truncate();
         if !(p.x < -h.x - r || p.x > h.x + r || p.y < -h.y - r || p.y > h.y + r) {
+            continue;
+        }
+        // A rock that's fully drifted off-screen either leaves for good or recycles back in.
+        // Small debris usually leaves — otherwise broken-up rocks pile into an overwhelming
+        // cloud of little ones that never clears. The population top-up then streams in fresh
+        // LARGE rocks to replace them. Large rocks always recycle, keeping a healthy backbone
+        // of big targets (and food for the bosses).
+        let leaves = match a.size {
+            1 => rng.gen_bool(0.85), // small: usually gone for good
+            2 => rng.gen_bool(0.35), // mid: now and then
+            _ => false,              // large: always kept in play
+        };
+        if leaves {
+            commands.entity(e).despawn();
             continue;
         }
         let inward = rng.gen_range(50.0..130.0);
@@ -2226,7 +2240,8 @@ fn boss_shield(
             boss.capture = BOSS_CAPTURE_EVERY;
             let held = used.iter().filter(|u| **u).count();
             if held < BOSS_ARMS {
-                let mut best: Option<(Entity, u8, f32)> = None;
+                let mut best: Option<(Entity, u8, f32)> = None; // biggest reachable rock (size >= 2)
+                let mut small: Option<(Entity, f32)> = None; // nearest small rock — last resort only
                 for (fe, ft, fa) in &free {
                     let fp = ft.translation.truncate();
                     // only grab rocks that are ON-SCREEN and in the TOP half (where it lives) —
@@ -2235,12 +2250,18 @@ fn boss_shield(
                         continue;
                     }
                     let d = fp.distance_squared(bp);
-                    let better = best.is_none_or(|(_, bs, bd)| fa.size > bs || (fa.size == bs && d < bd));
-                    if better {
-                        best = Some((fe, fa.size, d));
+                    if fa.size >= 2 {
+                        // biggest first, nearest to break ties → a shield of large rocks
+                        if best.is_none_or(|(_, bs, bd)| fa.size > bs || (fa.size == bs && d < bd)) {
+                            best = Some((fe, fa.size, d));
+                        }
+                    } else if small.is_none_or(|(_, sd)| d < sd) {
+                        small = Some((fe, d));
                     }
                 }
-                if let Some((fe, _, _)) = best {
+                // grab a large/mid rock if one's reachable; only fall back to small debris when
+                // nothing bigger is on-screen up top (the Warden rarely bothers with little rocks)
+                if let Some(fe) = best.map(|(fe, _, _)| fe).or(small.map(|(fe, _)| fe)) {
                     let slot = (0..BOSS_ARMS).find(|s| !used[*s]).unwrap_or(0);
                     commands.entity(fe).insert(Shielded { slot, grab: 0.0 });
                 }
@@ -4084,6 +4105,33 @@ mod tests {
         app.update();
         let v = app.world().entity(rock).get::<Velocity>().unwrap().0;
         assert!((v.length() - MIN_DRIFT).abs() < 1.0, "a stopped rock is nudged back to a slow drift, got {}", v.length());
+    }
+
+    #[test]
+    fn small_rocks_thin_out_offscreen_but_large_ones_persist() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        let h = Vec2::new(640.0, 400.0);
+        app.insert_resource(Arena { half: h });
+        // 60 small + 60 large rocks, all parked just off the left edge and drifting further out
+        // (fast enough that the MIN_DRIFT nudge won't fire and pull them back on-screen).
+        for _ in 0..60 {
+            for size in [1u8, 3u8] {
+                let r = asteroid_radius(size);
+                app.world_mut().spawn((
+                    Asteroid { size, verts: vec![Vec2::X * r], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+                    Velocity(Vec2::new(-MIN_DRIFT * 2.0, 0.0)),
+                    Transform::from_xyz(-h.x - r - 5.0, 0.0, 0.0),
+                ));
+            }
+        }
+        app.add_systems(Update, asteroid_bounds);
+        app.update();
+        let mut q = app.world_mut().query::<&Asteroid>();
+        let smalls = q.iter(app.world()).filter(|a| a.size == 1).count();
+        let larges = q.iter(app.world()).filter(|a| a.size == 3).count();
+        assert!(smalls < 60, "some small rocks should be culled off-screen, not all recycled; {smalls}/60 remain");
+        assert_eq!(larges, 60, "large rocks are never culled off-screen; {larges}/60 remain");
     }
 
     #[test]
