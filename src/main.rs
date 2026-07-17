@@ -2951,10 +2951,10 @@ fn render(
                 gizmos.circle_2d(Isometry2d::from_translation(head), headscale * (2.0 + 3.0 * hp), dim(comet, b));
             }
         }
-        // EVENT HORIZON — the kill boundary (anything crossing WARP_CONSUME_R is devoured) and
-        // now the vortex's clean outer edge: a single bright pulsing rim, nothing beyond it.
-        gizmos.circle_2d(Isometry2d::from_translation(c), WARP_CONSUME_R * pulse, dim(warp, 0.9 * f));
-        // bright rim + pulsing hot core + a white-hot center for a searing bloom
+        // No drawn event-horizon ring: the spiral arms (fading to nothing at the rim) ARE the edge,
+        // so the vortex reads as a pure drain converging out of the dark. The kill boundary
+        // (WARP_CONSUME_R) is still enforced in logic — it just isn't outlined.
+        // pulsing hot throat + a white-hot center for a searing bloom
         gizmos.circle_2d(Isometry2d::from_translation(c), (r_in + 30.0 * f) * pulse, dim(warp, 1.0 * f));
         gizmos.circle_2d(Isometry2d::from_translation(c), (r_in + 14.0 * f) * pulse, dim(corec, 1.1 * f));
         gizmos.circle_2d(Isometry2d::from_translation(c), (r_in + 7.0 * f) * pulse, dim(Color::srgb(7.0, 6.0, 7.0), f));
