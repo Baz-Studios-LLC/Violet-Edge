@@ -25,7 +25,7 @@ intended design; implemented rows describe what the code does today.
 | **Orange** | 🔷 | Explosive. On destruction it detonates, destroying/damaging everything in a radius — other asteroids, mines, enemies (and the player). Detonating another orange in range sets off a **chain reaction**. |
 | **Red** | 🔷 | Grows, like the Glutton boss: absorbs nearby asteroids to gain size. A large red that's broken splits into two, and *those* can absorb more and swell back up — an emergent "whack-a-mole" if you don't clear the field around them. |
 | **Pulser** | 🔷 | Pulses bright white on a cycle; **invulnerable while lit**. You have to time shots to its dark phase. |
-| **Gold (1UP)** | ✅ | Not a hazard — a *reward*. A rare shimmering gold rock (low chance per non-boss wave). Destroy the **whole lineage** (it + every fragment) for +1 life; let a piece escape off-screen and it's forfeit. See Life economy below. |
+| **Gold (1UP)** | ✅ | Not a hazard — a *reward*. A rare shimmering gold rock (low chance per non-boss wave). Destroy the **whole lineage** (it + every fragment) for +1 life; let a piece escape off-screen and it's forfeit. **Only your shots break it** — mines bounce off, the Devourer won't eat it. See Life economy below. |
 
 ## Enemies
 
@@ -106,7 +106,9 @@ recoverable, but only by earning them, via a rare gold asteroid. ✅ Implemented
 - Capped at `LIFE_CAP` (5) so lives never snowball. Purist-safe: a life isn't a powerup.
 - **Telegraph:** the rock shimmers gold with an inner ring; clearing it pops an "EXTRA LIFE" toast +
   a distinct 1UP jingle (`life_sfx_wav`, separate from the achievement chime).
-- The **Devourer** won't eat gold rocks (that would grant a false 1UP without the player clearing it).
+- **Only player shots break it.** Mine blasts spare gold rocks, and a drifting mine bounces off one
+  instead of detonating — so a mine can't clear the lineage for you. The **Devourer** won't eat gold
+  either (both would hand over a 1UP the player didn't earn).
 
 Considered and shelved (could layer on later): score extends, boss-clear +1, perfect-wave meter.
 

@@ -997,11 +997,14 @@ fn blast_asteroids(
         if broken.contains(&ae) {
             continue;
         }
+        if gold.is_some() {
+            continue; // gold 1UP rocks are immune to mines — only the player's shots may break them
+        }
         let ap = at.translation.truncate();
         let br = MINE_BLAST_R + asteroid_radius(a.size);
         if center.distance_squared(ap) < br * br {
             broken.insert(ae);
-            break_asteroid(commands, rng, score, ae, ap, a.size, MINE_CHUNK_MULT, a.dense, gold.is_some()); // mine obliterates (ignores hp)
+            break_asteroid(commands, rng, score, ae, ap, a.size, MINE_CHUNK_MULT, a.dense, false); // mine obliterates (ignores hp); never gold (skipped above)
         }
     }
 }
@@ -1618,7 +1621,7 @@ fn mine_update(
     let mut broken: HashSet<Entity> = HashSet::new();
     for (me, mut mt, mut mv, mut mine) in &mut mines {
         // recycle at the edges (reposition heading inward)
-        let p = mt.translation.truncate();
+        let mut p = mt.translation.truncate();
         if p.x < -h.x - MINE_R || p.x > h.x + MINE_R || p.y < -h.y - MINE_R || p.y > h.y + MINE_R {
             if is_boss_wave(wave.level) {
                 commands.entity(me).despawn(); // boss wave: mines drift off for good, no recycle
@@ -1635,14 +1638,38 @@ fn mine_update(
             continue;
         }
 
+        // Gold 1UP rocks are immune to mines: a drifting mine bounces off them instead of
+        // detonating, so a mine can never clear the gold lineage for you (only your shots may).
+        for (_, at, a, gold) in &asteroids {
+            if gold.is_none() {
+                continue;
+            }
+            let gp = at.translation.truncate();
+            let rr = MINE_R + asteroid_radius(a.size);
+            let d = p.distance(gp);
+            if d < rr && d > 0.01 {
+                let n = (p - gp) / d;
+                let vn = mv.0.dot(n);
+                if vn < 0.0 {
+                    mv.0 -= 2.0 * vn * n; // elastic reflection off the gold rock
+                }
+                let np = gp + n * rr; // nudge clear so the mine doesn't stick inside the rock
+                mt.translation = Vec3::new(np.x, np.y, 0.0);
+                p = np;
+            }
+        }
+
         // A mine that has drifted into the field detonates the instant it touches a
         // rock — clearing it and its neighbours with fast chunks. No life is lost
         // here (that's only ship contact); this is the JS "asteroid-management" mine.
+        // Gold rocks are excluded (handled above) so a mine never detonates on one.
         let inside = p.x.abs() < h.x && p.y.abs() < h.y;
         if inside
-            && asteroids.iter().any(|(_, at, a, _)| {
-                let rr = MINE_R + asteroid_radius(a.size);
-                p.distance_squared(at.translation.truncate()) < rr * rr
+            && asteroids.iter().any(|(_, at, a, gold)| {
+                gold.is_none() && {
+                    let rr = MINE_R + asteroid_radius(a.size);
+                    p.distance_squared(at.translation.truncate()) < rr * rr
+                }
             })
         {
             burst(&mut commands, p, mine_color(), 26, 300.0, &mut rng);
@@ -4709,6 +4736,76 @@ mod tests {
         assert_eq!(rocks, 2, "the mine should shatter the size-2 rock into two size-1 chunks, got {rocks}");
         assert_eq!(mines, 0, "the mine detonates on contact with the rock and despawns");
         assert_eq!(app.world().resource::<Run>().lives, 3, "no life is lost when a mine hits a rock");
+    }
+
+    #[test]
+    fn a_mine_bounces_off_a_gold_rock_without_detonating() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_event::<SoundFx>();
+        app.insert_resource(Stats::default());
+        app.insert_resource(RunFlags::default());
+        app.insert_resource(NextState::<GameState>::default());
+        app.insert_resource(Run { lives: 3, respawn: 0.0 });
+        app.insert_resource(Score(0));
+        app.insert_resource(Dev::default());
+        app.insert_resource(Wave { level: 2, timer: WAVE_SECS, calm: 0.0 });
+        app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
+        // a gold rock with a mine drifting straight into it, mid-field, NO ship present
+        app.world_mut().spawn((
+            Asteroid { size: 3, verts: vec![Vec2::X * 88.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(30.0, 0.0, 0.0),
+            Gold,
+        ));
+        app.world_mut().spawn((
+            Mine { armed: false, fuse: MINE_FUSE },
+            Velocity(Vec2::new(120.0, 0.0)), // heading toward the gold rock (+x)
+            Transform::from_xyz(0.0, 0.0, 0.0),
+        ));
+        app.add_systems(Update, mine_update);
+        app.update();
+        assert_eq!(app.world_mut().query::<&Mine>().iter(app.world()).count(), 1, "the mine must NOT detonate on a gold rock");
+        assert_eq!(app.world_mut().query::<&Asteroid>().iter(app.world()).count(), 1, "the gold rock is unharmed (mines can't break it)");
+        let mv = app.world_mut().query_filtered::<&Velocity, With<Mine>>().iter(app.world()).next().unwrap().0;
+        assert!(mv.x < 0.0, "the mine bounces off the gold rock (velocity reflected away), got {mv:?}");
+    }
+
+    #[test]
+    fn a_mine_blast_spares_gold_rocks() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_event::<SoundFx>();
+        app.insert_resource(Stats::default());
+        app.insert_resource(RunFlags::default());
+        app.insert_resource(NextState::<GameState>::default());
+        app.insert_resource(Run { lives: 3, respawn: 0.0 });
+        app.insert_resource(Score(0));
+        app.insert_resource(Dev::default());
+        app.insert_resource(Wave { level: 2, timer: WAVE_SECS, calm: 0.0 });
+        app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
+        // a plain rock the mine detonates on, and a gold rock sitting inside the blast radius
+        app.world_mut().spawn((
+            Asteroid { size: 1, verts: vec![Vec2::X * 22.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(20.0, 0.0, 0.0),
+        ));
+        app.world_mut().spawn((
+            Asteroid { size: 1, verts: vec![Vec2::X * 22.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(0.0, 40.0, 0.0),
+            Gold,
+        ));
+        app.world_mut().spawn((
+            Mine { armed: false, fuse: MINE_FUSE },
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+        ));
+        app.add_systems(Update, mine_update);
+        app.update();
+        let gold = app.world_mut().query_filtered::<Entity, With<Gold>>().iter(app.world()).count();
+        assert_eq!(gold, 1, "a gold rock in the blast radius is spared");
+        assert_eq!(app.world_mut().query::<&Mine>().iter(app.world()).count(), 0, "the mine still detonates on the plain rock");
     }
 
     #[test]
