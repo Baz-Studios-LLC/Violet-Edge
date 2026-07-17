@@ -36,8 +36,8 @@ with the asteroids for attention.
 | Enemy | Status | Behaviour |
 | --- | --- | --- |
 | **Yellow mob** | ✅ | Standard enemy ship. Glides in, hovers and strafes around the player, steers clear of rocks/mines, lobs slow (dodgeable) shots, and flees off-screen after a lifetime. Runs in two windows: waves 3–4 and 8–9. |
-| **Miner** | 🔷 | Clings to and rides an asteroid as cover, popping out to fire. Kill the rock or catch it exposed. Debuts Act II. |
-| **Darter** | 🔷 | Fast interceptor — telegraphs, then charges in a straight line. Pure dodge, no ranged threat. Debuts Act III. |
+| **Darter** | 🔷 | Fast interceptor — telegraphs, then charges in a straight line. Pure dodge, no ranged threat. **Chosen as the Act II mob (waves 12–13); next to build.** |
+| **Miner** | 🔷 | Clings to and rides an asteroid as cover, popping out to fire. Kill the rock or catch it exposed. Deferred (Darter took the Act II slot) — a later act if we want a third type. |
 
 ## Bosses — the 50-level ladder
 
@@ -85,10 +85,25 @@ content still repeats 1–10.)
 | Act | Waves | New asteroid(s) | New enemy | Bosses |
 | --- | --- | --- | --- | --- |
 | I — The Field | 1–10 | Blue, Green ✅ | Yellow mob ✅ | Warden (5), Glutton (10) |
-| II — Volatile | 11–20 | Orange (explosive) | Miner | Slinger (15), Detonator (20) |
-| III — Unstable | 21–30 | Red (growing), Pulser (invuln-lit) | Darter | Pulsar (25), Singularity (30) |
+| II — Volatile | 11–20 | Orange (explosive) ✅ | Darter | Slinger (15), Detonator (20) |
+| III — Unstable | 21–30 | Red (growing), Pulser (invuln-lit) | — | Pulsar (25), Singularity (30) |
 | IV — Deep Belt | 31–40 | **Crystal** (reflects) *or* **Ice** (shard-burst) — TBD | — | Hive (35), Prism (40) |
 | V — The Core | 41–50 | **Void** (swallows bullets) *or* **Magnetic** (bends fire) — TBD | — | Gemini (45), Progenitor (50) |
+
+### Waves 11–15 — building now (won't extend past 15 until a no-dev-invuln run reaches 16)
+
+Per-wave content plan (the current 1–10 loop stops applying from 11):
+
+| Wave | Content | Section status |
+| --- | --- | --- |
+| 11 | green + orange | orange ✅ · wiring pending |
+| 12 | Darter (new mob) + orange | mob + wiring pending |
+| 13 | green + orange + Darters (as 12) | mob + wiring pending |
+| 14 | orange only | wiring pending |
+| 15 | **The Slinger** (boss) + green only | boss + wiring pending |
+
+Build order (one section at a time): **1. orange ✅ → 2. Darter mob → 3. Slinger boss → 4. wire the
+11–15 content.**
 
 ## Life economy (implemented: gold 1UP rock)
 
