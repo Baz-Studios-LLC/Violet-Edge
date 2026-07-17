@@ -538,6 +538,18 @@ struct MenuUi;
 struct AchievementsUi;
 #[derive(Component)]
 struct Hud; // HUD roots — hidden on the menu screens
+
+// Clickable menu buttons (mouse), mirrored by the keyboard shortcuts.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MenuAction {
+    Play,
+    Achievements,
+    Back,
+}
+#[derive(Component)]
+struct MenuButton(MenuAction);
+#[derive(Event)]
+struct MenuClick(MenuAction); // fired on click; menu_start / achievements_back consume it
 #[derive(Component)]
 struct WaveText; // top-center "WAVE n  M:SS"
 #[derive(Component)]
@@ -2857,23 +2869,26 @@ fn render(
         }
     }
 
-    // warp charge pips (bottom-center): lit per available charge + a refill bar
+    // warp charge pips (bottom-center): lit per available charge + a refill bar — run only.
+    // `gap`/`py` are shared with the chain pips below, so they live outside the run gate.
     let gap = 22.0;
     let py = -h.y + 28.0;
-    for k in 0..WARP_MAX_CHARGES {
-        let px = (k as f32 - (WARP_MAX_CHARGES as f32 - 1.0) * 0.5) * gap;
-        let col = if k < warp_res.charges { warp } else { dim(warp, 0.14) };
-        gizmos.circle_2d(Isometry2d::from_translation(Vec2::new(px, py)), 5.0, col);
-    }
-    if warp_res.cooldown > 0.0 {
-        let prog = 1.0 - warp_res.cooldown / WARP_COOLDOWN;
-        let w = gap * (WARP_MAX_CHARGES as f32 - 1.0);
-        gizmos.line_2d(Vec2::new(-w * 0.5, py - 11.0), Vec2::new(-w * 0.5 + w * prog, py - 11.0), dim(warp, 0.7));
+    if show_run {
+        for k in 0..WARP_MAX_CHARGES {
+            let px = (k as f32 - (WARP_MAX_CHARGES as f32 - 1.0) * 0.5) * gap;
+            let col = if k < warp_res.charges { warp } else { dim(warp, 0.14) };
+            gizmos.circle_2d(Isometry2d::from_translation(Vec2::new(px, py)), 5.0, col);
+        }
+        if warp_res.cooldown > 0.0 {
+            let prog = 1.0 - warp_res.cooldown / WARP_COOLDOWN;
+            let w = gap * (WARP_MAX_CHARGES as f32 - 1.0);
+            gizmos.line_2d(Vec2::new(-w * 0.5, py - 11.0), Vec2::new(-w * 0.5 + w * prog, py - 11.0), dim(warp, 0.7));
+        }
     }
 
     // chain-shot charges (bottom-left) — shown only once the beam is unlocked. A little
     // bolt glyph + electric-violet pips + a refill bar toward the next charge; mirrors warp.
-    if chain.unlocked {
+    if show_run && chain.unlocked {
         let cc = chain_color();
         let bx = -h.x + 30.0;
         let bolt = [
@@ -3173,22 +3188,53 @@ fn menu_start(
     mut banner: ResMut<WaveBanner>,
     mut warp: ResMut<Warp>,
     mut progress: (ResMut<BossState>, ResMut<Chain>, ResMut<MassShot>, ResMut<RunFlags>), // bundled (16-param limit)
+    mut clicks: EventReader<MenuClick>,
 ) {
-    if keys.just_pressed(KeyCode::KeyA) {
+    let actions: Vec<MenuAction> = clicks.read().map(|c| c.0).collect(); // read once, then test
+    // Achievements: `A` key or the button
+    if keys.just_pressed(KeyCode::KeyA) || actions.contains(&MenuAction::Achievements) {
         next.set(GameState::Achievements);
         return;
     }
-    if !(keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space)) {
+    // Play: Enter/Space or the button
+    if !(keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) || actions.contains(&MenuAction::Play)) {
         return;
     }
     reset_run(&mut commands, &mut run, &mut score, &mut wave, &mut banner, &mut warp, &mut progress.0, &mut progress.1, &mut progress.2, &mut progress.3);
     next.set(GameState::Playing);
 }
 
-// Deep neon violet for menu titles — B-dominant with very low green so it reads purple, not the
-// pink/white the brighter ship colour blooms into.
+// Deep neon violet for menu titles. UI TextColor CLAMPS each channel to 1.0, so the old
+// HDR-style (2.2, .35, 5.5) collapsed to (1, .35, 1) = hot pink. Kept ≤1 and B-dominant → violet.
 fn title_color() -> Color {
-    Color::srgb(2.2, 0.35, 5.5)
+    Color::srgb(0.62, 0.18, 1.0)
+}
+// Bright violet for earned achievements (≤1 so it doesn't clamp to white in the UI).
+fn ach_earned_color() -> Color {
+    Color::srgb(0.82, 0.45, 1.0)
+}
+
+// A slick menu button — a bordered violet pill with a label. `button_shimmer` animates the hover
+// glow and `button_click` fires its `MenuAction`; the keyboard shortcuts do the same thing.
+fn menu_button(p: &mut ChildSpawnerCommands, action: MenuAction, label: &str) {
+    p.spawn((
+        MenuButton(action),
+        Button,
+        Node {
+            padding: UiRect::axes(Val::Px(30.0), Val::Px(12.0)),
+            margin: UiRect::all(Val::Px(7.0)),
+            border: UiRect::all(Val::Px(2.0)),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            ..default()
+        },
+        BorderColor(Color::srgb(0.38, 0.24, 0.66)),
+        BorderRadius::all(Val::Px(12.0)),
+        BackgroundColor(Color::srgba(0.10, 0.04, 0.20, 0.45)),
+    ))
+    .with_children(|b| {
+        b.spawn(text(26.0, Color::srgb(0.72, 0.82, 1.0), label));
+    });
 }
 
 fn spawn_menu_ui(mut commands: Commands, achieved: Res<Achievements>) {
@@ -3196,8 +3242,8 @@ fn spawn_menu_ui(mut commands: Commands, achieved: Res<Achievements>) {
     let done = achieved.unlocked.iter().filter(|u| **u).count();
     commands.entity(root).with_children(|p| {
         p.spawn(text(74.0, title_color(), "VIOLET EDGE"));
-        p.spawn(text(24.0, Color::srgb(0.7, 0.85, 1.2), "Enter  —  Play"));
-        p.spawn(text(22.0, Color::srgb(0.7, 0.85, 1.2), &format!("A  —  Achievements  ({done} / {})", ACHIEVEMENTS.len())));
+        menu_button(p, MenuAction::Play, "Play");
+        menu_button(p, MenuAction::Achievements, &format!("Achievements  ({done} / {})", ACHIEVEMENTS.len()));
     });
 }
 
@@ -3207,15 +3253,15 @@ fn spawn_achievements_ui(mut commands: Commands, achieved: Res<Achievements>) {
         p.spawn(text(48.0, title_color(), "ACHIEVEMENTS"));
         for (i, &a) in ACHIEVEMENTS.iter().enumerate() {
             let (name, desc) = ach_meta(a);
-            // earned → bright name + description; locked → hide the (fun) name, show the goal
-            let (col, line) = if achieved.unlocked[i] {
-                (mass_color(), format!("{name}  —  {desc}"))
+            // always show the name; earned = bright violet, locked = greyed
+            let col = if achieved.unlocked[i] {
+                ach_earned_color()
             } else {
-                (Color::srgb(0.4, 0.45, 0.6), format!("???  —  {desc}"))
+                Color::srgb(0.42, 0.45, 0.55)
             };
-            p.spawn(text(16.0, col, &line));
+            p.spawn(text(16.0, col, &format!("{name}  —  {desc}")));
         }
-        p.spawn(text(20.0, Color::srgb(0.7, 0.85, 1.2), "Esc  —  Back"));
+        menu_button(p, MenuAction::Back, "Back");
     });
 }
 
@@ -3225,9 +3271,14 @@ fn despawn_achievements_ui(mut commands: Commands, q: Query<Entity, With<Achieve
     }
 }
 
-// The achievements screen: Esc (or Enter) returns to the main menu.
-fn achievements_back(keys: Res<ButtonInput<KeyCode>>, mut next: ResMut<NextState<GameState>>) {
-    if keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::Enter) {
+// The achievements screen: Esc/Enter or the Back button returns to the main menu.
+fn achievements_back(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut next: ResMut<NextState<GameState>>,
+    mut clicks: EventReader<MenuClick>,
+) {
+    let back = clicks.read().any(|c| c.0 == MenuAction::Back);
+    if back || keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::Enter) {
         next.set(GameState::Menu);
     }
 }
@@ -3238,6 +3289,51 @@ fn hud_visibility(state: Res<State<GameState>>, mut q: Query<&mut Visibility, Wi
     for mut v in &mut q {
         if *v != vis {
             *v = vis;
+        }
+    }
+}
+
+// Style menu buttons by interaction: idle (dim), hovered (a violet border/text SHIMMER that pulses
+// with time), pressed (brightest). Runs every frame so the hover glow animates.
+fn button_shimmer(
+    time: Res<Time>,
+    mut buttons: Query<(&Interaction, &mut BackgroundColor, &mut BorderColor, &Children), With<MenuButton>>,
+    mut texts: Query<&mut TextColor>,
+) {
+    let pulse = 0.5 + 0.5 * (time.elapsed_secs() * 5.0).sin();
+    for (interaction, mut bg, mut border, children) in &mut buttons {
+        let (b, brd, txt) = match interaction {
+            Interaction::Pressed => (
+                Color::srgba(0.36, 0.16, 0.60, 0.9),
+                Color::srgb(0.95, 0.72, 1.0),
+                Color::srgb(1.0, 0.96, 1.0),
+            ),
+            Interaction::Hovered => (
+                Color::srgba(0.24, 0.10, 0.44, 0.82),
+                mix(Color::srgb(0.50, 0.30, 0.90), Color::srgb(0.95, 0.75, 1.0), pulse),
+                mix(Color::srgb(0.82, 0.86, 1.0), Color::srgb(1.0, 0.98, 1.0), pulse),
+            ),
+            Interaction::None => (
+                Color::srgba(0.10, 0.04, 0.20, 0.45),
+                Color::srgb(0.38, 0.24, 0.66),
+                Color::srgb(0.72, 0.82, 1.0),
+            ),
+        };
+        *bg = BackgroundColor(b);
+        *border = BorderColor(brd);
+        for &c in children {
+            if let Ok(mut tc) = texts.get_mut(c) {
+                *tc = TextColor(txt);
+            }
+        }
+    }
+}
+
+// Fire a MenuClick on the press edge (Changed → once per click).
+fn button_click(mut clicks: EventWriter<MenuClick>, q: Query<(&Interaction, &MenuButton), Changed<Interaction>>) {
+    for (interaction, btn) in &q {
+        if *interaction == Interaction::Pressed {
+            clicks.write(MenuClick(btn.0));
         }
     }
 }
@@ -3638,12 +3734,13 @@ fn main() {
         .insert_resource(Achievements::default())
         .insert_resource(RunFlags::default())
         .add_event::<SoundFx>()
+        .add_event::<MenuClick>()
         .init_state::<GameState>()
         .add_systems(Startup, (setup, spawn_hud, spawn_toast_root, load_progress, start_music, start_sfx))
         // always: keep the arena sized, handle pause input, refresh the HUD text
         .add_systems(Update, (update_arena, pause_toggle, update_wave_text, update_score_text, wave_banner_update).chain())
-        // always: watch for achievement unlocks + age out toasts + hide the HUD off-run
-        .add_systems(Update, (achievements, toast_update, hud_visibility))
+        // always: watch for achievement unlocks + age out toasts + hide the HUD off-run + menu buttons
+        .add_systems(Update, (achievements, toast_update, hud_visibility, button_shimmer, button_click))
         // render in PostUpdate so it ALWAYS runs after every Update system (incl.
         // ship_bounds) — draws final positions, no border ghosting; runs in all states
         .add_systems(PostUpdate, (render, render_boss, render_extras))
@@ -4399,6 +4496,7 @@ mod tests {
     fn menu_start_resets_and_spawns_a_ship() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
+        app.add_event::<MenuClick>();
         app.insert_resource(NextState::<GameState>::default());
         // stale end-of-run state that Start must wipe
         app.insert_resource(Run { lives: 0, respawn: 5.0 });
