@@ -74,10 +74,7 @@ const MINE_CHUNK_MULT: f32 = 1.9; // HIDDEN: rocks shattered by a mine blast fli
 
 // Enemy ships (wave 3+): drift in, hover-and-strafe while firing at the ship, dodge
 // mines/rocks, get sucked into the warp, and bug out if they linger too long.
-const ENEMY_FIRST_WAVE: i32 = 3;
-const ENEMY_LAST_WAVE: i32 = 5; // yellow mobs stop after this (wave 6+ = dense rocks instead)
-const ENEMY_PER_WAVE: i32 = 2; // target = (wave - first + 1) * per...
-const ENEMY_MAX_FRACTION: f32 = 0.3; // ...capped well below the rock count (a garnish)
+const ENEMY_MAX_FRACTION: f32 = 0.3; // mob count is capped well below the rock count (a garnish)
 const ENEMY_R: f32 = 14.0;
 const ENEMY_MAX_SPEED: f32 = 125.0; // px/s
 const ENEMY_ACCEL: f32 = 640.0; // px/s² steering force
@@ -93,10 +90,8 @@ const ENEMY_LIFETIME: f32 = 11.0; // s on-screen before it flees (never overstay
 const ENEMY_SCORE: u32 = 300;
 const ENEMY_SPAWN_INTERVAL: f32 = 3.0;
 
-// Dense (green) asteroids — introduced from wave 6 (replacing the yellow mobs). They
-// take multiple bullet hits to crack (hp = size); chain/mine still break them at once.
-const DENSE_FIRST_WAVE: i32 = 6;
-const DENSE_FRACTION: f64 = 0.5; // chance a wave-6+ edge spawn is dense
+// Dense (green) asteroids take multiple bullet hits to crack (hp = size); chain/mine still break
+// them at once. The per-wave spawn chance lives in `roll_dense` (wave 6 mixes them in; 7-9 all-green).
 
 // Octopus boss (every 5th wave): a magenta core that captures field asteroids into a
 // rotating orbital shield (its "arms") and hurls the smallest held rocks at the ship.
@@ -117,6 +112,15 @@ const BOSS_DEATH_SECS: f32 = 2.2; // slow death animation before it despawns
 const BOSS_CALM: f32 = 10.0; // s post-kill lull before the next wave (the pickup window)
 const BOSS_SCORE: u32 = 3000;
 const BOSS_CAMEO_SECS: f32 = 10.0; // boss drifts by in the background this long before its wave
+
+// Boss 2 — the devourer (wave 10): a red seeker that eats rocks to grow + heal.
+const DEVOURER_HP: i32 = 70; // starting core HP (much tankier than the shaman's 28)
+const DEVOURER_HP_MAX: i32 = 140; // cap — eating heals toward this, never past
+const DEVOURER_BASE_R: f32 = 22.0; // starts small (a size-1 rock)
+const DEVOURER_MAX_R: f32 = 110.0; // fully fed — crowds the player out
+const DEVOURER_GROW_PER_EAT: f32 = 0.09; // grow step per rock (~11 rocks → max size)
+const DEVOURER_HEAL_PER_EAT: i32 = 4; // HP regained per rock (tankier the more it feeds)
+const DEVOURER_SPEED: f32 = 95.0; // px/s seek speed (below the ship's, so it's dodgeable)
 
 // Chain shot: a wide lightning BEAM secondary weapon. Unlocked by the pickup that
 // appears in the calm after the first boss (wave 5). 3 charges that regenerate.
@@ -177,6 +181,9 @@ fn enemy_color() -> Color {
 fn boss_color() -> Color {
     Color::srgb(5.0, 1.6, 4.1)
 } // neon magenta — the boss
+fn devourer_color() -> Color {
+    Color::srgb(6.0, 0.7, 0.6)
+} // hot red — the devourer (boss 2); no blue, so it never reads as the player's purple
 fn chain_color() -> Color {
     Color::srgb(3.4, 2.0, 5.6)
 } // electric violet lightning — the chain shot (player kit)
@@ -431,6 +438,17 @@ struct Shielded {
     grab: f32,
 }
 
+// Boss 2 (wave 10): a red seeker that hunts free rocks and EATS them to grow bigger (crowds the
+// player) and tankier (heals). Starve it by clearing rocks while you chip its HP with gunfire.
+#[derive(Component)]
+struct Devourer {
+    hp: i32,
+    grow: f32, // 0..1 — feeds the radius (base → max)
+    fed: i32,  // rocks eaten (flavor / telemetry)
+    dying: f32,
+    pulse: f32,
+}
+
 // A rock the boss just hurled — briefly un-grabbable so it can't be re-captured instantly.
 #[derive(Component)]
 struct Thrown(f32);
@@ -525,6 +543,27 @@ struct Chain {
 
 fn is_boss_wave(level: i32) -> bool {
     level % BOSS_WAVE_INTERVAL == 0
+}
+
+// Waves 11+ repeat the 1-10 content arc (we perfect 1-10 first); map any wave to its 1-10 slot.
+fn content_wave(level: i32) -> i32 {
+    (level - 1).rem_euclid(10) + 1
+}
+// Boss waves alternate: content-10 = the devourer (boss 2); content-5 = the shaman (boss 1).
+fn is_devourer_wave(level: i32) -> bool {
+    is_boss_wave(level) && content_wave(level) == 10
+}
+fn devourer_radius(grow: f32) -> f32 {
+    DEVOURER_BASE_R + grow.clamp(0.0, 1.0) * (DEVOURER_MAX_R - DEVOURER_BASE_R)
+}
+
+// Shared "boss defeated" bookkeeping (both bosses use it): reward, then advance into the calm.
+fn defeat_boss(score: &mut Score, wave: &mut Wave, banner: &mut WaveBanner) {
+    score.0 += BOSS_SCORE;
+    wave.level += 1;
+    wave.timer = WAVE_SECS;
+    wave.calm = BOSS_CALM;
+    banner.timer = WAVE_BANNER_SECS;
 }
 
 #[derive(Resource)]
@@ -643,7 +682,14 @@ fn spawn_player(commands: &mut Commands) {
 // Should a rock spawned for `level` be the tanky green variant? From wave 6 on, half
 // the edge spawns come in dense (single roll, shared by every edge-spawn caller).
 fn roll_dense(level: i32, rng: &mut impl Rng) -> bool {
-    level >= DENSE_FIRST_WAVE && rng.gen_bool(DENSE_FRACTION)
+    // wave 6 introduces green alongside blue; waves 7-9 are ALL green; none before 6 or on the
+    // devourer wave (10 = plain blue food so the player can clear it to starve the boss).
+    let frac = match content_wave(level) {
+        6 => 0.5,
+        7..=9 => 1.0,
+        _ => 0.0,
+    };
+    rng.gen_bool(frac)
 }
 
 // A fresh large asteroid entering from just off a random edge (wave top-up). `dense`
@@ -1031,6 +1077,7 @@ fn collisions(
     enemies: Query<(Entity, &Transform), With<Enemy>>,
     mut shield_rocks: Query<(Entity, &Transform, &mut Asteroid), With<Shielded>>,
     mut bosses: Query<(&Transform, &mut Boss)>,
+    mut devourers: Query<(&Transform, &mut Devourer)>,
     mut score: ResMut<Score>,
     mut sfx: EventWriter<SoundFx>,
 ) {
@@ -1145,6 +1192,23 @@ fn collisions(
                 commands.entity(be).despawn();
                 boss.hp -= 1;
                 burst(&mut commands, bp, boss_color(), 6, 180.0, &mut rng);
+                break;
+            }
+        }
+        if dead_b.contains(&be) {
+            continue;
+        }
+        // the devourer (boss 2) takes gunfire directly — no shield; chip its HP while you starve it
+        for (dpos, mut dv) in &mut devourers {
+            if dv.dying > 0.0 {
+                continue;
+            }
+            let rr = devourer_radius(dv.grow) + BULLET_R;
+            if bp.distance_squared(dpos.translation.truncate()) < rr * rr {
+                dead_b.insert(be);
+                commands.entity(be).despawn();
+                dv.hp -= 1;
+                burst(&mut commands, bp, devourer_color(), 6, 180.0, &mut rng);
                 break;
             }
         }
@@ -1420,10 +1484,15 @@ fn warp_missile_update(
 
 // ─────────────────────────────── enemy ships (wave 3+) ────────────────
 fn enemy_target(level: i32, asteroids: i32) -> i32 {
-    if !(ENEMY_FIRST_WAVE..=ENEMY_LAST_WAVE).contains(&level) {
-        return 0; // no mobs before wave 3 or after wave 5
-    }
-    let raw = (level - ENEMY_FIRST_WAVE + 1) * ENEMY_PER_WAVE;
+    // yellow mobs run in two windows: waves 3-4 (before boss 1), then 8-9 (after the green intro,
+    // before boss 2). None on 6-7 (green rocks are the focus) or on the boss waves (5, 10).
+    let raw = match content_wave(level) {
+        3 => 2,
+        4 => 4,
+        8 => 4,
+        9 => 6,
+        _ => return 0,
+    };
     raw.min((asteroids as f32 * ENEMY_MAX_FRACTION) as i32)
 }
 
@@ -1660,19 +1729,28 @@ fn boss_director(
         return;
     }
     state.fought = wave.level;
-    commands.spawn((
-        Boss {
-            hp: BOSS_HP,
-            rot: 0.0,
-            pulse: 0.0,
-            entered: false,
-            charge: BOSS_CHARGE,
-            fire: BOSS_FIRE_EVERY,
-            capture: 0.4,
-            dying: 0.0,
-        },
-        Transform::from_xyz(0.0, arena.half.y + BOSS_R + BOSS_ORBIT_R, 0.0),
-    ));
+    if is_devourer_wave(wave.level) {
+        // Boss 2: the devourer starts small in the upper arena and hunts free rocks to grow.
+        commands.spawn((
+            Devourer { hp: DEVOURER_HP, grow: 0.0, fed: 0, dying: 0.0, pulse: 0.0 },
+            Transform::from_xyz(0.0, arena.half.y * 0.55, 0.0),
+        ));
+    } else {
+        // Boss 1: the shield-shaman glides in from the top.
+        commands.spawn((
+            Boss {
+                hp: BOSS_HP,
+                rot: 0.0,
+                pulse: 0.0,
+                entered: false,
+                charge: BOSS_CHARGE,
+                fire: BOSS_FIRE_EVERY,
+                capture: 0.4,
+                dying: 0.0,
+            },
+            Transform::from_xyz(0.0, arena.half.y + BOSS_R + BOSS_ORBIT_R, 0.0),
+        ));
+    }
     // Enemy ships bug out (flee). Existing mines are LEFT ALONE — they keep behaving
     // normally (drift/detonate/shootable) and drift off the edges (mine_update despawns
     // them at the edge during a boss wave instead of recycling). No new mines or enemies
@@ -1719,11 +1797,9 @@ fn boss_update(
                 burst(&mut commands, p, boss_color(), 50, 460.0, &mut rng); // final blast
                 burst(&mut commands, p, Color::srgb(5.0, 4.0, 5.0), 24, 300.0, &mut rng);
                 commands.entity(be).despawn();
-                score.0 += BOSS_SCORE;
-                // The chain-shot orb is offered ONLY after the FIRST boss (wave 5).
-                // Grab it in the calm or lose it for good — skip = no chain shot ever.
-                // (Checked before the level-up, so wave.level is still the boss wave.)
-                if wave.level == BOSS_WAVE_INTERVAL {
+                // The chain-shot orb is offered after the shaman (content wave 5). Grab it in the
+                // calm or lose it until the next cycle. (Checked before the level-up.)
+                if content_wave(wave.level) == BOSS_WAVE_INTERVAL {
                     let dir = Vec2::from_angle(rng.gen_range(0.0..TAU));
                     commands.spawn((
                         Pickup { rot: 0.0, pulse: 0.0, life: PICKUP_LIFE },
@@ -1731,10 +1807,7 @@ fn boss_update(
                         Transform::from_xyz(0.0, 0.0, 0.0),
                     ));
                 }
-                wave.level += 1;
-                wave.timer = WAVE_SECS;
-                wave.calm = BOSS_CALM; // 10s calm — the pickup window
-                banner.timer = WAVE_BANNER_SECS;
+                defeat_boss(&mut score, &mut wave, &mut banner);
             }
             continue; // no movement / contact / damage while it dies
         }
@@ -1781,6 +1854,94 @@ fn boss_update(
             if let Some((se, st, sh)) = ship {
                 let sp = st.translation.truncate();
                 if !immune(sh, &dev) && p.distance(sp) < BOSS_R + SHIP_R {
+                    kill_ship(&mut commands, &mut run, &mut next, &mut sfx, se, sp, &mut rng);
+                }
+            }
+        }
+    }
+}
+
+// Boss 2: the devourer HUNTS free rocks and EATS any within reach (growing bigger + healing),
+// and hunts the ship when the field is clear. Chip its HP with gunfire (see `collisions`) while
+// CLEARING rocks to starve it — feed it and it snowballs. Death → the shared post-boss calm.
+fn devourer_update(
+    time: Res<Time>,
+    mut commands: Commands,
+    arena: Res<Arena>,
+    mut run: ResMut<Run>,
+    mut next: ResMut<NextState<GameState>>,
+    mut score: ResMut<Score>,
+    mut wave: ResMut<Wave>,
+    mut banner: ResMut<WaveBanner>,
+    dev: Res<Dev>,
+    mut sfx: EventWriter<SoundFx>,
+    ships: Query<(Entity, &Transform, &Ship), Without<Devourer>>,
+    mut devourers: Query<(Entity, &mut Transform, &mut Devourer)>,
+    rocks: Query<(Entity, &Transform, &Asteroid), (Without<Shielded>, Without<Devourer>)>,
+) {
+    let dt = time.delta_secs();
+    let h = arena.half;
+    let mut rng = rand::thread_rng();
+    let ship = ships.iter().next();
+    for (de, mut tf, mut dv) in &mut devourers {
+        dv.pulse += dt * 5.0;
+        let p = tf.translation.truncate();
+        let r = devourer_radius(dv.grow);
+
+        // ── DYING: crackle, then a big blast → despawn → advance ──
+        if dv.dying > 0.0 {
+            dv.dying -= dt;
+            for _ in 0..3 {
+                let off = Vec2::from_angle(rng.gen_range(0.0..TAU)) * rng.gen_range(0.0..r);
+                burst(&mut commands, p + off, devourer_color(), 3, 260.0, &mut rng);
+            }
+            if dv.dying <= 0.0 {
+                burst(&mut commands, p, devourer_color(), 60, 500.0, &mut rng);
+                burst(&mut commands, p, Color::srgb(6.0, 4.0, 4.0), 26, 320.0, &mut rng);
+                commands.entity(de).despawn();
+                defeat_boss(&mut score, &mut wave, &mut banner);
+            }
+            continue;
+        }
+        if dv.hp <= 0 {
+            dv.dying = BOSS_DEATH_SECS;
+            burst(&mut commands, p, devourer_color(), 34, 340.0, &mut rng);
+            continue;
+        }
+
+        // ── eat any rock within reach (grow + heal), and note the nearest to chase ──
+        let mut nearest: Option<Vec2> = None;
+        let mut nd2 = f32::MAX;
+        for (re, rt, ra) in &rocks {
+            let rp = rt.translation.truncate();
+            let reach = r + asteroid_radius(ra.size);
+            let d2 = p.distance_squared(rp);
+            if d2 < reach * reach {
+                commands.entity(re).despawn();
+                dv.grow = (dv.grow + DEVOURER_GROW_PER_EAT).min(1.0);
+                dv.hp = (dv.hp + DEVOURER_HEAL_PER_EAT).min(DEVOURER_HP_MAX);
+                dv.fed += 1;
+                burst(&mut commands, rp, devourer_color(), 12, 240.0, &mut rng);
+                sfx.write(SoundFx::Break(ra.size));
+            } else if d2 < nd2 {
+                nd2 = d2;
+                nearest = Some(rp);
+            }
+        }
+
+        // ── move toward the nearest rock, or hunt the ship when the field is clear ──
+        let goal = nearest.or_else(|| ship.map(|(_, st, _)| st.translation.truncate()));
+        if let Some(g) = goal {
+            let dir = (g - p).normalize_or_zero();
+            let np = p + dir * DEVOURER_SPEED * dt;
+            tf.translation = Vec3::new(np.x.clamp(-h.x + r, h.x - r), np.y.clamp(-h.y + r, h.y - r), 0.0);
+        }
+
+        // ── contact kills the ship ──
+        if run.respawn <= 0.0 {
+            if let Some((se, st, sh)) = ship {
+                let sp = st.translation.truncate();
+                if !immune(sh, &dev) && p.distance(sp) < r + SHIP_R {
                     kill_ship(&mut commands, &mut run, &mut next, &mut sfx, se, sp, &mut rng);
                 }
             }
@@ -2540,10 +2701,32 @@ fn render_boss(
     wave: Res<Wave>,
     bosses: Query<(&Boss, &Transform)>,
     shielded: Query<(&Transform, &Shielded)>,
+    devourers: Query<(&Devourer, &Transform)>,
 ) {
     let h = arena.half;
     let t = time.elapsed_secs();
     let mc = boss_color();
+
+    // ── the devourer (boss 2): a jagged red maw that swells as it feeds; a white-hot HP core ──
+    for (dv, dt) in &devourers {
+        let c = dt.translation.truncate();
+        let scale = if dv.dying > 0.0 { (dv.dying / BOSS_DEATH_SECS).clamp(0.0, 1.0) } else { 1.0 };
+        let r = devourer_radius(dv.grow) * scale;
+        let throb = 1.0 + 0.06 * dv.pulse.sin();
+        let dc = devourer_color();
+        let body: Vec<Vec2> = (0..=18)
+            .map(|k| {
+                let a = k as f32 / 18.0 * TAU + dv.pulse * 0.2;
+                let jag = 0.82 + 0.18 * (a * 3.0 + dv.pulse * 0.5).sin();
+                c + Vec2::from_angle(a) * r * throb * jag
+            })
+            .collect();
+        gizmos.linestrip_2d(body, dc);
+        // HP core: brighter/bigger the more health it has (a read on how far you've whittled it)
+        let hpf = (dv.hp as f32 / DEVOURER_HP as f32).clamp(0.2, 1.0);
+        gizmos.circle_2d(Isometry2d::from_translation(c), r * 0.42 * throb, dim(dc, 0.7 * hpf));
+        gizmos.circle_2d(Isometry2d::from_translation(c), r * 0.18, Color::srgb(6.0, 4.0, 4.0));
+    }
 
     // cameo: the boss drifts by in the background in the run-up to its wave
     if !is_boss_wave(wave.level) && is_boss_wave(wave.level + 1) && wave.calm <= 0.0 && wave.timer <= BOSS_CAMEO_SECS {
@@ -3063,6 +3246,7 @@ fn main() {
                     enemy_bullets,
                     boss_director,
                     boss_update,
+                    devourer_update,
                     boss_shield,
                     shield_deflect,
                     chain_update,
@@ -3611,10 +3795,84 @@ mod tests {
 
     #[test]
     fn enemy_target_gates_and_caps() {
-        assert_eq!(enemy_target(2, 100), 0, "no enemies before wave 3");
-        assert_eq!(enemy_target(3, 100), 2, "wave 3 → 2, well under the cap");
-        assert_eq!(enemy_target(5, 6), 1, "capped to a fraction of the rock count");
-        assert_eq!(enemy_target(6, 100), 0, "yellow mobs stop after wave 5");
+        assert_eq!(enemy_target(2, 100), 0, "no mobs before wave 3");
+        assert_eq!(enemy_target(3, 100), 2, "wave 3 → 2");
+        assert_eq!(enemy_target(4, 100), 4, "wave 4 → 4");
+        assert_eq!(enemy_target(6, 100), 0, "no mobs on the green-intro wave 6");
+        assert_eq!(enemy_target(7, 100), 0, "still no mobs on wave 7");
+        assert_eq!(enemy_target(8, 100), 4, "mobs return on wave 8");
+        assert_eq!(enemy_target(9, 100), 6, "wave 9 → 6");
+        assert_eq!(enemy_target(9, 10), 3, "capped to a fraction of the rock count");
+        assert_eq!(enemy_target(11, 100), 0, "loop: wave 11 = content 1, no mobs");
+        assert_eq!(enemy_target(13, 100), 2, "loop: wave 13 = content 3 → 2");
+    }
+
+    #[test]
+    fn content_wave_loops_and_picks_boss_type() {
+        assert_eq!(content_wave(1), 1);
+        assert_eq!(content_wave(10), 10);
+        assert_eq!(content_wave(11), 1, "wave 11 loops to content 1");
+        assert_eq!(content_wave(15), 5);
+        assert_eq!(content_wave(20), 10);
+        assert!(is_devourer_wave(10) && is_devourer_wave(20), "content-10 waves are boss 2");
+        assert!(!is_devourer_wave(5) && !is_devourer_wave(15), "content-5 waves are boss 1");
+        assert!(is_boss_wave(5) && is_boss_wave(10) && !is_boss_wave(6));
+    }
+
+    #[test]
+    fn devourer_wave_spawns_the_second_boss() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(Wave { level: 10, timer: WAVE_SECS, calm: 0.0 });
+        app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
+        app.insert_resource(BossState::default());
+        app.add_systems(Update, boss_director);
+        app.update();
+        assert_eq!(app.world_mut().query::<&Devourer>().iter(app.world()).count(), 1, "wave 10 spawns the devourer");
+        assert_eq!(app.world_mut().query::<&Boss>().iter(app.world()).count(), 0, "and not the shaman");
+    }
+
+    #[test]
+    fn devourer_eats_a_rock_and_grows() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_event::<SoundFx>();
+        app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
+        app.insert_resource(Run { lives: 3, respawn: 1.0 }); // respawning → skip ship-contact
+        app.insert_resource(NextState::<GameState>::default());
+        app.insert_resource(Score(0));
+        app.insert_resource(Wave { level: 10, timer: WAVE_SECS, calm: 0.0 });
+        app.insert_resource(WaveBanner::default());
+        app.insert_resource(Dev::default());
+        let dvr = app
+            .world_mut()
+            .spawn((Devourer { hp: DEVOURER_HP, grow: 0.0, fed: 0, dying: 0.0, pulse: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0)))
+            .id();
+        app.world_mut().spawn((
+            Asteroid { size: 2, verts: vec![Vec2::X * 40.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+            Transform::from_xyz(0.0, 0.0, 0.0),
+        ));
+        app.add_systems(Update, devourer_update);
+        app.update();
+        assert_eq!(app.world_mut().query::<&Asteroid>().iter(app.world()).count(), 0, "the overlapping rock is eaten");
+        let dv = app.world().entity(dvr).get::<Devourer>().unwrap();
+        assert!(dv.grow > 0.0, "eating grows it");
+        assert!(dv.hp > DEVOURER_HP, "eating heals it (tankier)");
+        assert_eq!(dv.fed, 1, "it ate exactly one rock");
+    }
+
+    #[test]
+    fn bullet_chips_the_devourer() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_event::<SoundFx>();
+        app.insert_resource(Score(0));
+        app.world_mut().spawn((Devourer { hp: DEVOURER_HP, grow: 0.0, fed: 0, dying: 0.0, pulse: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0)));
+        app.world_mut().spawn((Bullet { life: 1.0, trail: Vec::new() }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0)));
+        app.add_systems(Update, collisions);
+        app.update();
+        let hp = app.world_mut().query::<&Devourer>().iter(app.world()).next().unwrap().hp;
+        assert_eq!(hp, DEVOURER_HP - 1, "a bullet chips the devourer's core");
     }
 
     #[test]
