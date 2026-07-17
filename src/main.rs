@@ -537,6 +537,12 @@ struct GoldRush {
 #[derive(Resource, Default)]
 struct FireArmed(bool);
 
+// True once the player has left the main menu at least once. The neon title warm-up only plays on
+// the very first show (app launch); later returns to the menu (from a sub-screen or a run) show the
+// title already lit, so it doesn't re-flicker every time.
+#[derive(Resource, Default)]
+struct TitleIntroPlayed(bool);
+
 // A chain-shot beam: travels along `Velocity`; the damaging lightning spans `perp`·±half.
 #[derive(Component)]
 struct ChainShot {
@@ -3470,13 +3476,15 @@ fn spawn_frame(commands: &mut Commands, marker: impl Component) {
     ));
 }
 
-fn spawn_menu_ui(mut commands: Commands, achieved: Res<Achievements>, font: Res<MenuFont>) {
+fn spawn_menu_ui(mut commands: Commands, achieved: Res<Achievements>, intro: Res<TitleIntroPlayed>, font: Res<MenuFont>) {
     spawn_frame(&mut commands, MenuUi); // behind the content (spawned first)
     let root = overlay(&mut commands, MenuUi, 0.25); // light — let the starfield show through
     let done = achieved.unlocked.iter().filter(|u| **u).count();
     let f = &font.0;
+    // flicker the title on the FIRST show only; later returns start it already lit (past the warm-up)
+    let title_age = if intro.0 { NEON_WARMUP } else { 0.0 };
     commands.entity(root).with_children(|p| {
-        p.spawn((MenuTitle { age: 0.0 }, text_f(f, 82.0, title_color(), "VIOLET EDGE")));
+        p.spawn((MenuTitle { age: title_age }, text_f(f, 82.0, title_color(), "VIOLET EDGE")));
         menu_button(p, f, MenuAction::Play, "PLAY");
         menu_button(p, f, MenuAction::Controls, "CONTROLS");
         menu_button(p, f, MenuAction::Briefing, "BRIEFING");
@@ -3563,7 +3571,7 @@ fn spawn_briefing_ui(mut commands: Commands, font: Res<MenuFont>) {
         for line in [
             "Survive each wave's timer to advance.",
             "Every 5th wave is a boss — each weaponizes the rocks.",
-            "Bosses drop a new weapon; rare gold rocks grant a life.",
+            "Beat a boss to earn a new weapon.",
             "Clear the arc — then try it again with no powerups.",
         ] {
             p.spawn(text_f(f, 16.0, obj, line));
@@ -3700,6 +3708,11 @@ fn despawn_menu_ui(mut commands: Commands, q: Query<Entity, With<MenuUi>>) {
     for e in &q {
         commands.entity(e).despawn();
     }
+}
+
+// Leaving the menu (to a sub-screen or a run) means the intro flicker has been seen — don't replay it.
+fn mark_title_intro_played(mut intro: ResMut<TitleIntroPlayed>) {
+    intro.0 = true;
 }
 
 // ─────────────────────────────── achievement runtime ──────────────────
@@ -4140,6 +4153,7 @@ fn main() {
         .insert_resource(RunFlags::default())
         .insert_resource(GoldRush::default())
         .insert_resource(FireArmed::default())
+        .insert_resource(TitleIntroPlayed::default())
         .add_event::<SoundFx>()
         .add_event::<MenuClick>()
         .init_state::<GameState>()
@@ -4215,7 +4229,7 @@ fn main() {
         .add_systems(Update, gameover_restart.run_if(in_state(GameState::GameOver)))
         .add_systems(OnEnter(GameState::Playing), disarm_fire)
         .add_systems(OnEnter(GameState::Menu), (clear_field, spawn_menu_ui))
-        .add_systems(OnExit(GameState::Menu), despawn_menu_ui)
+        .add_systems(OnExit(GameState::Menu), (despawn_menu_ui, mark_title_intro_played))
         .add_systems(OnEnter(GameState::Achievements), spawn_achievements_ui)
         .add_systems(OnExit(GameState::Achievements), despawn_achievements_ui)
         .add_systems(OnEnter(GameState::Controls), spawn_controls_ui)
