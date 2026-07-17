@@ -3582,8 +3582,8 @@ fn spawn_briefing_ui(mut commands: Commands, font: Res<MenuFont>) {
     let obj = Color::srgb(0.8, 0.85, 1.05);
     commands.entity(root).with_children(|p| {
         p.spawn(text_f(f, 48.0, title_color(), "BRIEFING"));
-        p.spawn(text_f(f, 17.0, flavor, "The Belt has turned hostile. Rock chokes the lanes,"));
-        p.spawn(text_f(f, 17.0, flavor, "and something is steering it from the dark."));
+        p.spawn(text_f(f, 17.0, flavor, "The Belt has turned hostile. The rocks choke the lanes,"));
+        p.spawn(text_f(f, 17.0, flavor, "and something in the dark is steering them."));
         p.spawn(text_f(f, 17.0, flavor, "You hold the last violet-drive cutter. Cut the field. Hold the edge."));
         p.spawn((text_f(f, 22.0, title_color(), "OBJECTIVE"), Node { margin: UiRect::top(Val::Px(14.0)), ..default() }));
         for line in [
