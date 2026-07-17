@@ -127,6 +127,7 @@ const DEVOURER_MAX_R: f32 = 200.0; // fully gorged — swells huge, then OVERLOA
 const DEVOURER_BURST_R: f32 = 420.0; // overload blast reach — near screen-wide; escapable only by being far
 const DEVOURER_GROW_PER_EAT: f32 = 0.09; // grow step per rock (~11 rocks → max size)
 const DEVOURER_HEAL_PER_EAT: i32 = 4; // HP regained per rock (tankier the more it feeds)
+const DEVOURER_SHRINK_PER_HIT: f32 = 0.03; // each player hit claws its size back (~⅓ of a rock's growth) — keeps it manageable and lets you hold off the overload
 const DEVOURER_SPEED: f32 = 95.0; // px/s seek speed (below the ship's, so it's dodgeable)
 
 // Chain shot: a wide lightning BEAM secondary weapon. Unlocked by the pickup that
@@ -1628,6 +1629,7 @@ fn collisions(
                 dead_b.insert(be);
                 commands.entity(be).despawn();
                 dv.hp -= power;
+                dv.grow = (dv.grow - DEVOURER_SHRINK_PER_HIT).max(0.0); // gunfire shrinks it too, not just its HP
                 burst(&mut commands, bp, devourer_color(), 6, 180.0, &mut rng);
                 break;
             }
@@ -5600,12 +5602,14 @@ mod tests {
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());
         app.insert_resource(Score(0));
-        app.world_mut().spawn((Devourer { hp: DEVOURER_HP, grow: 0.0, fed: 0, dying: 0.0, pulse: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0)));
+        app.world_mut().spawn((Devourer { hp: DEVOURER_HP, grow: 0.5, fed: 0, dying: 0.0, pulse: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0)));
         app.world_mut().spawn((Bullet { life: 1.0, trail: Vec::new(), mass: false }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0)));
         app.add_systems(Update, collisions);
         app.update();
         let hp = app.world_mut().query::<&Devourer>().iter(app.world()).next().unwrap().hp;
+        let grow = app.world_mut().query::<&Devourer>().iter(app.world()).next().unwrap().grow;
         assert_eq!(hp, DEVOURER_HP - 1, "a bullet chips the devourer's core");
+        assert!(grow < 0.5, "and shrinks it a little, so gunfire keeps its size manageable");
     }
 
     #[test]
