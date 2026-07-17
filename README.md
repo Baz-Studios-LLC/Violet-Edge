@@ -1,34 +1,30 @@
-# NEON EDGE — Bevy port (Rust)
+# VIOLET EDGE — Rust / Bevy
 
-A native Rust + [Bevy](https://bevy.org) port of NEON EDGE (the JS/Canvas game
-lives at `../neon-asteroids/` and stays the reference/fallback while this grows).
+A native Rust + [Bevy 0.16](https://bevy.org) game: a neon-vector love letter to
+*Asteroids*. Ported and grown from an earlier JS/Canvas prototype (kept as the
+reference at `../neon-asteroids/`).
 
-> **Status: vertical slice (milestone 1).** Window, neon grid, ship
-> (rotate/thrust/fire), and asteroids that drift, recycle at the edges, and split
-> when shot. It proves the ECS architecture + the bloom-neon rendering. **It has
-> not been compiled** — there's no Rust toolchain on the dev machine it was
-> written on — so the first `cargo run` may surface a small fix or two. See
-> "If it doesn't build" below.
+> **Status: playable, in active development.** The core loop, one boss, and the
+> full audio are in. The mid/late wave content and the second boss are next
+> (see the roadmap). Compiles on stable Rust with Bevy 0.16; `cargo test` green.
 
 ## Prerequisites
 
-1. **Rust** — install via [rustup.rs](https://rustup.rs). On Windows, download
-   and run `rustup-init.exe`; take the defaults (MSVC toolchain).
-2. **Windows only — C++ build tools.** Bevy compiles native code, so you need the
+1. **Rust** — install via [rustup.rs](https://rustup.rs) (Windows: `rustup-init.exe`, MSVC toolchain).
+2. **Windows only — C++ build tools.** Bevy compiles native code, so install the
    *"Desktop development with C++"* workload from
    [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022).
-   (If `cargo run` fails with a `link.exe` / `cannot find linker` error, this is why.)
+   (A `link.exe` / "cannot find linker" error means this is missing.)
 
 ## Run
 
 ```bash
-cd neon-edge-bevy
-cargo run
+cargo run            # debug
+cargo run --release  # smooth framerate
 ```
 
-The **first** build downloads and compiles Bevy + its dependencies (hundreds of
-crates) — expect several minutes and a few hundred MB in `target/`. After that,
-rebuilds of just this game are fast.
+The first build compiles Bevy + dependencies — several minutes and a few hundred
+MB in `target/`. Rebuilds after that are fast.
 
 ## Controls
 
@@ -36,32 +32,42 @@ rebuilds of just this game are fast.
 | --- | --- |
 | Rotate | `←` / `→` (or `A` / `D`) |
 | Thrust | `↑` (or `W`) |
-| Fire | `Space` |
+| Fire | `Space` or left-click |
+| Warp (black hole) | `Shift` |
+| Chain shot | right-click *(once unlocked)* |
+| Pause | `Esc` |
+| Mute music | `M` |
+| Skip track | `N` |
 
-## What's here vs. the full game
+## What's in
 
-**In this slice:** HDR+bloom camera, grid, ship movement/fire, blue asteroids
-(spawn → drift → edge-recycle → split on hit), bullet lifetime, score (resource).
+- **Ship** — momentum flight, lives, respawn invulnerability.
+- **Asteroids** — blue rocks that split 3 → 2 → 1, plus dense **green** rocks
+  (wave 6+) that take several hits before they break.
+- **Mines** (wave 2+) — drift in, chain-detonate, and blast nearby rocks.
+- **Enemy mobs** (waves 3–5) — fly in, strafe the ship, lob shots, then flee.
+- **Warp** — fire a missile that tears open a black hole; it devours rocks,
+  mines and enemies (never the player), and bends the grid. Stays on-screen.
+- **Chain shot** — a beam that shears everything along its length; unlocked by a
+  pickup dropped after the first boss (grab it by flying into it *or* shooting it).
+- **Boss 1** — a roaming "shield-shaman" that orbits a shield of captured rocks
+  and hurls them; beaten by clearing its shield and hitting the exposed core.
+- **Procedural audio** — every sound is synthesized at runtime, no asset files:
+  fire / rock-break / mine / ship-death / enemy fire+death / warp effects, a
+  full-length club-techno track, and a distinct boss track.
+- **Presentation** — HDR + bloom neon (Bevy gizmos), on-screen HUD, timed waves.
 
-**Not yet ported** (next milestones, in rough order): dense/orange asteroid
-types, particles + screen shake, on-screen HUD/score text, mines + enemies, the
-three bosses (octopus / devourer / raider), the power-ups (chain / mass / drone /
-vortex), procedural audio, and the menu/pause system.
+## Roadmap
+
+- Wave 6–10 content arc (green → +mines → +mobs), then **loop waves 1–10**.
+- **Boss 2** (wave 10) — a red seeker that eats asteroids to grow bigger and tankier.
+- More pickups (mass shot, assist drone).
+- Menus, and an audio-polish pass (effects chain / produced tracks).
 
 ## Notes
 
-- **Rendering:** wireframes are drawn with Bevy **gizmos** (immediate mode) for
-  the vector look; the camera is HDR with `Bloom` for the glow. If the gizmo
-  lines don't visibly bloom on your GPU/driver, we'll switch the key shapes to
-  emissive meshes (guaranteed bloom) — tell me what you see.
-- **Motion is per-second** (delta-time based, framerate-independent). The exact
-  feel from the JS game (which was tuned per-frame at 60fps) will be re-tuned
-  once it runs.
-- **Pinned to Bevy 0.16** deliberately — the code targets 0.16's API. Don't bump
-  the version without updating the code.
-
-## If it doesn't build
-
-Paste me the compiler errors. The most likely spots (noted in `src/main.rs`):
-a `Time` method name (`delta_secs`), a gizmo signature, or an `Isometry2d`
-constructor — all isolated one-liners if a 0.16 API detail differs.
+- **Purple is the player.** It's reserved for the ship and its kit — nothing else uses it.
+- **Rendering** is immediate-mode gizmos with an HDR + `Bloom` camera for the glow.
+- **Motion is delta-time based** (framerate-independent).
+- **Pinned to Bevy 0.16** deliberately — don't bump the version without updating the code.
+- Dev builds only: `F1` toggles invincibility (compiled out of release).
