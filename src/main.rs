@@ -3119,10 +3119,16 @@ fn text(font_size: f32, color: Color, s: &str) -> (Text, TextFont, TextColor) {
 #[derive(Resource)]
 struct MenuFont(Handle<Font>);
 
-fn load_font(mut commands: Commands, mut fonts: ResMut<Assets<Font>>) {
+// Embed Orbitron and install `MenuFont` at BUILD time (not a Startup system): the initial
+// OnEnter(Menu) → spawn_menu_ui runs before a Startup command flush would land, so it must
+// already exist. Called from `main` after DefaultPlugins (which provides `Assets<Font>`).
+fn install_menu_font(app: &mut App) {
     let bytes = include_bytes!("../assets/fonts/static/Orbitron-Bold.ttf").to_vec();
-    let font = fonts.add(Font::try_from_bytes(bytes).expect("Orbitron-Bold.ttf is a valid TTF"));
-    commands.insert_resource(MenuFont(font));
+    let handle = app
+        .world_mut()
+        .resource_mut::<Assets<Font>>()
+        .add(Font::try_from_bytes(bytes).expect("Orbitron-Bold.ttf is a valid TTF"));
+    app.insert_resource(MenuFont(handle));
 }
 
 // Like `text`, but in the menu (Orbitron) font.
@@ -3829,7 +3835,7 @@ fn main() {
         .add_event::<SoundFx>()
         .add_event::<MenuClick>()
         .init_state::<GameState>()
-        .add_systems(Startup, (setup, spawn_hud, spawn_toast_root, load_progress, load_font, start_music, start_sfx))
+        .add_systems(Startup, (setup, spawn_hud, spawn_toast_root, load_progress, start_music, start_sfx))
         // always: keep the arena sized, handle pause input, refresh the HUD text
         .add_systems(Update, (update_arena, pause_toggle, update_wave_text, update_score_text, wave_banner_update).chain())
         // always: watch for achievement unlocks + age out toasts + hide the HUD off-run + menu buttons
@@ -3904,6 +3910,7 @@ fn main() {
     // dev-only tools (F1 invincibility, F2 wave-skip); compiled out of release builds
     #[cfg(debug_assertions)]
     app.add_systems(Update, (dev_toggle, dev_wave_skip));
+    install_menu_font(&mut app); // must exist before the initial OnEnter(Menu)
     app.run();
 }
 
