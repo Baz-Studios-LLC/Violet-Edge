@@ -372,10 +372,29 @@ fn kill_enemy(commands: &mut Commands, score: &mut Score, sfx: &mut EventWriter<
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Hash, States)]
 enum GameState {
     #[default]
+    Menu,
     Playing,
     Paused,
     GameOver,
 }
+
+// One filter for "everything spawned during a run" — used to wipe the field when quitting to the
+// menu or restarting (the starfield + camera are NOT in here, so the backdrop survives).
+type GameplayEntity = Or<(
+    With<Ship>,
+    With<Asteroid>,
+    With<Bullet>,
+    With<Particle>,
+    With<BlackHole>,
+    With<WarpMissile>,
+    With<Mine>,
+    With<Enemy>,
+    With<EnemyBullet>,
+    With<Boss>,
+    With<Devourer>,
+    With<ChainShot>,
+    With<Pickup>,
+)>;
 
 #[derive(Component)]
 struct Ship {
@@ -507,6 +526,8 @@ struct Pickup {
 struct PauseUi;
 #[derive(Component)]
 struct GameOverUi;
+#[derive(Component)]
+struct MenuUi;
 #[derive(Component)]
 struct WaveText; // top-center "WAVE n  M:SS"
 #[derive(Component)]
@@ -650,9 +671,8 @@ fn setup(mut commands: Commands) {
         ));
     }
 
-    spawn_player(&mut commands);
-    // The field starts EMPTY. `top_up_asteroids` drifts rocks in from the edges
-    // (from frame one), so nothing ever spawns on top of the player.
+    // No ship yet — the game boots to the main menu; a run spawns the player on Start.
+    // The field then starts EMPTY and `top_up_asteroids` drifts rocks in from the edges.
 }
 
 // Persistent HUD. Lives label (top-right; the ship-icon count is drawn per-frame in
@@ -2916,13 +2936,20 @@ fn pause_toggle(
     state: Res<State<GameState>>,
     mut next: ResMut<NextState<GameState>>,
 ) {
-    if !keys.just_pressed(KeyCode::Escape) {
-        return;
-    }
     match state.get() {
-        GameState::Playing => next.set(GameState::Paused),
-        GameState::Paused => next.set(GameState::Playing),
-        GameState::GameOver => {}
+        GameState::Playing => {
+            if keys.just_pressed(KeyCode::Escape) {
+                next.set(GameState::Paused);
+            }
+        }
+        GameState::Paused => {
+            if keys.just_pressed(KeyCode::Escape) {
+                next.set(GameState::Playing); // resume
+            } else if keys.just_pressed(KeyCode::KeyQ) {
+                next.set(GameState::Menu); // quit the run → OnEnter(Menu) wipes the field
+            }
+        }
+        GameState::Menu | GameState::GameOver => {}
     }
 }
 
@@ -2955,6 +2982,7 @@ fn spawn_pause_ui(mut commands: Commands) {
     commands.entity(root).with_children(|p| {
         p.spawn(text(56.0, Color::srgb(2.4, 1.0, 4.6), "PAUSED"));
         p.spawn(text(22.0, Color::srgb(0.7, 0.85, 1.2), "Esc  —  Resume"));
+        p.spawn(text(22.0, Color::srgb(0.7, 0.85, 1.2), "Q  —  Quit to Menu"));
     });
 }
 
@@ -2965,6 +2993,7 @@ fn spawn_gameover_ui(mut commands: Commands, score: Res<Score>) {
         p.spawn(text(64.0, Color::srgb(5.0, 1.2, 1.2), "GAME OVER"));
         p.spawn(text(26.0, Color::srgb(0.85, 0.9, 1.2), &score_line));
         p.spawn(text(22.0, Color::srgb(0.7, 0.85, 1.2), "Enter  —  Restart"));
+        p.spawn(text(22.0, Color::srgb(0.7, 0.85, 1.2), "Esc  —  Main Menu"));
     });
 }
 
@@ -2980,9 +3009,43 @@ fn despawn_gameover_ui(mut commands: Commands, q: Query<Entity, With<GameOverUi>
     }
 }
 
-// Restart the run from the Game-Over screen (Enter): clear the field, reset,
-// spawn a fresh ship + asteroids, back to Playing.
-fn gameover_restart(
+// Reset every run resource and spawn a fresh ship. Shared by the menu Start and the restart.
+fn reset_run(
+    commands: &mut Commands,
+    run: &mut Run,
+    score: &mut Score,
+    wave: &mut Wave,
+    banner: &mut WaveBanner,
+    warp: &mut Warp,
+    boss: &mut BossState,
+    chain: &mut Chain,
+    mass: &mut MassShot,
+) {
+    run.lives = START_LIVES;
+    run.respawn = 0.0;
+    score.0 = 0;
+    wave.level = 1;
+    wave.timer = WAVE_SECS;
+    wave.calm = 0.0;
+    banner.timer = WAVE_BANNER_SECS; // flash "WAVE 1"
+    warp.charges = WARP_MAX_CHARGES;
+    warp.cooldown = 0.0;
+    boss.fought = 0; // so the next boss wave spawns a fresh boss
+    *chain = Chain::default(); // must re-earn the chain shot…
+    *mass = MassShot::default(); // …and the mass shot
+    spawn_player(commands);
+}
+
+// Wipe the run's entities when entering the menu (after a quit or game-over → menu). The
+// starfield + camera are excluded by `GameplayEntity`, so the backdrop persists.
+fn clear_field(mut commands: Commands, field: Query<Entity, GameplayEntity>) {
+    for e in &field {
+        commands.entity(e).despawn();
+    }
+}
+
+// Main menu: Enter / Space begins a fresh run.
+fn menu_start(
     keys: Res<ButtonInput<KeyCode>>,
     mut commands: Commands,
     mut next: ResMut<NextState<GameState>>,
@@ -2992,57 +3055,52 @@ fn gameover_restart(
     mut banner: ResMut<WaveBanner>,
     mut warp: ResMut<Warp>,
     mut progress: (ResMut<BossState>, ResMut<Chain>, ResMut<MassShot>), // bundled (16-param limit)
-    ships: Query<Entity, With<Ship>>,
-    asteroids: Query<Entity, With<Asteroid>>,
-    bullets: Query<Entity, With<Bullet>>,
-    particles: Query<Entity, With<Particle>>,
-    holes: Query<Entity, With<BlackHole>>,
-    missiles: Query<Entity, With<WarpMissile>>,
-    // mines + enemies + enemy shots + boss + chain beams + pickup, one tuple param
-    // (16-param limit). Shield/thrown rocks are Asteroids, so `asteroids` clears them.
-    hazards: (
-        Query<Entity, With<Mine>>,
-        Query<Entity, With<Enemy>>,
-        Query<Entity, With<EnemyBullet>>,
-        Query<Entity, With<Boss>>,
-        Query<Entity, With<ChainShot>>,
-        Query<Entity, With<Pickup>>,
-        Query<Entity, With<Devourer>>,
-    ),
 ) {
     if !(keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space)) {
         return;
     }
-    for e in ships
-        .iter()
-        .chain(&asteroids)
-        .chain(&bullets)
-        .chain(&particles)
-        .chain(&holes)
-        .chain(&missiles)
-        .chain(&hazards.0)
-        .chain(&hazards.1)
-        .chain(&hazards.2)
-        .chain(&hazards.3)
-        .chain(&hazards.4)
-        .chain(&hazards.5)
-        .chain(&hazards.6)
-    {
+    reset_run(&mut commands, &mut run, &mut score, &mut wave, &mut banner, &mut warp, &mut progress.0, &mut progress.1, &mut progress.2);
+    next.set(GameState::Playing);
+}
+
+fn spawn_menu_ui(mut commands: Commands) {
+    let root = overlay(&mut commands, MenuUi);
+    commands.entity(root).with_children(|p| {
+        p.spawn(text(74.0, ship_color(), "VIOLET EDGE"));
+        p.spawn(text(24.0, Color::srgb(0.7, 0.85, 1.2), "Enter  —  Play"));
+    });
+}
+
+fn despawn_menu_ui(mut commands: Commands, q: Query<Entity, With<MenuUi>>) {
+    for e in &q {
         commands.entity(e).despawn();
     }
-    run.lives = START_LIVES;
-    run.respawn = 0.0;
-    score.0 = 0;
-    wave.level = 1;
-    wave.timer = WAVE_SECS;
-    wave.calm = 0.0;
-    progress.0.fought = 0; // so the next boss wave spawns a fresh boss
-    *progress.1 = Chain::default(); // must re-earn the chain shot
-    *progress.2 = MassShot::default(); // …and the mass shot
-    banner.timer = WAVE_BANNER_SECS; // re-flash "WAVE 1"
-    warp.charges = WARP_MAX_CHARGES;
-    warp.cooldown = 0.0;
-    spawn_player(&mut commands);
+}
+
+// Game-Over screen: Enter restarts immediately; Esc quits to the main menu.
+fn gameover_restart(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut commands: Commands,
+    mut next: ResMut<NextState<GameState>>,
+    mut run: ResMut<Run>,
+    mut score: ResMut<Score>,
+    mut wave: ResMut<Wave>,
+    mut banner: ResMut<WaveBanner>,
+    mut warp: ResMut<Warp>,
+    mut progress: (ResMut<BossState>, ResMut<Chain>, ResMut<MassShot>),
+    field: Query<Entity, GameplayEntity>,
+) {
+    if keys.just_pressed(KeyCode::Escape) {
+        next.set(GameState::Menu); // OnEnter(Menu) wipes the field
+        return;
+    }
+    if !keys.just_pressed(KeyCode::Enter) {
+        return;
+    }
+    for e in &field {
+        commands.entity(e).despawn();
+    }
+    reset_run(&mut commands, &mut run, &mut score, &mut wave, &mut banner, &mut warp, &mut progress.0, &mut progress.1, &mut progress.2);
     next.set(GameState::Playing); // field refills from the edges via top_up_asteroids
 }
 
@@ -3352,7 +3410,10 @@ fn main() {
                 .run_if(in_state(GameState::Playing)),
         )
         .add_systems(Update, (music_director, play_sfx))
+        .add_systems(Update, menu_start.run_if(in_state(GameState::Menu)))
         .add_systems(Update, gameover_restart.run_if(in_state(GameState::GameOver)))
+        .add_systems(OnEnter(GameState::Menu), (clear_field, spawn_menu_ui))
+        .add_systems(OnExit(GameState::Menu), despawn_menu_ui)
         .add_systems(OnEnter(GameState::Paused), spawn_pause_ui)
         .add_systems(OnExit(GameState::Paused), despawn_pause_ui)
         .add_systems(OnEnter(GameState::GameOver), spawn_gameover_ui)
@@ -3989,6 +4050,47 @@ mod tests {
         app.update();
         let big = app.world_mut().query::<&Asteroid>().iter(app.world()).filter(|a| a.size == 3).count();
         assert_eq!(big, 0, "a mass shot cracks a dense rock in one hit (power 3 vs hp 3)");
+    }
+
+    #[test]
+    fn menu_start_resets_and_spawns_a_ship() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(NextState::<GameState>::default());
+        // stale end-of-run state that Start must wipe
+        app.insert_resource(Run { lives: 0, respawn: 5.0 });
+        app.insert_resource(Score(999));
+        app.insert_resource(Wave { level: 7, timer: 1.0, calm: 3.0 });
+        app.insert_resource(WaveBanner::default());
+        app.insert_resource(Warp { charges: 0, cooldown: 9.0 });
+        app.insert_resource(BossState { fought: 5 });
+        app.insert_resource(Chain { unlocked: true, charges: 3, recharge: 0.0, cooldown: 0.0 });
+        app.insert_resource(MassShot { unlocked: true, active: true });
+        let mut input = ButtonInput::<KeyCode>::default();
+        input.press(KeyCode::Enter);
+        app.insert_resource(input);
+        app.add_systems(Update, menu_start);
+        app.update();
+        assert_eq!(app.world().resource::<Run>().lives, START_LIVES, "Start resets lives");
+        assert_eq!(app.world().resource::<Score>().0, 0, "Start resets score");
+        assert_eq!(app.world().resource::<Wave>().level, 1, "Start resets to wave 1");
+        assert!(!app.world().resource::<Chain>().unlocked, "Start relocks the chain shot");
+        assert!(!app.world().resource::<MassShot>().unlocked, "Start relocks the mass shot");
+        assert_eq!(app.world_mut().query::<&Ship>().iter(app.world()).count(), 1, "a fresh ship spawns");
+    }
+
+    #[test]
+    fn clear_field_wipes_the_run_but_keeps_the_backdrop() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.world_mut().spawn((Ship { angle: 0.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0)));
+        app.world_mut().spawn((Asteroid { size: 2, verts: vec![Vec2::X * 40.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0)));
+        app.world_mut().spawn((Star { phase: 0.0, bright: 1.0 }, Transform::from_xyz(0.0, 0.0, 0.0)));
+        app.add_systems(Update, clear_field);
+        app.update();
+        assert_eq!(app.world_mut().query::<&Ship>().iter(app.world()).count(), 0, "the ship is wiped");
+        assert_eq!(app.world_mut().query::<&Asteroid>().iter(app.world()).count(), 0, "asteroids are wiped");
+        assert_eq!(app.world_mut().query::<&Star>().iter(app.world()).count(), 1, "the starfield backdrop survives");
     }
 
     #[test]

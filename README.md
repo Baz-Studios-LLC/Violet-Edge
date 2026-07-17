@@ -36,6 +36,7 @@ MB in `target/`. Rebuilds after that are fast.
 | Warp (black hole) | `Shift` |
 | Chain shot | right-click *(once unlocked)* |
 | Switch standard / mass shot | `Q` *(once unlocked)* |
+| Pause / resume | `Esc` |
 | Pause | `Esc` |
 | Mute music | `M` |
 | Skip track | `N` |
