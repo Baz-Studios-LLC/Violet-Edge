@@ -145,6 +145,7 @@ const MAX_SEP: f32 = 6.0; // px/frame cap on overlap push-out
 const RESTITUTION: f32 = 1.0; // fully elastic bounce
 const MIN_DRIFT: f32 = 30.0; // px/s — rocks never fully stop (elastic hits can zero them → "stuck")
 const FRAGMENT_GRACE: f32 = 1.8; // s a freshly-broken fragment is protected from off-screen culling
+const GOLD_GRACE: f32 = 6.0; // gold fragments get a longer window (recycle, not culled) — a fair chance to catch them before one can drift off and forfeit the life
 const ORANGE_BLAST_R: f32 = 150.0; // explosive-asteroid blast radius — big enough to clearly engulf neighbours
 const ORANGE_FUSE: f32 = 0.09; // brief lit flash after a lethal hit before it detonates (a visible "pop")
 
@@ -545,13 +546,14 @@ struct Detonating {
     fuse: f32,
 }
 
-// Tracks the current gold-rock hunt. `active` while a gold lineage is in play (its pieces always
-// recycle rather than drifting off, so the whole lineage stays clearable). `cooldown` counts down to
-// the next spawn (re-armed to a random gap when a hunt ends), so gold appears at organic random times
-// without spawning back-to-back.
+// Tracks the current gold-rock hunt. `active` while a gold lineage is in play; `forfeited` latches if
+// a gold piece is culled off-screen AFTER its (long) grace, so the life is denied even once the rest
+// are cleared. `cooldown` counts down to the next spawn (re-armed to a random gap when a hunt ends),
+// so gold appears at organic random times without spawning back-to-back.
 #[derive(Resource, Default)]
 struct GoldRush {
     active: bool,
+    forfeited: bool,
     cooldown: f32,
 }
 
@@ -1031,9 +1033,10 @@ fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score
             let spd = rng.gen_range(60.0..150.0) * chunk_mult;
             let vel = Vec2::from_angle(axis + rng.gen_range(-0.35..0.35)) * (side * spd);
             let child = spawn_asteroid(commands, pos + out * (side * offset), size - 1, vel, rng, dense);
-            // grace window: if this chunk was flung off-screen (rock broke at the edge) it recycles
-            // back in rather than being culled, so its pieces aren't lost before you can shoot them
-            commands.entity(child).insert(Fresh(FRAGMENT_GRACE));
+            // grace window: a freshly-broken chunk recycles instead of being culled, so its pieces
+            // aren't lost before you can shoot them. Gold gets a longer window (a fair chance to catch
+            // the whole lineage before a piece can drift off and forfeit the life).
+            commands.entity(child).insert(Fresh(if gold { GOLD_GRACE } else { FRAGMENT_GRACE }));
             if gold {
                 commands.entity(child).insert(Gold); // the whole lineage stays gold until fully cleared
             }
@@ -1383,7 +1386,7 @@ fn ship_bounds(arena: Res<Arena>, mut q: Query<(&mut Transform, &mut Velocity), 
     }
 }
 
-fn asteroid_bounds(mut commands: Commands, time: Res<Time>, arena: Res<Arena>, mut q: Query<(Entity, &mut Transform, &mut Velocity, &Asteroid, Option<&mut Fresh>, Option<&Gold>), Without<Shielded>>) {
+fn asteroid_bounds(mut commands: Commands, time: Res<Time>, arena: Res<Arena>, mut rush: ResMut<GoldRush>, mut q: Query<(Entity, &mut Transform, &mut Velocity, &Asteroid, Option<&mut Fresh>, Option<&Gold>), Without<Shielded>>) {
     let h = arena.half;
     let dt = time.delta_secs();
     let mut rng = rand::thread_rng();
@@ -1420,13 +1423,15 @@ fn asteroid_bounds(mut commands: Commands, time: Res<Time>, arena: Res<Arena>, m
         // of big targets (and food for the bosses). A fragment still in its grace window always
         // recycles, so a rock shattered at the edge can't lose its pieces before you engage them.
         let leaves = !grace
-            && gold.is_none() // gold pieces ALWAYS recycle — never lost off-screen, so you can chase them all down
             && match a.size {
                 1 => rng.gen_bool(0.85), // small: usually gone for good
                 2 => rng.gen_bool(0.35), // mid: now and then
                 _ => false,              // large: always kept in play
             };
         if leaves {
+            if gold.is_some() {
+                rush.forfeited = true; // a gold piece drifted off (past its long grace) — the 1UP is forfeit
+            }
             commands.entity(e).despawn();
             continue;
         }
@@ -1674,6 +1679,7 @@ fn gold_spawn(time: Res<Time>, wave: Res<Wave>, arena: Res<Arena>, mut rush: Res
     let mut rng = rand::thread_rng();
     spawn_gold_rock(&mut commands, arena.half, &mut rng);
     rush.active = true;
+    rush.forfeited = false;
     rush.cooldown = rng.gen_range(GOLD_MIN_GAP..GOLD_MAX_GAP); // next one is at least ~4 min out
 }
 
@@ -3955,10 +3961,10 @@ fn toast_update(time: Res<Time>, mut commands: Commands, mut toasts: Query<(Enti
     }
 }
 
-// The gold-rock hunt resolves here: once the whole gold lineage is cleared (no Gold entities left),
-// award +1 life. Gold pieces always recycle (never lost off-screen), so clearing them all is always
-// possible. Capped at LIFE_CAP so it can't snowball; grants at most once per lineage (clears `active`).
-// A 1-frame lag on the count is fine — the grant just waits a tick.
+// The gold-rock hunt resolves here: once the whole gold lineage is gone, award +1 life — but only if
+// the player cleared it. If a piece drifted off after its (long) grace, `forfeited` latched in
+// asteroid_bounds and the life is denied. Capped at LIFE_CAP; grants at most once per lineage
+// (clears `active`). A 1-frame lag on the count is fine — the grant just waits a tick.
 fn gold_rush_update(
     mut commands: Commands,
     mut rush: ResMut<GoldRush>,
@@ -3970,7 +3976,7 @@ fn gold_rush_update(
     if !rush.active || !gold.is_empty() {
         return; // no hunt running, or gold pieces are still out there to clear
     }
-    if run.lives < LIFE_CAP {
+    if !rush.forfeited && run.lives < LIFE_CAP {
         run.lives += 1;
         if let Some(r) = root.iter().next() {
             commands.entity(r).with_children(|p| {
@@ -3997,6 +4003,7 @@ fn gold_rush_update(
         }
     }
     rush.active = false;
+    rush.forfeited = false;
     // note: the cooldown to the next gold is armed at SPAWN time (in gold_spawn), measured from when
     // the rock appeared — so a slow hunt eats into the wait rather than adding to it.
 }
@@ -4732,7 +4739,7 @@ mod tests {
     fn clearing_the_gold_lineage_grants_a_life() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.insert_resource(GoldRush { active: true, cooldown: 0.0 });
+        app.insert_resource(GoldRush { active: true, forfeited: false, cooldown: 0.0 });
         app.insert_resource(Run { lives: 1, respawn: 0.0 }); // below the cap, so a life can be restored
         // no Gold entities remain → the player cleared the whole lineage
         app.add_systems(Update, gold_rush_update);
@@ -4745,7 +4752,7 @@ mod tests {
     fn gold_lives_are_capped() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.insert_resource(GoldRush { active: true, cooldown: 0.0 });
+        app.insert_resource(GoldRush { active: true, forfeited: false, cooldown: 0.0 });
         app.insert_resource(Run { lives: LIFE_CAP, respawn: 0.0 });
         app.add_systems(Update, gold_rush_update);
         app.update();
@@ -4753,14 +4760,49 @@ mod tests {
     }
 
     #[test]
-    fn gold_pieces_always_recycle_never_culled() {
+    fn a_forfeited_gold_hunt_grants_no_life() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(GoldRush { active: true, forfeited: true, cooldown: 0.0 }); // a piece was lost
+        app.insert_resource(Run { lives: 1, respawn: 0.0 }); // below the cap, so only the forfeit blocks it
+        app.add_systems(Update, gold_rush_update);
+        app.update();
+        assert_eq!(app.world().resource::<Run>().lives, 1, "a forfeited hunt grants nothing");
+    }
+
+    #[test]
+    fn gold_pieces_recycle_during_their_grace() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         let h = Vec2::new(640.0, 400.0);
         app.insert_resource(Arena { half: h });
+        app.insert_resource(GoldRush { active: true, forfeited: false, cooldown: 0.0 });
         let r = asteroid_radius(1);
-        // 60 small GOLD fragments (no grace) drifting off-screen — a plain small rock would mostly be
-        // culled, but gold must ALWAYS recycle so the player can chase every piece down and clear it.
+        // gold pieces still WITHIN their grace drift off-screen → all recycle (protected), no forfeit
+        for _ in 0..60 {
+            app.world_mut().spawn((
+                Asteroid { size: 1, verts: vec![Vec2::X * r], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+                Velocity(Vec2::new(-MIN_DRIFT * 2.0, 0.0)),
+                Transform::from_xyz(-h.x - r - 5.0, 0.0, 0.0),
+                Gold,
+                Fresh(GOLD_GRACE),
+            ));
+        }
+        app.add_systems(Update, asteroid_bounds);
+        app.update();
+        assert_eq!(app.world_mut().query_filtered::<(), With<Gold>>().iter(app.world()).count(), 60, "gold pieces within their grace all recycle — none lost");
+        assert!(!app.world().resource::<GoldRush>().forfeited, "no forfeit while the pieces are still protected");
+    }
+
+    #[test]
+    fn a_gold_piece_lost_after_its_grace_forfeits_the_hunt() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        let h = Vec2::new(640.0, 400.0);
+        app.insert_resource(Arena { half: h });
+        app.insert_resource(GoldRush { active: true, forfeited: false, cooldown: 0.0 });
+        let r = asteroid_radius(1);
+        // grace expired (no Fresh) → a gold piece that drifts off CAN be culled, forfeiting the hunt
         for _ in 0..60 {
             app.world_mut().spawn((
                 Asteroid { size: 1, verts: vec![Vec2::X * r], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
@@ -4771,7 +4813,7 @@ mod tests {
         }
         app.add_systems(Update, asteroid_bounds);
         app.update();
-        assert_eq!(app.world_mut().query_filtered::<(), With<Gold>>().iter(app.world()).count(), 60, "gold pieces are never culled off-screen — every one recycles back into play");
+        assert!(app.world().resource::<GoldRush>().forfeited, "a gold piece drifting off after its grace forfeits the hunt");
     }
 
     #[test]
@@ -4824,7 +4866,7 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
         app.insert_resource(Wave { level: 1, timer: WAVE_SECS, calm: 0.0 });
-        app.insert_resource(GoldRush { active: false, cooldown: 0.0 }); // due now
+        app.insert_resource(GoldRush { active: false, forfeited: false, cooldown: 0.0 }); // due now
         app.add_systems(Update, gold_spawn);
         app.update();
         assert_eq!(app.world_mut().query_filtered::<(), With<Gold>>().iter(app.world()).count(), 1, "the countdown elapsing spawns exactly one gold rock");
@@ -4839,7 +4881,7 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
         app.insert_resource(Wave { level: 1, timer: WAVE_SECS, calm: 0.0 });
-        app.insert_resource(GoldRush { active: false, cooldown: 30.0 }); // still waiting
+        app.insert_resource(GoldRush { active: false, forfeited: false, cooldown: 30.0 }); // still waiting
         app.add_systems(Update, gold_spawn);
         for _ in 0..5 {
             app.update();
@@ -4854,7 +4896,7 @@ mod tests {
             app.add_plugins(MinimalPlugins);
             app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
             app.insert_resource(Wave { level: 1, timer: WAVE_SECS, calm });
-            app.insert_resource(GoldRush { active, cooldown: 0.0 });
+            app.insert_resource(GoldRush { active, forfeited: false, cooldown: 0.0 });
             app.add_systems(Update, gold_spawn);
             app.update();
             assert_eq!(
@@ -5554,7 +5596,7 @@ mod tests {
         app.insert_resource(Chain { unlocked: true, charges: 3, recharge: 0.0, cooldown: 0.0 });
         app.insert_resource(MassShot { unlocked: true, active: true });
         app.insert_resource(RunFlags { powerup_used: true });
-        app.insert_resource(GoldRush { active: true, cooldown: 0.0 });
+        app.insert_resource(GoldRush { active: true, forfeited: false, cooldown: 0.0 });
         let mut input = ButtonInput::<KeyCode>::default();
         input.press(KeyCode::Enter);
         app.insert_resource(input);

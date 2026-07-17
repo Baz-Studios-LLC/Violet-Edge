@@ -25,7 +25,7 @@ intended design; implemented rows describe what the code does today.
 | **Orange** | ✅ | Explosive. Instead of splitting, a destroyed orange **detonates** after a brief fuse — a big AOE (`ORANGE_BLAST_R`) that **destroys everything inside outright** (rocks obliterated, not split), pops mines/enemies, kills the ship if caught, and lights other oranges (chain reaction). **Gold is spared**; bullet/chain/mine all *light* it. **Mechanic done; not yet in wave content** — dev **F3** spawns one to test. |
 | **Red** | 🔷 | Grows, like the Glutton boss: absorbs nearby asteroids to gain size. A large red that's broken splits into two, and *those* can absorb more and swell back up — an emergent "whack-a-mole" if you don't clear the field around them. |
 | **Pulser** | 🔷 | Pulses bright white on a cycle; **invulnerable while lit**. You have to time shots to its dark phase. |
-| **Gold (1UP)** | ✅ | Not a hazard — a *reward*. A rare shimmering gold rock that drifts in at random times during play (any wave, boss waves included). Destroy the **whole lineage** (it + every fragment) for +1 life. Its pieces **always recycle** at the edges (never lost off-screen), so the lineage is always clearable. **Only your shots break it** — mines bounce off, the Devourer won't eat it. See Life economy below. |
+| **Gold (1UP)** | ✅ | Not a hazard — a *reward*. A rare shimmering gold rock that drifts in at random times during play (any wave, boss waves included). Destroy the **whole lineage** (it + every fragment) for +1 life. Its pieces get a **long grace** (`GOLD_GRACE`, they recycle) so they're never lost *immediately* — but after that a piece that drifts off is culled and the life is **forfeit**, so clear them before they scatter. **Only your shots break it** — mines bounce off, the Devourer won't eat it. See Life economy below. |
 
 ## Enemies
 
@@ -118,9 +118,10 @@ recoverable, but only by earning them, via a rare gold asteroid. ✅ Implemented
   a rock the Warden grabs is just shot off its shield).
 - You must **destroy the whole gold lineage** — the rock *and* every gold fragment (gold-ness is
   inherited through every break: bullet, chain, mine) — to claim **+1 life**. `GoldRush` tracks it.
-- **Pieces always recycle** — a gold fragment that drifts off-screen is repositioned back into play
-  (never culled), so the lineage can always be cleared and the life never vanishes to a bad drift.
-  (Resolves the old open question toward "always claimable" — a gold that just disappeared felt bad.)
+- **Long grace, then forfeit.** Gold fragments carry a long grace (`GOLD_GRACE`) during which they
+  recycle rather than being culled — so a shot gold never vanishes *immediately*, you get a fair
+  window to catch every piece. After the grace, a piece that drifts off-screen IS culled and latches
+  `forfeited` (the life is denied even if you clear the rest). So gold can be lost — just not instantly.
 - Capped at `LIFE_CAP` (= `START_LIVES`, 3): a gold rock only restores a *lost* life, never above the
   starting count. Purist-safe: a life isn't a powerup.
 - **Telegraph:** a single shimmering gold outline (same shape/chunkiness as any rock — the pulsing
