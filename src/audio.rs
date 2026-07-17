@@ -505,6 +505,24 @@ pub fn achievement_sfx_wav() -> Vec<u8> {
     })
 }
 
+// A bright, fast six-note ascending run — a classic "1UP" jingle for the gold rock. Deliberately
+// quicker, higher and sparklier than the achievement chime so an extra life reads as its own event.
+pub fn life_sfx_wav() -> Vec<u8> {
+    let notes = [783.99, 1046.5, 1318.5, 1568.0, 2093.0, 2637.0]; // G5 C6 E6 G6 C7 E7
+    render_sfx(0.6, |t, _| {
+        let mut s = 0.0;
+        for (i, &f) in notes.iter().enumerate() {
+            let delay = i as f32 * 0.07;
+            if t >= delay {
+                let nt = t - delay;
+                let env = (1.0 - (-nt * 120.0).exp()) * (-nt * 9.0).exp(); // fast pluck, quick decay
+                s += ((TAU * f * nt).sin() + 0.3 * (TAU * 2.0 * f * nt).sin()) * env; // + a shimmering octave
+            }
+        }
+        s * 0.22
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -536,6 +554,7 @@ mod tests {
             enemy_die_wav(),
             warp_wav(),
             achievement_sfx_wav(),
+            life_sfx_wav(),
         ] {
             assert_eq!(&wav[0..4], b"RIFF", "sfx starts with a RIFF header");
             assert_eq!(&wav[8..12], b"WAVE", "sfx is a WAVE file");

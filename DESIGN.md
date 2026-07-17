@@ -25,6 +25,7 @@ intended design; implemented rows describe what the code does today.
 | **Orange** | 🔷 | Explosive. On destruction it detonates, destroying/damaging everything in a radius — other asteroids, mines, enemies (and the player). Detonating another orange in range sets off a **chain reaction**. |
 | **Red** | 🔷 | Grows, like the Glutton boss: absorbs nearby asteroids to gain size. A large red that's broken splits into two, and *those* can absorb more and swell back up — an emergent "whack-a-mole" if you don't clear the field around them. |
 | **Pulser** | 🔷 | Pulses bright white on a cycle; **invulnerable while lit**. You have to time shots to its dark phase. |
+| **Gold (1UP)** | ✅ | Not a hazard — a *reward*. A rare shimmering gold rock (low chance per non-boss wave). Destroy the **whole lineage** (it + every fragment) for +1 life; let a piece escape off-screen and it's forfeit. See Life economy below. |
 
 ## Enemies
 
@@ -89,21 +90,23 @@ content still repeats 1–10.)
 | IV — Deep Belt | 31–40 | **Crystal** (reflects) *or* **Ice** (shard-burst) — TBD | — | Hive (35), Prism (40) |
 | V — The Core | 41–50 | **Void** (swallows bullets) *or* **Magnetic** (bends fire) — TBD | — | Gemini (45), Progenitor (50) |
 
-## Life economy (chosen: gold 1UP rock)
+## Life economy (implemented: gold 1UP rock)
 
 50 levels on 3 lives is likely impossible, especially a no-powerup **Purist** run — so lives are
-recoverable, but only by earning them. **Chosen mechanism: a rare gold asteroid.**
+recoverable, but only by earning them, via a rare gold asteroid. ✅ Implemented:
 
-- **Low chance per wave** a gold asteroid drifts in (a distinct gold rock; otherwise behaves like a
-  normal rock and splits when shot).
-- You must **destroy the whole gold lineage** — the rock *and* every gold fragment it breaks into —
-  to claim **+1 life**. Popping the big one isn't enough; miss a shard and the life is forfeit.
-- Capped at a shared max (~5) so lives never snowball. Purist-safe: a life isn't a powerup.
-
-Open at implementation:
-- Do gold fragments that drift off-screen despawn (adds urgency — catch them before they scatter) or
-  stay in play (always claimable)? Lean fair per the difficult-but-fair rule.
-- Telegraphing "clear them all" — e.g. a gold-remaining pip, or the life only drops off the *last* fragment.
+- **Low chance per non-boss wave** (`GOLD_CHANCE`) a gold rock drifts in — a distinct shimmering gold
+  large rock that otherwise behaves normally (splits when shot). Only one hunt at a time.
+- You must **destroy the whole gold lineage** — the rock *and* every gold fragment (gold-ness is
+  inherited through every break: bullet, chain, mine) — to claim **+1 life**. `GoldRush` tracks it.
+- **Escape = forfeit.** A gold piece culled off-screen latches `forfeited`; the life is then denied
+  even if you clear the rest. The [fragment grace window](#) still protects freshly-broken pieces, so
+  a gold rock shattered at the edge isn't instantly lost — but once a piece genuinely drifts out, the
+  reward is gone. (This is the "adds urgency" resolution of the old open question.)
+- Capped at `LIFE_CAP` (5) so lives never snowball. Purist-safe: a life isn't a powerup.
+- **Telegraph:** the rock shimmers gold with an inner ring; clearing it pops an "EXTRA LIFE" toast +
+  a distinct 1UP jingle (`life_sfx_wav`, separate from the achievement chime).
+- The **Devourer** won't eat gold rocks (that would grant a false 1UP without the player clearing it).
 
 Considered and shelved (could layer on later): score extends, boss-clear +1, perfect-wave meter.
 

@@ -150,6 +150,8 @@ const SPAWN_INVULN: f32 = 2.0; // s of blink-invulnerability on (re)spawn
 const TRAIL_LEN: usize = 10; // bullet trail points kept
 const STAR_COUNT: usize = 90;
 const START_LIVES: i32 = 3;
+const LIFE_CAP: i32 = 5; // lives never exceed this — a cleared gold rock can't let them snowball
+const GOLD_CHANCE: f64 = 0.14; // per non-boss wave: chance a rare gold 1UP asteroid drifts in
 const WAVE_BANNER_SECS: f32 = 2.4; // how long the big "WAVE n" flash lingers
 const WAVE_BANNER_FADE: f32 = 1.2; // of that, the trailing fade-out duration
 
@@ -212,6 +214,9 @@ fn devourer_color() -> Color {
 fn chain_color() -> Color {
     Color::srgb(3.4, 2.0, 5.6)
 } // electric violet lightning — the chain shot (player kit)
+fn gold_color() -> Color {
+    Color::srgb(6.0, 4.6, 1.6)
+} // bright warm gold — the rare 1UP asteroid (lighter/whiter than the enemy yellow)
 
 fn mine_target(level: i32, asteroids: i32) -> i32 {
     if level < MINE_FIRST_WAVE {
@@ -509,6 +514,20 @@ struct Thrown(f32);
 // before the player gets a shot at them. Counts down in `asteroid_bounds`.
 #[derive(Component)]
 struct Fresh(f32);
+
+// The rare gold 1UP asteroid. Inherited by every fragment it breaks into (see `break_asteroid`), so
+// the whole lineage is gold until it's fully cleared. Destroy the entire lineage for +1 life; let a
+// piece escape off-screen and the reward is forfeit. See [[neon-edge-design-doc]] "Life economy".
+#[derive(Component)]
+struct Gold;
+
+// Tracks the current gold-rock hunt. `active` while a gold lineage is in play; `forfeited` latches if
+// a gold piece is culled off-screen (escaped), so the life is denied even once the rest are cleared.
+#[derive(Resource, Default)]
+struct GoldRush {
+    active: bool,
+    forfeited: bool,
+}
 
 // A chain-shot beam: travels along `Velocity`; the damaging lightning spans `perp`·±half.
 #[derive(Component)]
@@ -868,8 +887,9 @@ fn roll_dense(level: i32, rng: &mut impl Rng) -> bool {
 }
 
 // A fresh large asteroid entering from just off a random edge (wave top-up). `dense`
-// spawns the tanky green variant (the caller decides based on the wave).
-fn spawn_edge_asteroid(commands: &mut Commands, half: Vec2, rng: &mut impl Rng, dense: bool, force_big: bool) {
+// spawns the tanky green variant (the caller decides based on the wave). Returns the entity so
+// callers can tag it (e.g. the gold 1UP rock).
+fn spawn_edge_asteroid(commands: &mut Commands, half: Vec2, rng: &mut impl Rng, dense: bool, force_big: bool) -> Entity {
     // mostly LARGE rocks (break into mid → small), with some MID ones mixed in. `force_big`
     // guarantees a LARGE one (used to refill the big-rock floor).
     let size = if force_big || rng.gen_bool(0.8) { 3 } else { 2 };
@@ -882,7 +902,14 @@ fn spawn_edge_asteroid(commands: &mut Commands, half: Vec2, rng: &mut impl Rng, 
         2 => (Vec2::new(rng.gen_range(-half.x..half.x), -half.y - r), Vec2::new(jitter, inward)),
         _ => (Vec2::new(rng.gen_range(-half.x..half.x), half.y + r), Vec2::new(jitter, -inward)),
     };
-    spawn_asteroid(commands, pos, size, vel, rng, dense);
+    spawn_asteroid(commands, pos, size, vel, rng, dense)
+}
+
+// Spawn the rare gold 1UP asteroid: a large rock from a random edge, tagged `Gold` so it (and every
+// fragment it breaks into) is part of the lineage the player must fully clear for the extra life.
+fn spawn_gold_rock(commands: &mut Commands, half: Vec2, rng: &mut impl Rng) {
+    let e = spawn_edge_asteroid(commands, half, rng, false, true); // always large, never dense
+    commands.entity(e).insert(Gold);
 }
 
 // A jagged rock outline sized for `size` (regenerated when a shield rock shrinks).
@@ -919,7 +946,8 @@ fn spawn_asteroid(commands: &mut Commands, pos: Vec2, size: u8, vel: Vec2, rng: 
 // smallest) split it into two smaller rocks flung outward. `chunk_mult` scales
 // the child fling speed — 1.0 for a normal bullet break; a mine blast passes a
 // bigger value so its chunks scatter faster (a discoverable interaction).
-fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score, e: Entity, pos: Vec2, size: u8, chunk_mult: f32, dense: bool) {
+#[allow(clippy::too_many_arguments)]
+fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score, e: Entity, pos: Vec2, size: u8, chunk_mult: f32, dense: bool, gold: bool) {
     commands.entity(e).despawn();
     let base = match size {
         3 => 20,
@@ -945,6 +973,9 @@ fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score
             // grace window: if this chunk was flung off-screen (rock broke at the edge) it recycles
             // back in rather than being culled, so its pieces aren't lost before you can shoot them
             commands.entity(child).insert(Fresh(FRAGMENT_GRACE));
+            if gold {
+                commands.entity(child).insert(Gold); // the whole lineage stays gold until fully cleared
+            }
         }
     }
 }
@@ -957,12 +988,12 @@ fn blast_asteroids(
     commands: &mut Commands,
     rng: &mut impl Rng,
     score: &mut Score,
-    asteroids: &Query<(Entity, &Transform, &mut Asteroid), (Without<Mine>, Without<Shielded>)>,
+    asteroids: &Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>), (Without<Mine>, Without<Shielded>)>,
     broken: &mut HashSet<Entity>,
     center: Vec2,
 ) {
-    // shared &Query → iterates read-only, so we just read size/dense here
-    for (ae, at, a) in asteroids {
+    // shared &Query → iterates read-only, so we just read size/dense/gold here
+    for (ae, at, a, gold) in asteroids {
         if broken.contains(&ae) {
             continue;
         }
@@ -970,7 +1001,7 @@ fn blast_asteroids(
         let br = MINE_BLAST_R + asteroid_radius(a.size);
         if center.distance_squared(ap) < br * br {
             broken.insert(ae);
-            break_asteroid(commands, rng, score, ae, ap, a.size, MINE_CHUNK_MULT, a.dense); // mine obliterates (ignores hp)
+            break_asteroid(commands, rng, score, ae, ap, a.size, MINE_CHUNK_MULT, a.dense, gold.is_some()); // mine obliterates (ignores hp)
         }
     }
 }
@@ -1196,11 +1227,11 @@ fn ship_bounds(arena: Res<Arena>, mut q: Query<(&mut Transform, &mut Velocity), 
     }
 }
 
-fn asteroid_bounds(mut commands: Commands, time: Res<Time>, arena: Res<Arena>, mut q: Query<(Entity, &mut Transform, &mut Velocity, &Asteroid, Option<&mut Fresh>), Without<Shielded>>) {
+fn asteroid_bounds(mut commands: Commands, time: Res<Time>, arena: Res<Arena>, mut rush: ResMut<GoldRush>, mut q: Query<(Entity, &mut Transform, &mut Velocity, &Asteroid, Option<&mut Fresh>, Option<&Gold>), Without<Shielded>>) {
     let h = arena.half;
     let dt = time.delta_secs();
     let mut rng = rand::thread_rng();
-    for (e, mut t, mut v, a, fresh) in &mut q {
+    for (e, mut t, mut v, a, fresh, gold) in &mut q {
         // tick the post-break grace; while it runs the fragment is protected from culling below
         let mut grace = false;
         if let Some(mut f) = fresh {
@@ -1239,6 +1270,9 @@ fn asteroid_bounds(mut commands: Commands, time: Res<Time>, arena: Res<Arena>, m
                 _ => false,              // large: always kept in play
             };
         if leaves {
+            if gold.is_some() {
+                rush.forfeited = true; // a gold piece escaped off-screen — the 1UP is forfeit
+            }
             commands.entity(e).despawn();
             continue;
         }
@@ -1285,7 +1319,7 @@ fn bullet_bounds(
 fn collisions(
     mut commands: Commands,
     bullets: Query<(Entity, &Transform, &Bullet)>,
-    mut asteroids: Query<(Entity, &Transform, &mut Asteroid), (Without<Mine>, Without<Shielded>)>,
+    mut asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>), (Without<Mine>, Without<Shielded>)>,
     mines: Query<(Entity, &Transform), With<Mine>>,
     enemies: Query<(Entity, &Transform), With<Enemy>>,
     mut shield_rocks: Query<(Entity, &Transform, &mut Asteroid), With<Shielded>>,
@@ -1308,7 +1342,7 @@ fn collisions(
         let bp = bt.translation.truncate();
         let br = bullet_radius(b.mass); // mass shots are fatter…
         let power = bullet_power(b.mass); // …and hit harder
-        for (ae, at, mut a) in &mut asteroids {
+        for (ae, at, mut a, gold) in &mut asteroids {
             if dead_a.contains(&ae) {
                 continue;
             }
@@ -1322,7 +1356,7 @@ fn collisions(
                     burst(&mut commands, ap, dense_color(), 6, 160.0, &mut rng); // dense rock cracks but holds
                 } else {
                     dead_a.insert(ae);
-                    break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, a.dense);
+                    break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, a.dense, gold.is_some());
                     sfx.write(SoundFx::Break(a.size));
                     if a.dense {
                         stats.green += 1;
@@ -1445,6 +1479,7 @@ fn wave_timer(
     mut banner: ResMut<WaveBanner>,
     mut commands: Commands,
     arena: Res<Arena>,
+    mut rush: ResMut<GoldRush>,
     asteroids: Query<(), With<Asteroid>>,
 ) {
     if wave.calm > 0.0 {
@@ -1467,6 +1502,12 @@ fn wave_timer(
     for _ in 0..(target - have).max(0) {
         let dense = roll_dense(wave.level, &mut rng);
         spawn_edge_asteroid(&mut commands, arena.half, &mut rng, dense, false);
+    }
+    // rare gold 1UP rock — only on normal waves, and never while a previous gold hunt is unresolved
+    if !is_boss_wave(wave.level) && !rush.active && rng.gen_bool(GOLD_CHANCE) {
+        spawn_gold_rock(&mut commands, arena.half, &mut rng);
+        rush.active = true;
+        rush.forfeited = false;
     }
 }
 
@@ -1568,7 +1609,7 @@ fn mine_update(
     ships: Query<(Entity, &Transform, &Ship), Without<Mine>>,
     mut mines: Query<(Entity, &mut Transform, &mut Velocity, &mut Mine)>,
     // &mut to match blast_asteroids' type; only read here (iter + shared borrow)
-    asteroids: Query<(Entity, &Transform, &mut Asteroid), (Without<Mine>, Without<Shielded>)>,
+    asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>), (Without<Mine>, Without<Shielded>)>,
 ) {
     let dt = time.delta_secs();
     let h = arena.half;
@@ -1599,7 +1640,7 @@ fn mine_update(
         // here (that's only ship contact); this is the JS "asteroid-management" mine.
         let inside = p.x.abs() < h.x && p.y.abs() < h.y;
         if inside
-            && asteroids.iter().any(|(_, at, a)| {
+            && asteroids.iter().any(|(_, at, a, _)| {
                 let rr = MINE_R + asteroid_radius(a.size);
                 p.distance_squared(at.translation.truncate()) < rr * rr
             })
@@ -2103,7 +2144,7 @@ fn devourer_update(
     mut sfx: EventWriter<SoundFx>,
     ships: Query<(Entity, &Transform, &Ship), Without<Devourer>>,
     mut devourers: Query<(Entity, &mut Transform, &mut Devourer)>,
-    rocks: Query<(Entity, &Transform, &Asteroid), (Without<Shielded>, Without<Devourer>)>,
+    rocks: Query<(Entity, &Transform, &Asteroid), (Without<Shielded>, Without<Devourer>, Without<Gold>)>, // never eats gold (would grant a false 1UP)
 ) {
     let dt = time.delta_secs();
     let h = arena.half;
@@ -2387,7 +2428,7 @@ fn chain_update(
     mut sfx: EventWriter<SoundFx>,
     mut stats: ResMut<Stats>,
     mut chains: Query<(Entity, &Transform, &mut ChainShot)>,
-    asteroids: Query<(Entity, &Transform, &Asteroid), (Without<Mine>, Without<Shielded>)>,
+    asteroids: Query<(Entity, &Transform, &Asteroid, Option<&Gold>), (Without<Mine>, Without<Shielded>)>,
     enemies: Query<(Entity, &Transform), With<Enemy>>,
     mines: Query<(Entity, &Transform), With<Mine>>,
 ) {
@@ -2404,7 +2445,7 @@ fn chain_update(
         }
         let a = c + cs.perp * CHAIN_HALF;
         let b = c - cs.perp * CHAIN_HALF;
-        for (ae, at, ast) in &asteroids {
+        for (ae, at, ast, gold) in &asteroids {
             if dead.contains(&ae) {
                 continue;
             }
@@ -2413,7 +2454,7 @@ fn chain_update(
             if seg_dist2(ap, a, b) < rr * rr {
                 dead.insert(ae);
                 // chain beam shears dense rocks outright — the beam ignores hp, like a mine
-                break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, ast.size, 1.0, ast.dense);
+                break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, ast.size, 1.0, ast.dense, gold.is_some());
                 sfx.write(SoundFx::Break(ast.size));
                 if ast.dense {
                     stats.green += 1;
@@ -2668,7 +2709,7 @@ fn render(
     wf: Res<WarpField>,
     stars: Query<(&Star, &Transform)>,
     ships: Query<(&Ship, &Transform)>,
-    asteroids: Query<(&Asteroid, &Transform)>,
+    asteroids: Query<(&Asteroid, &Transform, Option<&Gold>)>,
     bullets: Query<(&Bullet, &Transform)>,
     particles: Query<(&Particle, &Transform)>,
     holes: Query<(&BlackHole, &Transform)>,
@@ -2734,10 +2775,17 @@ fn render(
     // they're chipped, so their tanky state reads at a glance.
     let rock = rock_color();
     let dense = dense_color();
-    for (a, at) in &asteroids {
+    for (a, at, gold) in &asteroids {
         let c = at.translation.truncate();
         let rot = Vec2::from_angle(a.rot);
-        let col = if a.dense { dense } else { rock };
+        // gold 1UP rocks shimmer so they read as rare/valuable; otherwise green=dense, blue=standard
+        let col = if gold.is_some() {
+            dim(gold_color(), 0.7 + 0.3 * (t * 6.0).sin())
+        } else if a.dense {
+            dense
+        } else {
+            rock
+        };
         let ring = |scale: f32| {
             let mut pts: Vec<Vec2> = a.verts.iter().map(|v| c + rot.rotate(*v * scale)).collect();
             if let Some(first) = pts.first().copied() {
@@ -2749,6 +2797,8 @@ fn render(
         if a.dense {
             let frac = a.hp.max(1) as f32 / a.size.max(1) as f32; // full shell → shrinks to a small core
             gizmos.linestrip_2d(ring(0.35 + 0.3 * frac), col);
+        } else if gold.is_some() {
+            gizmos.linestrip_2d(ring(0.55), col); // an inner ring marks it as the treasure rock
         }
     }
 
@@ -3228,6 +3278,7 @@ fn reset_run(
     chain: &mut Chain,
     mass: &mut MassShot,
     flags: &mut RunFlags,
+    gold: &mut GoldRush,
 ) {
     run.lives = START_LIVES;
     run.respawn = 0.0;
@@ -3242,6 +3293,7 @@ fn reset_run(
     *chain = Chain::default(); // must re-earn the chain shot…
     *mass = MassShot::default(); // …and the mass shot
     *flags = RunFlags::default(); // fresh "no powerups used" flag for Purist
+    *gold = GoldRush::default(); // no stale gold hunt carried into the new run
     spawn_player(commands);
 }
 
@@ -3263,7 +3315,7 @@ fn menu_start(
     mut wave: ResMut<Wave>,
     mut banner: ResMut<WaveBanner>,
     mut warp: ResMut<Warp>,
-    mut progress: (ResMut<BossState>, ResMut<Chain>, ResMut<MassShot>, ResMut<RunFlags>), // bundled (16-param limit)
+    mut progress: (ResMut<BossState>, ResMut<Chain>, ResMut<MassShot>, ResMut<RunFlags>, ResMut<GoldRush>), // bundled (16-param limit)
     mut clicks: EventReader<MenuClick>,
 ) {
     let actions: Vec<MenuAction> = clicks.read().map(|c| c.0).collect(); // read once, then test
@@ -3276,7 +3328,7 @@ fn menu_start(
     if !(keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) || actions.contains(&MenuAction::Play)) {
         return;
     }
-    reset_run(&mut commands, &mut run, &mut score, &mut wave, &mut banner, &mut warp, &mut progress.0, &mut progress.1, &mut progress.2, &mut progress.3);
+    reset_run(&mut commands, &mut run, &mut score, &mut wave, &mut banner, &mut warp, &mut progress.0, &mut progress.1, &mut progress.2, &mut progress.3, &mut progress.4);
     next.set(GameState::Playing);
 }
 
@@ -3574,6 +3626,51 @@ fn toast_update(time: Res<Time>, mut commands: Commands, mut toasts: Query<(Enti
     }
 }
 
+// The gold-rock hunt resolves here: once the whole gold lineage is gone, award +1 life — but only if
+// the player actually cleared it. If a piece escaped off-screen, `forfeited` latched in
+// `asteroid_bounds` and the life is denied. Capped at LIFE_CAP so it can't snowball; grants at most
+// once per lineage (clears `active`). A 1-frame lag on the count is fine — the grant just waits a tick.
+fn gold_rush_update(
+    mut commands: Commands,
+    mut rush: ResMut<GoldRush>,
+    mut run: ResMut<Run>,
+    gold: Query<(), With<Gold>>,
+    bank: Option<Res<SfxBank>>,
+    root: Query<Entity, With<ToastRoot>>,
+) {
+    if !rush.active || !gold.is_empty() {
+        return; // no hunt running, or gold pieces are still out there to clear
+    }
+    if !rush.forfeited && run.lives < LIFE_CAP {
+        run.lives += 1;
+        if let Some(r) = root.iter().next() {
+            commands.entity(r).with_children(|p| {
+                p.spawn((
+                    Toast { life: TOAST_LIFE },
+                    Node {
+                        flex_direction: FlexDirection::Column,
+                        align_items: AlignItems::Center,
+                        padding: UiRect::axes(Val::Px(16.0), Val::Px(8.0)),
+                        margin: UiRect::top(Val::Px(6.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.16, 0.11, 0.02, 0.92)),
+                ))
+                .with_children(|t| {
+                    // UI colours must stay <= 1 (TextColor clamps per-channel), so a plain gold here
+                    t.spawn(text(15.0, Color::srgb(0.7, 0.85, 1.2), "EXTRA LIFE"));
+                    t.spawn(text(22.0, Color::srgb(0.95, 0.8, 0.35), "GOLD ROCK CLEARED"));
+                });
+            });
+        }
+        if let Some(b) = &bank {
+            one_shot(&mut commands, b.life.clone(), 0.6);
+        }
+    }
+    rush.active = false;
+    rush.forfeited = false;
+}
+
 // Lifetime progress persists to a tiny best-effort save file (six space-separated numbers). File
 // I/O is compiled out of tests so the suite never touches the disk.
 #[cfg(not(test))]
@@ -3616,7 +3713,7 @@ fn gameover_restart(
     mut wave: ResMut<Wave>,
     mut banner: ResMut<WaveBanner>,
     mut warp: ResMut<Warp>,
-    mut progress: (ResMut<BossState>, ResMut<Chain>, ResMut<MassShot>, ResMut<RunFlags>),
+    mut progress: (ResMut<BossState>, ResMut<Chain>, ResMut<MassShot>, ResMut<RunFlags>, ResMut<GoldRush>),
     field: Query<Entity, GameplayEntity>,
 ) {
     if keys.just_pressed(KeyCode::Escape) {
@@ -3629,7 +3726,7 @@ fn gameover_restart(
     for e in &field {
         commands.entity(e).despawn();
     }
-    reset_run(&mut commands, &mut run, &mut score, &mut wave, &mut banner, &mut warp, &mut progress.0, &mut progress.1, &mut progress.2, &mut progress.3);
+    reset_run(&mut commands, &mut run, &mut score, &mut wave, &mut banner, &mut warp, &mut progress.0, &mut progress.1, &mut progress.2, &mut progress.3, &mut progress.4);
     next.set(GameState::Playing); // field refills from the edges via top_up_asteroids
 }
 
@@ -3758,6 +3855,7 @@ struct SfxBank {
     enemy_die: Handle<AudioSource>,
     warp: Handle<AudioSource>,
     achievement: Handle<AudioSource>,
+    life: Handle<AudioSource>, // gold-rock 1UP jingle
 }
 
 fn start_sfx(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
@@ -3770,6 +3868,7 @@ fn start_sfx(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
         enemy_die: sources.add(AudioSource { bytes: audio::enemy_die_wav().into() }),
         warp: sources.add(AudioSource { bytes: audio::warp_wav().into() }),
         achievement: sources.add(AudioSource { bytes: audio::achievement_sfx_wav().into() }),
+        life: sources.add(AudioSource { bytes: audio::life_sfx_wav().into() }),
     });
 }
 
@@ -3883,6 +3982,7 @@ fn main() {
         .insert_resource(Stats::default())
         .insert_resource(Achievements::default())
         .insert_resource(RunFlags::default())
+        .insert_resource(GoldRush::default())
         .add_event::<SoundFx>()
         .add_event::<MenuClick>()
         .init_state::<GameState>()
@@ -3942,6 +4042,7 @@ fn main() {
                     top_up_mines,
                     top_up_enemies,
                     clear_calm_field,
+                    gold_rush_update,
                 )
                     .chain(),
             )
@@ -4130,6 +4231,7 @@ mod tests {
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
+        app.insert_resource(GoldRush::default());
         // a rock at rest, mid-arena (elastic hits could have zeroed it → "stuck")
         let rock = app
             .world_mut()
@@ -4147,6 +4249,7 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         let h = Vec2::new(640.0, 400.0);
         app.insert_resource(Arena { half: h });
+        app.insert_resource(GoldRush::default());
         // 60 small + 60 large rocks, all parked just off the left edge and drifting further out
         // (fast enough that the MIN_DRIFT nudge won't fire and pull them back on-screen).
         for _ in 0..60 {
@@ -4174,6 +4277,7 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         let h = Vec2::new(640.0, 400.0);
         app.insert_resource(Arena { half: h });
+        app.insert_resource(GoldRush::default());
         let r = asteroid_radius(1);
         // a small fragment that broke at the edge and flew off — but it's still in its grace window,
         // so it must recycle back into play rather than being culled (the near-edge-break case)
@@ -4187,6 +4291,65 @@ mod tests {
         app.update();
         let alive = app.world_mut().query::<&Asteroid>().iter(app.world()).count();
         assert_eq!(alive, 1, "a fresh fragment must recycle back in, not be culled off-screen");
+    }
+
+    #[test]
+    fn clearing_the_gold_lineage_grants_a_life() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(GoldRush { active: true, forfeited: false });
+        app.insert_resource(Run { lives: 3, respawn: 0.0 });
+        // no Gold entities remain → the player cleared the whole lineage
+        app.add_systems(Update, gold_rush_update);
+        app.update();
+        assert_eq!(app.world().resource::<Run>().lives, 4, "clearing the whole gold lineage grants +1 life");
+        assert!(!app.world().resource::<GoldRush>().active, "the hunt resets after granting (grants once)");
+    }
+
+    #[test]
+    fn a_forfeited_gold_hunt_grants_no_life() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(GoldRush { active: true, forfeited: true }); // a piece escaped off-screen
+        app.insert_resource(Run { lives: 3, respawn: 0.0 });
+        app.add_systems(Update, gold_rush_update);
+        app.update();
+        assert_eq!(app.world().resource::<Run>().lives, 3, "a forfeited hunt grants nothing");
+        assert!(!app.world().resource::<GoldRush>().active, "the hunt still resets so a new gold rock can appear");
+    }
+
+    #[test]
+    fn gold_lives_are_capped() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(GoldRush { active: true, forfeited: false });
+        app.insert_resource(Run { lives: LIFE_CAP, respawn: 0.0 });
+        app.add_systems(Update, gold_rush_update);
+        app.update();
+        assert_eq!(app.world().resource::<Run>().lives, LIFE_CAP, "lives never exceed LIFE_CAP");
+    }
+
+    #[test]
+    fn an_escaped_gold_piece_forfeits_the_hunt() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        let h = Vec2::new(640.0, 400.0);
+        app.insert_resource(Arena { half: h });
+        app.insert_resource(GoldRush { active: true, forfeited: false });
+        let r = asteroid_radius(1);
+        // 60 small GOLD fragments (no grace) drifting off-screen — at least one is culled with
+        // overwhelming probability, which must latch the forfeit
+        for _ in 0..60 {
+            app.world_mut().spawn((
+                Asteroid { size: 1, verts: vec![Vec2::X * r], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+                Velocity(Vec2::new(-MIN_DRIFT * 2.0, 0.0)),
+                Transform::from_xyz(-h.x - r - 5.0, 0.0, 0.0),
+                Gold,
+            ));
+        }
+        app.add_systems(Update, asteroid_bounds);
+        app.update();
+        assert!(app.world().resource::<GoldRush>().forfeited, "a gold piece escaping off-screen forfeits the hunt");
     }
 
     #[test]
@@ -4389,6 +4552,7 @@ mod tests {
         app.insert_resource(Wave { level: 1, timer: 0.0, calm: 0.0 });
         app.insert_resource(WaveBanner::default());
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
+        app.insert_resource(GoldRush::default());
         app.add_systems(Update, wave_timer);
         app.update();
         assert_eq!(app.world().resource::<Wave>().level, 2, "expiring the timer should advance the wave");
@@ -4709,6 +4873,7 @@ mod tests {
         app.insert_resource(Chain { unlocked: true, charges: 3, recharge: 0.0, cooldown: 0.0 });
         app.insert_resource(MassShot { unlocked: true, active: true });
         app.insert_resource(RunFlags { powerup_used: true });
+        app.insert_resource(GoldRush { active: true, forfeited: true });
         let mut input = ButtonInput::<KeyCode>::default();
         input.press(KeyCode::Enter);
         app.insert_resource(input);
@@ -4719,6 +4884,7 @@ mod tests {
         assert_eq!(app.world().resource::<Wave>().level, 1, "Start resets to wave 1");
         assert!(!app.world().resource::<Chain>().unlocked, "Start relocks the chain shot");
         assert!(!app.world().resource::<MassShot>().unlocked, "Start relocks the mass shot");
+        assert!(!app.world().resource::<GoldRush>().active, "Start clears any stale gold hunt");
         assert_eq!(app.world_mut().query::<&Ship>().iter(app.world()).count(), 1, "a fresh ship spawns");
     }
 
