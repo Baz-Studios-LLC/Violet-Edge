@@ -4562,6 +4562,47 @@ mod tests {
     }
 
     #[test]
+    fn a_gold_rock_spawns_as_one_large_rock() {
+        // the spawn helper itself: exactly one gold rock, and it's LARGE (a full lineage to clear)
+        fn spawner(mut commands: Commands, arena: Res<Arena>) {
+            let mut rng = rand::thread_rng();
+            spawn_gold_rock(&mut commands, arena.half, &mut rng);
+        }
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
+        app.add_systems(Update, spawner);
+        app.update();
+        let sizes: Vec<u8> = app.world_mut().query_filtered::<&Asteroid, With<Gold>>().iter(app.world()).map(|a| a.size).collect();
+        assert_eq!(sizes, vec![3], "one large (size-3) gold rock spawns");
+    }
+
+    #[test]
+    fn wave_timer_can_spawn_a_gold_rock() {
+        // the real in-game path: a non-boss wave advance rolls a gold rock at GOLD_CHANCE. Sample it
+        // many times (pinning a non-boss advance and clearing the hunt gate each tick so every update
+        // is an independent trial) — at 14% per trial, 120 trials make ≥1 spawn a near-certainty.
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(WaveBanner::default());
+        app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
+        app.insert_resource(Wave { level: 1, timer: 0.0, calm: 0.0 });
+        app.insert_resource(GoldRush::default());
+        app.add_systems(Update, wave_timer);
+        for _ in 0..120 {
+            {
+                let mut w = app.world_mut().resource_mut::<Wave>();
+                w.level = 1; // advancing to 2 = a non-boss wave (eligible for gold)
+                w.timer = 0.0; // expired → advance this update
+            }
+            app.world_mut().resource_mut::<GoldRush>().active = false; // fresh independent trial
+            app.update();
+        }
+        let gold = app.world_mut().query_filtered::<(), With<Gold>>().iter(app.world()).count();
+        assert!(gold >= 1, "wave_timer must be able to roll a gold rock on a non-boss advance");
+    }
+
+    #[test]
     fn ship_dies_on_asteroid_contact() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
