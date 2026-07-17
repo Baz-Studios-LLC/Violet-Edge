@@ -143,6 +143,7 @@ const PICKUP_LIFE: f32 = 20.0; // the orb lingers this long (well past the 10s b
 const MAX_SEP: f32 = 6.0; // px/frame cap on overlap push-out
 const RESTITUTION: f32 = 1.0; // fully elastic bounce
 const MIN_DRIFT: f32 = 30.0; // px/s — rocks never fully stop (elastic hits can zero them → "stuck")
+const FRAGMENT_GRACE: f32 = 1.8; // s a freshly-broken fragment is protected from off-screen culling
 
 const RESPAWN_DELAY: f32 = 1.3; // s the ship stays gone after dying
 const SPAWN_INVULN: f32 = 2.0; // s of blink-invulnerability on (re)spawn
@@ -502,6 +503,12 @@ struct Devourer {
 // A rock the boss just hurled — briefly un-grabbable so it can't be re-captured instantly.
 #[derive(Component)]
 struct Thrown(f32);
+
+// A freshly-broken fragment during its grace window: while this timer runs it recycles at the edges
+// instead of being culled, so a rock shattered right at the border can't lose its pieces off-screen
+// before the player gets a shot at them. Counts down in `asteroid_bounds`.
+#[derive(Component)]
+struct Fresh(f32);
 
 // A chain-shot beam: travels along `Velocity`; the damaging lightning spans `perp`·±half.
 #[derive(Component)]
@@ -891,19 +898,21 @@ fn asteroid_verts(size: u8, rng: &mut impl Rng) -> Vec<Vec2> {
         .collect()
 }
 
-fn spawn_asteroid(commands: &mut Commands, pos: Vec2, size: u8, vel: Vec2, rng: &mut impl Rng, dense: bool) {
-    commands.spawn((
-        Asteroid {
-            size,
-            verts: asteroid_verts(size, rng),
-            rot: rng.gen_range(0.0..TAU),
-            spin: rng.gen_range(-0.8..0.8),
-            dense,
-            hp: if dense { size as i32 } else { 1 },
-        },
-        Velocity(vel),
-        Transform::from_xyz(pos.x, pos.y, 0.0),
-    ));
+fn spawn_asteroid(commands: &mut Commands, pos: Vec2, size: u8, vel: Vec2, rng: &mut impl Rng, dense: bool) -> Entity {
+    commands
+        .spawn((
+            Asteroid {
+                size,
+                verts: asteroid_verts(size, rng),
+                rot: rng.gen_range(0.0..TAU),
+                spin: rng.gen_range(-0.8..0.8),
+                dense,
+                hp: if dense { size as i32 } else { 1 },
+            },
+            Velocity(vel),
+            Transform::from_xyz(pos.x, pos.y, 0.0),
+        ))
+        .id()
 }
 
 // Shatter one rock: despawn it, award score, splash debris, and (unless it's the
@@ -932,7 +941,10 @@ fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score
         for side in [1.0f32, -1.0] {
             let spd = rng.gen_range(60.0..150.0) * chunk_mult;
             let vel = Vec2::from_angle(axis + rng.gen_range(-0.35..0.35)) * (side * spd);
-            spawn_asteroid(commands, pos + out * (side * offset), size - 1, vel, rng, dense);
+            let child = spawn_asteroid(commands, pos + out * (side * offset), size - 1, vel, rng, dense);
+            // grace window: if this chunk was flung off-screen (rock broke at the edge) it recycles
+            // back in rather than being culled, so its pieces aren't lost before you can shoot them
+            commands.entity(child).insert(Fresh(FRAGMENT_GRACE));
         }
     }
 }
@@ -1184,10 +1196,21 @@ fn ship_bounds(arena: Res<Arena>, mut q: Query<(&mut Transform, &mut Velocity), 
     }
 }
 
-fn asteroid_bounds(mut commands: Commands, arena: Res<Arena>, mut q: Query<(Entity, &mut Transform, &mut Velocity, &Asteroid), Without<Shielded>>) {
+fn asteroid_bounds(mut commands: Commands, time: Res<Time>, arena: Res<Arena>, mut q: Query<(Entity, &mut Transform, &mut Velocity, &Asteroid, Option<&mut Fresh>), Without<Shielded>>) {
     let h = arena.half;
+    let dt = time.delta_secs();
     let mut rng = rand::thread_rng();
-    for (e, mut t, mut v, a) in &mut q {
+    for (e, mut t, mut v, a, fresh) in &mut q {
+        // tick the post-break grace; while it runs the fragment is protected from culling below
+        let mut grace = false;
+        if let Some(mut f) = fresh {
+            f.0 -= dt;
+            if f.0 <= 0.0 {
+                commands.entity(e).remove::<Fresh>();
+            } else {
+                grace = true;
+            }
+        }
         // never let a rock sit dead-still — elastic hits (or the boss shield) can zero
         // its velocity, which reads as "stuck". Keep a slow drift going.
         let sp = v.0.length();
@@ -1207,12 +1230,14 @@ fn asteroid_bounds(mut commands: Commands, arena: Res<Arena>, mut q: Query<(Enti
         // Small debris usually leaves — otherwise broken-up rocks pile into an overwhelming
         // cloud of little ones that never clears. The population top-up then streams in fresh
         // LARGE rocks to replace them. Large rocks always recycle, keeping a healthy backbone
-        // of big targets (and food for the bosses).
-        let leaves = match a.size {
-            1 => rng.gen_bool(0.85), // small: usually gone for good
-            2 => rng.gen_bool(0.35), // mid: now and then
-            _ => false,              // large: always kept in play
-        };
+        // of big targets (and food for the bosses). A fragment still in its grace window always
+        // recycles, so a rock shattered at the edge can't lose its pieces before you engage them.
+        let leaves = !grace
+            && match a.size {
+                1 => rng.gen_bool(0.85), // small: usually gone for good
+                2 => rng.gen_bool(0.35), // mid: now and then
+                _ => false,              // large: always kept in play
+            };
         if leaves {
             commands.entity(e).despawn();
             continue;
@@ -4141,6 +4166,27 @@ mod tests {
         let larges = q.iter(app.world()).filter(|a| a.size == 3).count();
         assert!(smalls < 60, "some small rocks should be culled off-screen, not all recycled; {smalls}/60 remain");
         assert_eq!(larges, 60, "large rocks are never culled off-screen; {larges}/60 remain");
+    }
+
+    #[test]
+    fn fresh_fragments_are_not_culled_off_screen() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        let h = Vec2::new(640.0, 400.0);
+        app.insert_resource(Arena { half: h });
+        let r = asteroid_radius(1);
+        // a small fragment that broke at the edge and flew off — but it's still in its grace window,
+        // so it must recycle back into play rather than being culled (the near-edge-break case)
+        app.world_mut().spawn((
+            Asteroid { size: 1, verts: vec![Vec2::X * r], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+            Velocity(Vec2::new(-MIN_DRIFT * 2.0, 0.0)),
+            Transform::from_xyz(-h.x - r - 5.0, 0.0, 0.0),
+            Fresh(FRAGMENT_GRACE),
+        ));
+        app.add_systems(Update, asteroid_bounds);
+        app.update();
+        let alive = app.world_mut().query::<&Asteroid>().iter(app.world()).count();
+        assert_eq!(alive, 1, "a fresh fragment must recycle back in, not be culled off-screen");
     }
 
     #[test]
