@@ -3404,9 +3404,12 @@ fn button_click(mut clicks: EventWriter<MenuClick>, q: Query<(&Interaction, &Men
     }
 }
 
-const NEON_WARMUP: f32 = 1.5; // seconds the title spends flickering on like a neon sign
+const NEON_WARMUP: f32 = 2.2; // seconds the title spends flickering on like a neon sign
+// scripted on-windows during the warm-up: blink … blink … (long pause) … blink-into-steady.
+// Reads as a deliberate "1, 2 …… 3-on" instead of a fast erratic buzz.
+const NEON_BLINKS: [(f32, f32); 3] = [(0.25, 0.45), (0.75, 0.95), (1.85, NEON_WARMUP)];
 
-// Neon flicker-on for the title (erratic blinks that settle into a steady breathe), and a matching
+// Neon flicker-on for the title (scripted blinks settling into a steady breathe), and a matching
 // pulse on the frame border. `dim` scales the (≤1) UI colours, so b<1 reads as the sign "off".
 fn menu_title_fx(time: Res<Time>, mut titles: Query<(&mut MenuTitle, &mut TextColor)>, mut frames: Query<&mut BorderColor, With<MenuFrame>>) {
     let dt = time.delta_secs();
@@ -3415,17 +3418,12 @@ fn menu_title_fx(time: Res<Time>, mut titles: Query<(&mut MenuTitle, &mut TextCo
     for (mut title, mut tc) in &mut titles {
         title.age += dt;
         let a = title.age;
-        let b = if a < NEON_WARMUP {
-            // two detuned sines → an erratic blink; the threshold drops as it settles → flickers ON
-            let settle = a / NEON_WARMUP;
-            let n = (a * 33.0).sin() * 0.5 + (a * 51.0).sin() * 0.5;
-            if n.abs() > (0.55 - 0.5 * settle) {
-                1.0
-            } else {
-                0.08
-            }
-        } else {
+        let b = if a >= NEON_WARMUP {
             0.78 + 0.22 * (a * 1.6).sin() // settled breathe
+        } else if NEON_BLINKS.iter().any(|&(s, e)| a >= s && a < e) {
+            1.0 // lit blink
+        } else {
+            0.05 // dark between blinks
         };
         brightness = b;
         *tc = TextColor(dim(base, b));
