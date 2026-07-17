@@ -548,6 +548,8 @@ enum MenuAction {
 }
 #[derive(Component)]
 struct MenuButton(MenuAction);
+#[derive(Component)]
+struct MenuTitle; // menu/achievements title — slowly pulses (see menu_pulse)
 #[derive(Event)]
 struct MenuClick(MenuAction); // fired on click; menu_start / achievements_back consume it
 #[derive(Component)]
@@ -3085,7 +3087,7 @@ fn pause_toggle(
 }
 
 // A full-screen centered overlay root. Returns EntityCommands so the caller adds children.
-fn overlay(commands: &mut Commands, marker: impl Component) -> Entity {
+fn overlay(commands: &mut Commands, marker: impl Component, alpha: f32) -> Entity {
     commands
         .spawn((
             marker,
@@ -3099,7 +3101,7 @@ fn overlay(commands: &mut Commands, marker: impl Component) -> Entity {
                 row_gap: Val::Px(16.0),
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.02, 0.01, 0.06, 0.72)),
+            BackgroundColor(Color::srgba(0.02, 0.01, 0.06, alpha)),
         ))
         .id()
 }
@@ -3109,22 +3111,22 @@ fn text(font_size: f32, color: Color, s: &str) -> (Text, TextFont, TextColor) {
 }
 
 fn spawn_pause_ui(mut commands: Commands) {
-    let root = overlay(&mut commands, PauseUi);
+    let root = overlay(&mut commands, PauseUi, 0.72);
     commands.entity(root).with_children(|p| {
-        p.spawn(text(56.0, Color::srgb(2.4, 1.0, 4.6), "PAUSED"));
-        p.spawn(text(22.0, Color::srgb(0.7, 0.85, 1.2), "Esc  —  Resume"));
-        p.spawn(text(22.0, Color::srgb(0.7, 0.85, 1.2), "Q  —  Quit to Menu"));
+        p.spawn(text(56.0, title_color(), "PAUSED"));
+        p.spawn(text(22.0, Color::srgb(0.7, 0.85, 1.2), "Resume  (Esc)"));
+        p.spawn(text(22.0, Color::srgb(0.7, 0.85, 1.2), "Quit to Menu  (Q)"));
     });
 }
 
 fn spawn_gameover_ui(mut commands: Commands, score: Res<Score>) {
-    let root = overlay(&mut commands, GameOverUi);
+    let root = overlay(&mut commands, GameOverUi, 0.72);
     let score_line = format!("SCORE   {}", score.0);
     commands.entity(root).with_children(|p| {
-        p.spawn(text(64.0, Color::srgb(5.0, 1.2, 1.2), "GAME OVER"));
+        p.spawn(text(64.0, Color::srgb(1.0, 0.3, 0.3), "GAME OVER"));
         p.spawn(text(26.0, Color::srgb(0.85, 0.9, 1.2), &score_line));
-        p.spawn(text(22.0, Color::srgb(0.7, 0.85, 1.2), "Enter  —  Restart"));
-        p.spawn(text(22.0, Color::srgb(0.7, 0.85, 1.2), "Esc  —  Main Menu"));
+        p.spawn(text(22.0, Color::srgb(0.7, 0.85, 1.2), "Restart  (Enter)"));
+        p.spawn(text(22.0, Color::srgb(0.7, 0.85, 1.2), "Main Menu  (Esc)"));
     });
 }
 
@@ -3238,28 +3240,41 @@ fn menu_button(p: &mut ChildSpawnerCommands, action: MenuAction, label: &str) {
 }
 
 fn spawn_menu_ui(mut commands: Commands, achieved: Res<Achievements>) {
-    let root = overlay(&mut commands, MenuUi);
+    let root = overlay(&mut commands, MenuUi, 0.25); // light — let the starfield show through
     let done = achieved.unlocked.iter().filter(|u| **u).count();
     commands.entity(root).with_children(|p| {
-        p.spawn(text(74.0, title_color(), "VIOLET EDGE"));
+        p.spawn((MenuTitle, text(78.0, title_color(), "VIOLET EDGE")));
+        p.spawn((Node { margin: UiRect::bottom(Val::Px(18.0)), ..default() }, text(15.0, Color::srgb(0.5, 0.55, 0.72), "A NEON ASTEROIDS LOVE LETTER")));
         menu_button(p, MenuAction::Play, "Play");
         menu_button(p, MenuAction::Achievements, &format!("Achievements  ({done} / {})", ACHIEVEMENTS.len()));
     });
 }
 
 fn spawn_achievements_ui(mut commands: Commands, achieved: Res<Achievements>) {
-    let root = overlay(&mut commands, AchievementsUi);
+    let root = overlay(&mut commands, AchievementsUi, 0.5);
     commands.entity(root).with_children(|p| {
-        p.spawn(text(48.0, title_color(), "ACHIEVEMENTS"));
+        p.spawn((MenuTitle, text(46.0, title_color(), "ACHIEVEMENTS")));
+        // two-column table: name | description (aligns cleanly, no separator glyph)
         for (i, &a) in ACHIEVEMENTS.iter().enumerate() {
             let (name, desc) = ach_meta(a);
-            // always show the name; earned = bright violet, locked = greyed
-            let col = if achieved.unlocked[i] {
-                ach_earned_color()
+            let earned = achieved.unlocked[i];
+            let (namecol, desccol) = if earned {
+                (ach_earned_color(), Color::srgb(0.78, 0.82, 0.95))
             } else {
-                Color::srgb(0.42, 0.45, 0.55)
+                (Color::srgb(0.5, 0.52, 0.62), Color::srgb(0.38, 0.4, 0.5))
             };
-            p.spawn(text(16.0, col, &format!("{name}  —  {desc}")));
+            p.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(28.0),
+                width: Val::Px(720.0),
+                padding: UiRect::vertical(Val::Px(3.0)),
+                ..default()
+            })
+            .with_children(|row| {
+                row.spawn((text(19.0, namecol, name), Node { width: Val::Px(300.0), ..default() }));
+                row.spawn(text(16.0, desccol, desc));
+            });
         }
         menu_button(p, MenuAction::Back, "Back");
     });
@@ -3335,6 +3350,15 @@ fn button_click(mut clicks: EventWriter<MenuClick>, q: Query<(&Interaction, &Men
         if *interaction == Interaction::Pressed {
             clicks.write(MenuClick(btn.0));
         }
+    }
+}
+
+// Slowly breathe the menu/achievements title between two violet shades — a subtle living glow.
+fn menu_pulse(time: Res<Time>, mut q: Query<&mut TextColor, With<MenuTitle>>) {
+    let p = 0.5 + 0.5 * (time.elapsed_secs() * 1.5).sin();
+    let col = mix(Color::srgb(0.5, 0.15, 0.92), Color::srgb(0.78, 0.42, 1.0), p);
+    for mut tc in &mut q {
+        *tc = TextColor(col);
     }
 }
 
@@ -3740,7 +3764,7 @@ fn main() {
         // always: keep the arena sized, handle pause input, refresh the HUD text
         .add_systems(Update, (update_arena, pause_toggle, update_wave_text, update_score_text, wave_banner_update).chain())
         // always: watch for achievement unlocks + age out toasts + hide the HUD off-run + menu buttons
-        .add_systems(Update, (achievements, toast_update, hud_visibility, button_shimmer, button_click))
+        .add_systems(Update, (achievements, toast_update, hud_visibility, button_shimmer, button_click, menu_pulse))
         // render in PostUpdate so it ALWAYS runs after every Update system (incl.
         // ship_bounds) — draws final positions, no border ghosting; runs in all states
         .add_systems(PostUpdate, (render, render_boss, render_extras))
