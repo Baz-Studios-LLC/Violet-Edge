@@ -151,7 +151,10 @@ const TRAIL_LEN: usize = 10; // bullet trail points kept
 const STAR_COUNT: usize = 90;
 const START_LIVES: i32 = 3;
 const LIFE_CAP: i32 = 5; // lives never exceed this — a cleared gold rock can't let them snowball
-const GOLD_CHANCE: f64 = 0.14; // per non-boss wave: chance a rare gold 1UP asteroid drifts in
+// The gold 1UP rock drifts in at a randomized time during play (a countdown), not at wave starts.
+const GOLD_INITIAL_DELAY: f32 = 30.0; // grace before the first gold rock can appear in a run
+const GOLD_MIN_GAP: f32 = 45.0; // shortest wait after one hunt ends before the next can spawn
+const GOLD_MAX_GAP: f32 = 120.0; // longest such wait (a fresh random gap is rolled each time)
 const WAVE_BANNER_SECS: f32 = 2.4; // how long the big "WAVE n" flash lingers
 const WAVE_BANNER_FADE: f32 = 1.2; // of that, the trailing fade-out duration
 
@@ -525,10 +528,13 @@ struct Gold;
 
 // Tracks the current gold-rock hunt. `active` while a gold lineage is in play; `forfeited` latches if
 // a gold piece is culled off-screen (escaped), so the life is denied even once the rest are cleared.
+// `cooldown` counts down to the next spawn (re-armed to a random gap when a hunt ends), so gold
+// appears at organic random times without spawning back-to-back.
 #[derive(Resource, Default)]
 struct GoldRush {
     active: bool,
     forfeited: bool,
+    cooldown: f32,
 }
 
 // Gate so the click/keypress that STARTS or RESUMES a run doesn't also fire a shot on the first
@@ -1514,7 +1520,6 @@ fn wave_timer(
     mut banner: ResMut<WaveBanner>,
     mut commands: Commands,
     arena: Res<Arena>,
-    mut rush: ResMut<GoldRush>,
     asteroids: Query<(), With<Asteroid>>,
 ) {
     if wave.calm > 0.0 {
@@ -1538,13 +1543,24 @@ fn wave_timer(
         let dense = roll_dense(wave.level, &mut rng);
         spawn_edge_asteroid(&mut commands, arena.half, &mut rng, dense, false);
     }
-    // rare gold 1UP rock on any wave advance (boss waves included — the Devourer won't eat it and a
-    // rock the Warden grabs is just a shoot-it-off-the-shield target); never while a hunt is unresolved
-    if !rush.active && rng.gen_bool(GOLD_CHANCE) {
-        spawn_gold_rock(&mut commands, arena.half, &mut rng);
-        rush.active = true;
-        rush.forfeited = false;
+}
+
+// The rare gold 1UP rock drifts in at a randomized time DURING play (not tied to wave starts). Only
+// one hunt runs at a time, and a cooldown after each hunt keeps them from spawning back-to-back. It
+// may appear on any wave (boss waves included — the Devourer won't eat it and a rock the Warden grabs
+// is just a shoot-it-off-the-shield target).
+fn gold_spawn(time: Res<Time>, wave: Res<Wave>, arena: Res<Arena>, mut rush: ResMut<GoldRush>, mut commands: Commands) {
+    if rush.active {
+        return; // a hunt is in progress — freeze the countdown (one gold lineage at a time)
     }
+    rush.cooldown -= time.delta_secs();
+    if rush.cooldown > 0.0 || wave.calm > 0.0 {
+        return; // still cooling down, or the post-boss field is being kept clear for the reward
+    }
+    let mut rng = rand::thread_rng();
+    spawn_gold_rock(&mut commands, arena.half, &mut rng);
+    rush.active = true;
+    rush.forfeited = false;
 }
 
 // Stream replacement rocks in gradually so the field stays populated as you clear
@@ -3377,7 +3393,8 @@ fn reset_run(
     *chain = Chain::default(); // must re-earn the chain shot…
     *mass = MassShot::default(); // …and the mass shot
     *flags = RunFlags::default(); // fresh "no powerups used" flag for Purist
-    *gold = GoldRush::default(); // no stale gold hunt carried into the new run
+    *gold = GoldRush::default(); // no stale gold hunt carried into the new run…
+    gold.cooldown = GOLD_INITIAL_DELAY; // …and a grace before the first gold rock can appear
     spawn_player(commands);
 }
 
@@ -3837,6 +3854,8 @@ fn gold_rush_update(
     }
     rush.active = false;
     rush.forfeited = false;
+    // re-arm the countdown to a fresh random gap so the next gold rock isn't back-to-back
+    rush.cooldown = rand::thread_rng().gen_range(GOLD_MIN_GAP..GOLD_MAX_GAP);
 }
 
 // Lifetime progress persists to a tiny best-effort save file (six space-separated numbers). File
@@ -4212,6 +4231,7 @@ fn main() {
                     top_up_mines,
                     top_up_enemies,
                     clear_calm_field,
+                    gold_spawn,
                     gold_rush_update,
                 )
                     .chain(),
@@ -4507,20 +4527,21 @@ mod tests {
     fn clearing_the_gold_lineage_grants_a_life() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.insert_resource(GoldRush { active: true, forfeited: false });
+        app.insert_resource(GoldRush { active: true, forfeited: false, cooldown: 0.0 });
         app.insert_resource(Run { lives: 3, respawn: 0.0 });
         // no Gold entities remain → the player cleared the whole lineage
         app.add_systems(Update, gold_rush_update);
         app.update();
         assert_eq!(app.world().resource::<Run>().lives, 4, "clearing the whole gold lineage grants +1 life");
         assert!(!app.world().resource::<GoldRush>().active, "the hunt resets after granting (grants once)");
+        assert!(app.world().resource::<GoldRush>().cooldown >= GOLD_MIN_GAP, "a fresh cooldown is armed so the next gold isn't back-to-back");
     }
 
     #[test]
     fn a_forfeited_gold_hunt_grants_no_life() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.insert_resource(GoldRush { active: true, forfeited: true }); // a piece escaped off-screen
+        app.insert_resource(GoldRush { active: true, forfeited: true, cooldown: 0.0 }); // a piece escaped off-screen
         app.insert_resource(Run { lives: 3, respawn: 0.0 });
         app.add_systems(Update, gold_rush_update);
         app.update();
@@ -4532,7 +4553,7 @@ mod tests {
     fn gold_lives_are_capped() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.insert_resource(GoldRush { active: true, forfeited: false });
+        app.insert_resource(GoldRush { active: true, forfeited: false, cooldown: 0.0 });
         app.insert_resource(Run { lives: LIFE_CAP, respawn: 0.0 });
         app.add_systems(Update, gold_rush_update);
         app.update();
@@ -4545,7 +4566,7 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         let h = Vec2::new(640.0, 400.0);
         app.insert_resource(Arena { half: h });
-        app.insert_resource(GoldRush { active: true, forfeited: false });
+        app.insert_resource(GoldRush { active: true, forfeited: false, cooldown: 0.0 });
         let r = asteroid_radius(1);
         // 60 small GOLD fragments (no grace) drifting off-screen — at least one is culled with
         // overwhelming probability, which must latch the forfeit
@@ -4579,53 +4600,48 @@ mod tests {
     }
 
     #[test]
-    fn wave_timer_can_spawn_a_gold_rock() {
-        // the real in-game path: a non-boss wave advance rolls a gold rock at GOLD_CHANCE. Sample it
-        // many times (pinning a non-boss advance and clearing the hunt gate each tick so every update
-        // is an independent trial) — at 14% per trial, 120 trials make ≥1 spawn a near-certainty.
+    fn gold_spawn_drifts_one_in_when_the_countdown_elapses() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.insert_resource(WaveBanner::default());
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
-        app.insert_resource(Wave { level: 1, timer: 0.0, calm: 0.0 });
-        app.insert_resource(GoldRush::default());
-        app.add_systems(Update, wave_timer);
-        for _ in 0..120 {
-            {
-                let mut w = app.world_mut().resource_mut::<Wave>();
-                w.level = 1; // advancing to 2 = a non-boss wave (eligible for gold)
-                w.timer = 0.0; // expired → advance this update
-            }
-            app.world_mut().resource_mut::<GoldRush>().active = false; // fresh independent trial
-            app.update();
-        }
-        let gold = app.world_mut().query_filtered::<(), With<Gold>>().iter(app.world()).count();
-        assert!(gold >= 1, "wave_timer must be able to roll a gold rock on a non-boss advance");
+        app.insert_resource(Wave { level: 1, timer: WAVE_SECS, calm: 0.0 });
+        app.insert_resource(GoldRush { active: false, forfeited: false, cooldown: 0.0 }); // due now
+        app.add_systems(Update, gold_spawn);
+        app.update();
+        assert_eq!(app.world_mut().query_filtered::<(), With<Gold>>().iter(app.world()).count(), 1, "the countdown elapsing spawns exactly one gold rock");
+        assert!(app.world().resource::<GoldRush>().active, "spawning starts the hunt");
     }
 
     #[test]
-    fn gold_can_roll_entering_a_boss_wave() {
-        // advancing INTO a boss wave (4 -> 5) is no longer excluded from the gold roll
+    fn gold_spawn_holds_during_its_cooldown() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.insert_resource(WaveBanner::default());
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
-        app.insert_resource(Wave { level: 4, timer: 0.0, calm: 0.0 });
-        app.insert_resource(GoldRush::default());
-        app.add_systems(Update, wave_timer);
-        for _ in 0..120 {
-            {
-                let mut w = app.world_mut().resource_mut::<Wave>();
-                w.level = 4; // advancing to 5 = a boss wave
-                w.timer = 0.0;
-            }
-            app.world_mut().resource_mut::<GoldRush>().active = false;
+        app.insert_resource(Wave { level: 1, timer: WAVE_SECS, calm: 0.0 });
+        app.insert_resource(GoldRush { active: false, forfeited: false, cooldown: 30.0 }); // still waiting
+        app.add_systems(Update, gold_spawn);
+        for _ in 0..5 {
             app.update();
         }
-        assert!(
-            app.world_mut().query_filtered::<(), With<Gold>>().iter(app.world()).count() >= 1,
-            "a gold rock may spawn when advancing into a boss wave"
-        );
+        assert_eq!(app.world_mut().query_filtered::<(), With<Gold>>().iter(app.world()).count(), 0, "no gold spawns while the cooldown is still running (no back-to-back)");
+    }
+
+    #[test]
+    fn gold_spawn_is_blocked_during_a_hunt_or_the_calm() {
+        for (active, calm) in [(true, 0.0f32), (false, 5.0f32)] {
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins);
+            app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
+            app.insert_resource(Wave { level: 1, timer: WAVE_SECS, calm });
+            app.insert_resource(GoldRush { active, forfeited: false, cooldown: 0.0 });
+            app.add_systems(Update, gold_spawn);
+            app.update();
+            assert_eq!(
+                app.world_mut().query_filtered::<(), With<Gold>>().iter(app.world()).count(),
+                0,
+                "no gold spawns during an active hunt or the post-boss calm (active={active}, calm={calm})"
+            );
+        }
     }
 
     #[test]
@@ -4828,7 +4844,6 @@ mod tests {
         app.insert_resource(Wave { level: 1, timer: 0.0, calm: 0.0 });
         app.insert_resource(WaveBanner::default());
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
-        app.insert_resource(GoldRush::default());
         app.add_systems(Update, wave_timer);
         app.update();
         assert_eq!(app.world().resource::<Wave>().level, 2, "expiring the timer should advance the wave");
@@ -5219,7 +5234,7 @@ mod tests {
         app.insert_resource(Chain { unlocked: true, charges: 3, recharge: 0.0, cooldown: 0.0 });
         app.insert_resource(MassShot { unlocked: true, active: true });
         app.insert_resource(RunFlags { powerup_used: true });
-        app.insert_resource(GoldRush { active: true, forfeited: true });
+        app.insert_resource(GoldRush { active: true, forfeited: true, cooldown: 0.0 });
         let mut input = ButtonInput::<KeyCode>::default();
         input.press(KeyCode::Enter);
         app.insert_resource(input);

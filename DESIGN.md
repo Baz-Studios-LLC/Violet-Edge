@@ -25,7 +25,7 @@ intended design; implemented rows describe what the code does today.
 | **Orange** | 🔷 | Explosive. On destruction it detonates, destroying/damaging everything in a radius — other asteroids, mines, enemies (and the player). Detonating another orange in range sets off a **chain reaction**. |
 | **Red** | 🔷 | Grows, like the Glutton boss: absorbs nearby asteroids to gain size. A large red that's broken splits into two, and *those* can absorb more and swell back up — an emergent "whack-a-mole" if you don't clear the field around them. |
 | **Pulser** | 🔷 | Pulses bright white on a cycle; **invulnerable while lit**. You have to time shots to its dark phase. |
-| **Gold (1UP)** | ✅ | Not a hazard — a *reward*. A rare shimmering gold rock (low chance per wave advance, boss waves included). Destroy the **whole lineage** (it + every fragment) for +1 life; let a piece escape off-screen and it's forfeit. **Only your shots break it** — mines bounce off, the Devourer won't eat it. See Life economy below. |
+| **Gold (1UP)** | ✅ | Not a hazard — a *reward*. A rare shimmering gold rock that drifts in at random times during play (any wave, boss waves included). Destroy the **whole lineage** (it + every fragment) for +1 life; let a piece escape off-screen and it's forfeit. **Only your shots break it** — mines bounce off, the Devourer won't eat it. See Life economy below. |
 
 ## Enemies
 
@@ -95,9 +95,11 @@ content still repeats 1–10.)
 50 levels on 3 lives is likely impossible, especially a no-powerup **Purist** run — so lives are
 recoverable, but only by earning them, via a rare gold asteroid. ✅ Implemented:
 
-- **Low chance per wave advance** (`GOLD_CHANCE`) a gold rock drifts in — a distinct shimmering gold
-  large rock that otherwise behaves normally (splits when shot). Boss waves included (the Devourer
-  won't eat it; a rock the Warden grabs is just shot off its shield). Only one hunt at a time.
+- A gold rock **drifts in at a randomized time during play** (a countdown, not tied to wave starts) —
+  a distinct shimmering gold large rock that otherwise behaves normally (splits when shot). One hunt
+  at a time; after each hunt ends a fresh random cooldown (`GOLD_MIN_GAP`..`GOLD_MAX_GAP`) is armed so
+  they never spawn back-to-back, and `GOLD_INITIAL_DELAY` gives a grace at the start of a run. Any
+  wave, boss waves included (the Devourer won't eat it; a rock the Warden grabs is just shot off its shield).
 - You must **destroy the whole gold lineage** — the rock *and* every gold fragment (gold-ness is
   inherited through every break: bullet, chain, mine) — to claim **+1 life**. `GoldRush` tracks it.
 - **Escape = forfeit.** A gold piece culled off-screen latches `forfeited`; the life is then denied
