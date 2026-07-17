@@ -1,0 +1,2 @@
+# Rust build output (large — hundreds of MB once Bevy is compiled)
+/target

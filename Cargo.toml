@@ -1,0 +1,21 @@
+[package]
+name = "violet-edge"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Pinned to 0.16 on purpose: this code was written against 0.16's exact API
+# (Camera2d/Bloom/Gizmos). Do NOT bump without updating the code to match — Bevy
+# changes its API a lot between releases.
+# `wav` adds rodio's WAV decoder (not in Bevy's defaults) so we can feed the
+# procedurally-synthesized soundtrack (src/audio.rs) as an in-memory WAV.
+bevy = { version = "0.16", features = ["wav"] }
+rand = "0.8"
+
+# Bevy's recommended dev profile: optimize dependencies (so the engine runs
+# smoothly) but keep our own crate quick to recompile.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
