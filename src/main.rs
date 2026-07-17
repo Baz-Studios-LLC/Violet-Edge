@@ -2887,9 +2887,9 @@ fn render(
         if a.dense {
             let frac = a.hp.max(1) as f32 / a.size.max(1) as f32; // full shell → shrinks to a small core
             gizmos.linestrip_2d(ring(0.35 + 0.3 * frac), col);
-        } else if gold.is_some() {
-            gizmos.linestrip_2d(ring(0.55), col); // an inner ring marks it as the treasure rock
         }
+        // gold rocks get NO extra ring — a single shimmering outline like any rock (the pulsing gold
+        // colour is what sets them apart), so broken gold looks the same "chunkiness" as normal debris
     }
 
     // mines — crimson diamonds; blink faster once armed (the ship is near)
@@ -4596,6 +4596,34 @@ mod tests {
         app.update();
         let sizes: Vec<u8> = app.world_mut().query_filtered::<&Asteroid, With<Gold>>().iter(app.world()).map(|a| a.size).collect();
         assert_eq!(sizes, vec![3], "one large (size-3) gold rock spawns");
+    }
+
+    #[test]
+    fn a_gold_rock_breaks_into_two_gold_chunks_same_as_normal() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_event::<SoundFx>();
+        app.insert_resource(Stats::default());
+        app.insert_resource(RunFlags::default());
+        app.insert_resource(Score(0));
+        // a size-2 GOLD rock with a bullet on it
+        app.world_mut().spawn((
+            Asteroid { size: 2, verts: vec![Vec2::X * 40.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+            Gold,
+        ));
+        app.world_mut().spawn((
+            Bullet { life: 1.0, trail: Vec::new(), mass: false },
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+        ));
+        app.add_systems(Update, collisions);
+        app.update();
+        let total = app.world_mut().query::<&Asteroid>().iter(app.world()).count();
+        let gold = app.world_mut().query_filtered::<(), With<Gold>>().iter(app.world()).count();
+        assert_eq!(total, 2, "a size-2 rock breaks into exactly two chunks — gold is no different");
+        assert_eq!(gold, 2, "both chunks stay gold, so the whole lineage must still be cleared");
     }
 
     #[test]
