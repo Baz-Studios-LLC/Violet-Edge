@@ -26,9 +26,9 @@ use std::collections::HashSet;
 const TAU: f32 = std::f32::consts::TAU;
 
 const SHIP_R: f32 = 15.0;
-const TURN_RATE: f32 = 3.6; // rad/s
+const TURN_RATE: f32 = 4.6; // rad/s — snappier aim for precision shooting
 const THRUST: f32 = 620.0; // px/s^2
-const FRICTION: f32 = 0.55; // velocity kept per second
+const FRICTION: f32 = 0.38; // velocity kept per second — tighter than before (less drift), but still high enough that sustained thrust reaches MAX_SPEED
 const MAX_SPEED: f32 = 560.0; // px/s
 const FIRE_COOLDOWN: f32 = 0.18; // s
 
