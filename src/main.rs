@@ -145,6 +145,8 @@ const MAX_SEP: f32 = 6.0; // px/frame cap on overlap push-out
 const RESTITUTION: f32 = 1.0; // fully elastic bounce
 const MIN_DRIFT: f32 = 30.0; // px/s — rocks never fully stop (elastic hits can zero them → "stuck")
 const FRAGMENT_GRACE: f32 = 1.8; // s a freshly-broken fragment is protected from off-screen culling
+const ORANGE_BLAST_R: f32 = 74.0; // explosive-asteroid blast radius (a touch bigger than a mine's)
+const ORANGE_FUSE: f32 = 0.09; // brief lit flash after a lethal hit before it detonates (a visible "pop")
 
 const RESPAWN_DELAY: f32 = 1.3; // s the ship stays gone after dying
 const SPAWN_INVULN: f32 = 2.0; // s of blink-invulnerability on (re)spawn
@@ -223,6 +225,9 @@ fn chain_color() -> Color {
 fn gold_color() -> Color {
     Color::srgb(6.0, 4.6, 1.6)
 } // bright warm gold — the rare 1UP asteroid (lighter/whiter than the enemy yellow)
+fn orange_color() -> Color {
+    Color::srgb(6.0, 2.0, 0.25)
+} // hot orange — explosive asteroids (high R, low B; distinct from the yellow enemy)
 
 fn mine_target(level: i32, asteroids: i32) -> i32 {
     if level < MINE_FIRST_WAVE {
@@ -528,6 +533,17 @@ struct Fresh(f32);
 // piece escape off-screen and the reward is forfeit. See [[neon-edge-design-doc]] "Life economy".
 #[derive(Component)]
 struct Gold;
+
+// An explosive (orange) asteroid: instead of splitting when destroyed, it detonates — see `detonate`.
+#[derive(Component)]
+struct Explosive;
+
+// An orange rock that's been lit and is about to blow. The brief fuse gives a visible flash, then
+// `detonate` blasts a radius and chains any other oranges caught in it.
+#[derive(Component)]
+struct Detonating {
+    fuse: f32,
+}
 
 // Tracks the current gold-rock hunt. `active` while a gold lineage is in play; `forfeited` latches if
 // a gold piece is culled off-screen (escaped), so the life is denied even once the rest are cleared.
@@ -957,6 +973,12 @@ fn spawn_gold_rock(commands: &mut Commands, half: Vec2, rng: &mut impl Rng) {
     commands.entity(e).insert(Gold);
 }
 
+// An explosive (orange) rock entering from a random edge. `big` picks a large one (mid otherwise).
+fn spawn_edge_orange(commands: &mut Commands, half: Vec2, rng: &mut impl Rng, big: bool) {
+    let e = spawn_edge_asteroid(commands, half, rng, false, big); // never dense; orange is its own thing
+    commands.entity(e).insert(Explosive);
+}
+
 // A jagged rock outline sized for `size` (regenerated when a shield rock shrinks).
 fn asteroid_verts(size: u8, rng: &mut impl Rng) -> Vec<Vec2> {
     let r = asteroid_radius(size);
@@ -1033,12 +1055,12 @@ fn blast_asteroids(
     commands: &mut Commands,
     rng: &mut impl Rng,
     score: &mut Score,
-    asteroids: &Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>), (Without<Mine>, Without<Shielded>)>,
+    asteroids: &Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>), (Without<Mine>, Without<Shielded>)>,
     broken: &mut HashSet<Entity>,
     center: Vec2,
 ) {
-    // shared &Query → iterates read-only, so we just read size/dense/gold here
-    for (ae, at, a, gold) in asteroids {
+    // shared &Query → iterates read-only, so we just read size/dense/gold/explosive here
+    for (ae, at, a, gold, explosive) in asteroids {
         if broken.contains(&ae) {
             continue;
         }
@@ -1049,7 +1071,90 @@ fn blast_asteroids(
         let br = MINE_BLAST_R + asteroid_radius(a.size);
         if center.distance_squared(ap) < br * br {
             broken.insert(ae);
-            break_asteroid(commands, rng, score, ae, ap, a.size, MINE_CHUNK_MULT, a.dense, false); // mine obliterates (ignores hp); never gold (skipped above)
+            if explosive.is_some() {
+                commands.entity(ae).insert(Detonating { fuse: ORANGE_FUSE }); // a mine lights the orange → it chain-detonates
+            } else {
+                break_asteroid(commands, rng, score, ae, ap, a.size, MINE_CHUNK_MULT, a.dense, false); // mine obliterates (ignores hp); never gold (skipped above)
+            }
+        }
+    }
+}
+
+// Explosive (orange) asteroids: once lit (`Detonating`), each blasts a radius after a brief fuse —
+// shattering rocks, popping mines/enemies, killing the ship if it's caught, and lighting OTHER
+// oranges in range (a chain reaction that ripples out over the next frames). Gold is spared, like mines.
+#[allow(clippy::too_many_arguments)]
+fn detonate(
+    time: Res<Time>,
+    mut commands: Commands,
+    dev: Res<Dev>,
+    mut score: ResMut<Score>,
+    mut stats: ResMut<Stats>,
+    mut sfx: EventWriter<SoundFx>,
+    mut run: ResMut<Run>,
+    mut next: ResMut<NextState<GameState>>,
+    mut lit: Query<(Entity, &Transform, &Asteroid, &mut Detonating)>,
+    victims: (
+        Query<(Entity, &Transform, &Asteroid, Option<&Explosive>, Option<&Gold>), (Without<Detonating>, Without<Shielded>)>,
+        Query<(Entity, &Transform), With<Mine>>,
+        Query<(Entity, &Transform), With<Enemy>>,
+        Query<(Entity, &Transform, &Ship)>,
+    ),
+) {
+    let dt = time.delta_secs();
+    let mut rng = rand::thread_rng();
+    let (rocks, mines, enemies, ships) = (&victims.0, &victims.1, &victims.2, &victims.3);
+    for (oe, ot, oa, mut det) in &mut lit {
+        det.fuse -= dt;
+        if det.fuse > 0.0 {
+            continue; // still flashing — blows when the fuse elapses
+        }
+        let c = ot.translation.truncate();
+        burst(&mut commands, c, orange_color(), 34, 440.0, &mut rng);
+        sfx.write(SoundFx::Mine); // reuse the explosion thump
+        score.0 += match oa.size { 3 => 20, 2 => 50, _ => 100 }; // scores like a normal rock of its size
+        commands.entity(oe).despawn();
+        // rocks in range: chain other oranges, shatter the rest (gold is spared, same as mines)
+        for (ae, at, a, explosive, gold) in rocks {
+            if ae == oe || gold.is_some() {
+                continue;
+            }
+            let rr = ORANGE_BLAST_R + asteroid_radius(a.size);
+            if c.distance_squared(at.translation.truncate()) < rr * rr {
+                if explosive.is_some() {
+                    commands.entity(ae).insert(Detonating { fuse: ORANGE_FUSE }); // chain!
+                } else {
+                    break_asteroid(&mut commands, &mut rng, &mut score, ae, at.translation.truncate(), a.size, 1.4, a.dense, false);
+                }
+            }
+        }
+        for (me, mt) in mines {
+            let rr = ORANGE_BLAST_R + MINE_R;
+            if c.distance_squared(mt.translation.truncate()) < rr * rr {
+                burst(&mut commands, mt.translation.truncate(), mine_color(), 18, 300.0, &mut rng);
+                commands.entity(me).despawn();
+                score.0 += MINE_SCORE;
+            }
+        }
+        for (ee, et) in enemies {
+            let rr = ORANGE_BLAST_R + ENEMY_R;
+            if c.distance_squared(et.translation.truncate()) < rr * rr {
+                burst(&mut commands, et.translation.truncate(), enemy_color(), 18, 300.0, &mut rng);
+                commands.entity(ee).despawn();
+                score.0 += ENEMY_SCORE;
+                stats.enemies += 1;
+                sfx.write(SoundFx::EnemyDie);
+            }
+        }
+        // the player is caught too — but not mid-respawn or while blinking/invincible
+        if run.respawn <= 0.0 {
+            for (se, st, sh) in ships {
+                let sp = st.translation.truncate();
+                let rr = ORANGE_BLAST_R + SHIP_R;
+                if c.distance_squared(sp) < rr * rr && !immune(sh, &dev) {
+                    kill_ship(&mut commands, &mut run, &mut next, &mut sfx, se, sp, &mut rng);
+                }
+            }
         }
     }
 }
@@ -1371,7 +1476,7 @@ fn bullet_bounds(
 fn collisions(
     mut commands: Commands,
     bullets: Query<(Entity, &Transform, &Bullet)>,
-    mut asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>), (Without<Mine>, Without<Shielded>)>,
+    mut asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>), (Without<Mine>, Without<Shielded>)>,
     mines: Query<(Entity, &Transform), With<Mine>>,
     enemies: Query<(Entity, &Transform), With<Enemy>>,
     mut shield_rocks: Query<(Entity, &Transform, &mut Asteroid), With<Shielded>>,
@@ -1394,7 +1499,7 @@ fn collisions(
         let bp = bt.translation.truncate();
         let br = bullet_radius(b.mass); // mass shots are fatter…
         let power = bullet_power(b.mass); // …and hit harder
-        for (ae, at, mut a, gold) in &mut asteroids {
+        for (ae, at, mut a, gold, explosive) in &mut asteroids {
             if dead_a.contains(&ae) {
                 continue;
             }
@@ -1408,12 +1513,16 @@ fn collisions(
                     burst(&mut commands, ap, dense_color(), 6, 160.0, &mut rng); // dense rock cracks but holds
                 } else {
                     dead_a.insert(ae);
-                    break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, a.dense, gold.is_some());
-                    sfx.write(SoundFx::Break(a.size));
-                    if a.dense {
-                        stats.green += 1;
+                    if explosive.is_some() {
+                        commands.entity(ae).insert(Detonating { fuse: ORANGE_FUSE }); // orange: detonates, doesn't split
                     } else {
-                        stats.blue += 1;
+                        break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, a.dense, gold.is_some());
+                        sfx.write(SoundFx::Break(a.size));
+                        if a.dense {
+                            stats.green += 1;
+                        } else {
+                            stats.blue += 1;
+                        }
                     }
                 }
                 break;
@@ -1670,7 +1779,7 @@ fn mine_update(
     ships: Query<(Entity, &Transform, &Ship), Without<Mine>>,
     mut mines: Query<(Entity, &mut Transform, &mut Velocity, &mut Mine)>,
     // &mut to match blast_asteroids' type; only read here (iter + shared borrow)
-    asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>), (Without<Mine>, Without<Shielded>)>,
+    asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>), (Without<Mine>, Without<Shielded>)>,
 ) {
     let dt = time.delta_secs();
     let h = arena.half;
@@ -1698,7 +1807,7 @@ fn mine_update(
 
         // Gold 1UP rocks are immune to mines: a drifting mine bounces off them instead of
         // detonating, so a mine can never clear the gold lineage for you (only your shots may).
-        for (_, at, a, gold) in &asteroids {
+        for (_, at, a, gold, _) in &asteroids {
             if gold.is_none() {
                 continue;
             }
@@ -1723,7 +1832,7 @@ fn mine_update(
         // Gold rocks are excluded (handled above) so a mine never detonates on one.
         let inside = p.x.abs() < h.x && p.y.abs() < h.y;
         if inside
-            && asteroids.iter().any(|(_, at, a, gold)| {
+            && asteroids.iter().any(|(_, at, a, gold, _)| {
                 gold.is_none() && {
                     let rr = MINE_R + asteroid_radius(a.size);
                     p.distance_squared(at.translation.truncate()) < rr * rr
@@ -2513,7 +2622,7 @@ fn chain_update(
     mut sfx: EventWriter<SoundFx>,
     mut stats: ResMut<Stats>,
     mut chains: Query<(Entity, &Transform, &mut ChainShot)>,
-    asteroids: Query<(Entity, &Transform, &Asteroid, Option<&Gold>), (Without<Mine>, Without<Shielded>)>,
+    asteroids: Query<(Entity, &Transform, &Asteroid, Option<&Gold>, Option<&Explosive>), (Without<Mine>, Without<Shielded>)>,
     enemies: Query<(Entity, &Transform), With<Enemy>>,
     mines: Query<(Entity, &Transform), With<Mine>>,
 ) {
@@ -2530,7 +2639,7 @@ fn chain_update(
         }
         let a = c + cs.perp * CHAIN_HALF;
         let b = c - cs.perp * CHAIN_HALF;
-        for (ae, at, ast, gold) in &asteroids {
+        for (ae, at, ast, gold, explosive) in &asteroids {
             if dead.contains(&ae) {
                 continue;
             }
@@ -2538,6 +2647,10 @@ fn chain_update(
             let rr = asteroid_radius(ast.size) + CHAIN_R;
             if seg_dist2(ap, a, b) < rr * rr {
                 dead.insert(ae);
+                if explosive.is_some() {
+                    commands.entity(ae).insert(Detonating { fuse: ORANGE_FUSE }); // the beam lights the orange
+                    continue;
+                }
                 // chain beam shears dense rocks outright — the beam ignores hp, like a mine
                 break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, ast.size, 1.0, ast.dense, gold.is_some());
                 sfx.write(SoundFx::Break(ast.size));
@@ -2794,7 +2907,7 @@ fn render(
     wf: Res<WarpField>,
     stars: Query<(&Star, &Transform)>,
     ships: Query<(&Ship, &Transform)>,
-    asteroids: Query<(&Asteroid, &Transform, Option<&Gold>)>,
+    asteroids: Query<(&Asteroid, &Transform, Option<&Gold>, Option<&Explosive>, Option<&Detonating>)>,
     bullets: Query<(&Bullet, &Transform)>,
     particles: Query<(&Particle, &Transform)>,
     holes: Query<(&BlackHole, &Transform)>,
@@ -2874,11 +2987,17 @@ fn render(
     // they're chipped, so their tanky state reads at a glance.
     let rock = rock_color();
     let dense = dense_color();
-    for (a, at, gold) in &asteroids {
+    for (a, at, gold, explosive, det) in &asteroids {
         let c = at.translation.truncate();
         let rot = Vec2::from_angle(a.rot);
-        // gold 1UP rocks shimmer so they read as rare/valuable; otherwise green=dense, blue=standard
-        let col = if gold.is_some() {
+        // colour by type: a lit orange flashes white-hot as its fuse burns; a live orange pulses; gold
+        // shimmers; green=dense; blue=standard.
+        let col = if let Some(d) = det {
+            let f = 1.0 - (d.fuse / ORANGE_FUSE).clamp(0.0, 1.0); // ramps up as it's about to blow
+            dim(Color::srgb(8.0, 6.0, 3.5), 0.7 + 0.9 * f)
+        } else if explosive.is_some() {
+            dim(orange_color(), 0.75 + 0.25 * (t * 5.0).sin())
+        } else if gold.is_some() {
             dim(gold_color(), 0.7 + 0.3 * (t * 6.0).sin())
         } else if a.dense {
             dense
@@ -2896,9 +3015,12 @@ fn render(
         if a.dense {
             let frac = a.hp.max(1) as f32 / a.size.max(1) as f32; // full shell → shrinks to a small core
             gizmos.linestrip_2d(ring(0.35 + 0.3 * frac), col);
+        } else if explosive.is_some() {
+            // a hot central core marks it "armed" (single dot, so it isn't read as an extra chunk)
+            gizmos.circle_2d(Isometry2d::from_translation(c), asteroid_radius(a.size) * 0.22, col);
         }
-        // gold rocks get NO extra ring — a single shimmering outline like any rock (the pulsing gold
-        // colour is what sets them apart), so broken gold looks the same "chunkiness" as normal debris
+        // gold rocks get NO extra ring — a single shimmering outline like any rock, so broken gold
+        // looks the same "chunkiness" as normal debris
     }
 
     // mines — crimson diamonds; blink faster once armed (the ship is near)
@@ -4214,6 +4336,17 @@ fn dev_wave_skip(keys: Res<ButtonInput<KeyCode>>, mut wave: ResMut<Wave>, mut bo
     }
 }
 
+// DEV: F3 drifts in a large explosive (orange) rock so it can be eyeballed before it's wired into
+// the wave content. Debug builds only.
+#[cfg(debug_assertions)]
+fn dev_spawn_orange(keys: Res<ButtonInput<KeyCode>>, arena: Res<Arena>, mut commands: Commands) {
+    if keys.just_pressed(KeyCode::F3) {
+        let mut rng = rand::thread_rng();
+        spawn_edge_orange(&mut commands, arena.half, &mut rng, true);
+        info!("DEV spawn orange");
+    }
+}
+
 fn main() {
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -4307,6 +4440,7 @@ fn main() {
                     clear_calm_field,
                     gold_spawn,
                     gold_rush_update,
+                    detonate,
                 )
                     .chain(),
             )
@@ -4335,7 +4469,7 @@ fn main() {
         .add_systems(OnExit(GameState::GameOver), despawn_gameover_ui);
     // dev-only tools (F1 invincibility, F2 wave-skip); compiled out of release builds
     #[cfg(debug_assertions)]
-    app.add_systems(Update, (dev_toggle, dev_wave_skip));
+    app.add_systems(Update, (dev_toggle, dev_wave_skip, dev_spawn_orange));
     install_menu_font(&mut app); // must exist before the initial OnEnter(Menu)
     app.run();
 }
@@ -4771,6 +4905,79 @@ mod tests {
         let hs = app.world().resource::<HighScores>();
         assert_eq!(hs.top, [500, 400, 300, 200, 100], "a sub-table score leaves the board unchanged");
         assert_eq!(hs.just_placed, None, "and doesn't count as a placement");
+    }
+
+    #[test]
+    fn a_bullet_lights_an_orange_instead_of_splitting_it() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_event::<SoundFx>();
+        app.insert_resource(Stats::default());
+        app.insert_resource(RunFlags::default());
+        app.insert_resource(Score(0));
+        app.world_mut().spawn((
+            Asteroid { size: 2, verts: vec![Vec2::X * 46.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+            Explosive,
+        ));
+        app.world_mut().spawn((
+            Bullet { life: 1.0, trail: Vec::new(), mass: false },
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+        ));
+        app.add_systems(Update, collisions);
+        app.update();
+        assert_eq!(app.world_mut().query::<&Asteroid>().iter(app.world()).count(), 1, "an orange detonates, it does NOT split into chunks");
+        assert_eq!(app.world_mut().query_filtered::<(), With<Detonating>>().iter(app.world()).count(), 1, "the bullet lights the orange (marked Detonating)");
+    }
+
+    #[test]
+    fn a_lit_orange_detonates_chains_and_spares_gold() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_event::<SoundFx>();
+        app.insert_resource(Dev::default());
+        app.insert_resource(Score(0));
+        app.insert_resource(Stats::default());
+        app.insert_resource(Run { lives: 3, respawn: 0.0 });
+        app.insert_resource(NextState::<GameState>::default());
+        // the lit orange at origin (fuse already elapsed → blows this update)
+        app.world_mut().spawn((
+            Asteroid { size: 3, verts: vec![Vec2::X * 88.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+            Explosive,
+            Detonating { fuse: 0.0 },
+        ));
+        // a plain small rock in range → shattered
+        app.world_mut().spawn((
+            Asteroid { size: 1, verts: vec![Vec2::X * 22.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(30.0, 0.0, 0.0),
+        ));
+        // a second orange in range → should be lit (chain)
+        app.world_mut().spawn((
+            Asteroid { size: 2, verts: vec![Vec2::X * 46.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(-30.0, 0.0, 0.0),
+            Explosive,
+        ));
+        // a gold rock in range → spared
+        app.world_mut().spawn((
+            Asteroid { size: 1, verts: vec![Vec2::X * 22.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(0.0, 30.0, 0.0),
+            Gold,
+        ));
+        app.add_systems(Update, detonate);
+        app.update();
+        // the original orange detonated → only the chained orange remains, and it's now lit
+        assert_eq!(app.world_mut().query_filtered::<(), With<Explosive>>().iter(app.world()).count(), 1, "the detonated orange is gone; the chained one remains");
+        assert_eq!(app.world_mut().query_filtered::<(), With<Detonating>>().iter(app.world()).count(), 1, "the nearby orange is lit — a chain reaction");
+        assert_eq!(app.world_mut().query_filtered::<(), With<Gold>>().iter(app.world()).count(), 1, "gold is spared by the blast");
+        let plain = app.world_mut().query_filtered::<(), (With<Asteroid>, Without<Explosive>, Without<Gold>)>().iter(app.world()).count();
+        assert_eq!(plain, 0, "the plain rock in range is shattered");
     }
 
     #[test]
