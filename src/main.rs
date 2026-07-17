@@ -2776,14 +2776,28 @@ fn render(
     let (warp_res, chain) = (&abilities.0, &abilities.1);
     let show_run = run_active(abilities.2.get()); // grid + HUD icons only while a run is on
 
-    // stars (backmost) — always drawn, so the menu keeps a subtle starfield
+    // stars (backmost). Subtle during a run so they never distract; on the menu they're a feature —
+    // bigger, brighter, with a soft glow and diagonal sparkle rays on the brightest ones.
     let star = star_color();
+    let menu = !show_run;
     for (s, st) in &stars {
         let tw = 0.35 + 0.65 * (t * 1.6 + s.phase).sin().max(0.0);
         let c = st.translation.truncate();
-        let col = dim(star, s.bright * tw);
-        gizmos.line_2d(c - Vec2::X * 1.3, c + Vec2::X * 1.3, col);
-        gizmos.line_2d(c - Vec2::Y * 1.3, c + Vec2::Y * 1.3, col);
+        let bright = s.bright * tw * if menu { 2.0 } else { 1.0 };
+        let col = dim(star, bright);
+        let arm = if menu { 2.3 } else { 1.3 };
+        gizmos.line_2d(c - Vec2::X * arm, c + Vec2::X * arm, col);
+        gizmos.line_2d(c - Vec2::Y * arm, c + Vec2::Y * arm, col);
+        if menu {
+            // a soft core dot the bloom smears into a twinkle
+            gizmos.circle_2d(Isometry2d::from_translation(c), 0.8 + 0.7 * tw, dim(star, bright * 0.6));
+            // the brightest stars get diagonal sparkle rays
+            if s.bright > 0.8 {
+                let d = arm * 0.62;
+                gizmos.line_2d(c - Vec2::new(d, d), c + Vec2::new(d, d), dim(star, bright * 0.55));
+                gizmos.line_2d(c - Vec2::new(d, -d), c + Vec2::new(d, -d), dim(star, bright * 0.55));
+            }
+        }
     }
 
     // grid — faint, brighter per-line shimmer; bends toward an active warp hole (and rubber-snaps
@@ -2893,7 +2907,7 @@ fn render(
     // down a drain) with layered glow + comet heads + a pulsing core.
     // The warp shot glows harder than the rest of the scene via brighter HDR colors
     // (NOT more global bloom, which would light up everything else too).
-    let glow = 3.3; // the vortex glows much harder than the rest of the scene (brighter bloom)
+    let glow = 4.2; // the vortex glows much harder than the rest of the scene (brighter bloom)
     let warp = dim(warp_color(), glow);
     let comet = dim(Color::srgb(3.6, 2.2, 5.2), glow); // stream comet heads
     let corec = dim(Color::srgb(4.0, 2.6, 5.2), glow); // pulsing hot core
@@ -2919,31 +2933,38 @@ fn render(
                 let p0 = k as f32 / segs as f32;
                 let p1 = (k + 1) as f32 / segs as f32;
                 // p1: 0 at the (near-invisible) outer rim → 1 at the bright inner throat
-                gizmos.line_2d(pt(p0), pt(p1), dim(warp, 0.46 * f * (0.05 + 0.95 * p1)));
+                gizmos.line_2d(pt(p0), pt(p1), dim(warp, 0.62 * f * (0.05 + 0.95 * p1)));
             }
         }
         // bright streams travelling INWARD (comet: tail streak + bright head), brightening and
-        // growing as they fall toward the core (tiny and dim at the rim → no dots on any circle)
-        for a in 0..arms {
-            let a0 = a as f32 / arms as f32 * TAU;
-            let hp = (hole.spin * 0.18 + a as f32 / arms as f32).rem_euclid(1.0);
-            let tp = (hp - 0.16).max(0.0);
-            let head = c + Vec2::from_angle(a0 + wind * hp + hole.spin) * (r_out - (r_out - r_in) * hp);
-            let tail = c + Vec2::from_angle(a0 + wind * tp + hole.spin) * (r_out - (r_out - r_in) * tp);
-            let b = f * hp * hp; // brightens sharply as it accelerates inward (dark at the rim)
-            gizmos.line_2d(tail, head, dim(warp, 0.9 * b));
-            gizmos.circle_2d(Isometry2d::from_translation(head), 1.5 + 2.0 * hp, dim(comet, b));
+        // growing as they fall toward the core (tiny and dim at the rim → no dots on any circle).
+        // Two offset streams per arm make the drain busier and sparklier.
+        for (offset, headscale) in [(0.0f32, 1.0f32), (0.5, 0.72)] {
+            for a in 0..arms {
+                let a0 = a as f32 / arms as f32 * TAU;
+                let hp = (hole.spin * 0.18 + a as f32 / arms as f32 + offset).rem_euclid(1.0);
+                let tp = (hp - 0.16).max(0.0);
+                let head = c + Vec2::from_angle(a0 + wind * hp + hole.spin) * (r_out - (r_out - r_in) * hp);
+                let tail = c + Vec2::from_angle(a0 + wind * tp + hole.spin) * (r_out - (r_out - r_in) * tp);
+                let b = f * hp * hp; // brightens sharply as it accelerates inward (dark at the rim)
+                gizmos.line_2d(tail, head, dim(warp, 1.1 * b));
+                gizmos.circle_2d(Isometry2d::from_translation(head), headscale * (2.0 + 3.0 * hp), dim(comet, b));
+            }
         }
         // EVENT HORIZON — the kill boundary (anything crossing WARP_CONSUME_R is devoured) and
         // now the vortex's clean outer edge: a single bright pulsing rim, nothing beyond it.
-        gizmos.circle_2d(Isometry2d::from_translation(c), WARP_CONSUME_R * pulse, dim(warp, 0.75 * f));
+        gizmos.circle_2d(Isometry2d::from_translation(c), WARP_CONSUME_R * pulse, dim(warp, 0.9 * f));
         // bright rim + pulsing hot core + a white-hot center for a searing bloom
-        gizmos.circle_2d(Isometry2d::from_translation(c), (r_in + 30.0 * f) * pulse, dim(warp, 0.9 * f));
-        gizmos.circle_2d(Isometry2d::from_translation(c), (r_in + 14.0 * f) * pulse, dim(corec, f));
-        gizmos.circle_2d(Isometry2d::from_translation(c), (r_in + 6.0 * f) * pulse, dim(Color::srgb(6.0, 5.0, 6.0), f));
+        gizmos.circle_2d(Isometry2d::from_translation(c), (r_in + 30.0 * f) * pulse, dim(warp, 1.0 * f));
+        gizmos.circle_2d(Isometry2d::from_translation(c), (r_in + 14.0 * f) * pulse, dim(corec, 1.1 * f));
+        gizmos.circle_2d(Isometry2d::from_translation(c), (r_in + 7.0 * f) * pulse, dim(Color::srgb(7.0, 6.0, 7.0), f));
+        gizmos.circle_2d(Isometry2d::from_translation(c), (r_in + 2.0 * f) * pulse, dim(Color::srgb(8.0, 7.5, 8.0), f)); // searing white throat
     }
     for mt in &missiles {
-        gizmos.circle_2d(Isometry2d::from_translation(mt.translation.truncate()), 6.0, warp);
+        let c = mt.translation.truncate();
+        gizmos.circle_2d(Isometry2d::from_translation(c), 9.0, dim(warp, 0.55)); // outer glow
+        gizmos.circle_2d(Isometry2d::from_translation(c), 5.0, warp);
+        gizmos.circle_2d(Isometry2d::from_translation(c), 2.2, Color::srgb(6.0, 5.0, 7.0)); // hot core
     }
 
     // particles
