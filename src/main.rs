@@ -123,7 +123,8 @@ const BOSS_CAMEO_SECS: f32 = 10.0; // boss drifts by in the background this long
 const DEVOURER_HP: i32 = 70; // starting core HP (much tankier than the shaman's 28)
 const DEVOURER_HP_MAX: i32 = 140; // cap — eating heals toward this, never past
 const DEVOURER_BASE_R: f32 = 22.0; // starts small (a size-1 rock)
-const DEVOURER_MAX_R: f32 = 110.0; // fully fed — crowds the player out
+const DEVOURER_MAX_R: f32 = 200.0; // fully gorged — swells huge, then OVERLOADS and bursts (see devourer_update)
+const DEVOURER_BURST_R: f32 = 420.0; // overload blast reach — near screen-wide; escapable only by being far
 const DEVOURER_GROW_PER_EAT: f32 = 0.09; // grow step per rock (~11 rocks → max size)
 const DEVOURER_HEAL_PER_EAT: i32 = 4; // HP regained per rock (tankier the more it feeds)
 const DEVOURER_SPEED: f32 = 95.0; // px/s seek speed (below the ship's, so it's dodgeable)
@@ -2404,6 +2405,29 @@ fn devourer_update(
             }
         }
 
+        // ── OVERLOAD: gorged to full → a screen-wide detonation, then it shrinks to nothing and
+        //    starts feeding again. Starve it (clear the rocks) to keep it from ever filling up. ──
+        if dv.grow >= 1.0 {
+            for (re, rt, _) in &rocks {
+                burst(&mut commands, rt.translation.truncate(), devourer_color(), 5, 240.0, &mut rng);
+                commands.entity(re).despawn(); // wipe the field (gold isn't in `rocks`, so it's spared)
+            }
+            burst(&mut commands, p, Color::srgb(7.0, 3.0, 3.0), 90, 760.0, &mut rng); // shockwave
+            burst(&mut commands, p, devourer_color(), 50, 520.0, &mut rng);
+            sfx.write(SoundFx::Mine);
+            // caught in the blast → dead (unless mid-respawn or invincible); escapable only by distance
+            if run.respawn <= 0.0 {
+                if let Some((se, st, sh)) = ship {
+                    let sp = st.translation.truncate();
+                    if !immune(sh, &dev) && p.distance(sp) < DEVOURER_BURST_R {
+                        kill_ship(&mut commands, &mut run, &mut next, &mut sfx, se, sp, &mut rng);
+                    }
+                }
+            }
+            dv.grow = 0.0; // shrink back to starting size and gorge again
+            continue;
+        }
+
         // ── move toward the nearest rock, or hunt the ship when the field is clear ──
         let goal = nearest.or_else(|| ship.map(|(_, st, _)| st.translation.truncate()));
         if let Some(g) = goal {
@@ -3264,7 +3288,10 @@ fn render_boss(
         let scale = if dv.dying > 0.0 { (dv.dying / BOSS_DEATH_SECS).clamp(0.0, 1.0) } else { 1.0 };
         let r = devourer_radius(dv.grow) * scale;
         let throb = 1.0 + 0.06 * dv.pulse.sin();
-        let dc = devourer_color();
+        // overload telegraph: as it nears full it flashes white-hot (about to burst — get clear!)
+        let charge = ((dv.grow - 0.7) / 0.3).clamp(0.0, 1.0);
+        let flash = 0.5 + 0.5 * (dv.pulse * (4.0 + 9.0 * charge)).sin();
+        let dc = if dv.dying <= 0.0 { mix(devourer_color(), Color::srgb(8.0, 7.5, 7.0), charge * flash) } else { devourer_color() };
         let body: Vec<Vec2> = (0..=18)
             .map(|k| {
                 let a = k as f32 / 18.0 * TAU + dv.pulse * 0.2;
@@ -3277,6 +3304,10 @@ fn render_boss(
         let hpf = (dv.hp as f32 / DEVOURER_HP as f32).clamp(0.2, 1.0);
         gizmos.circle_2d(Isometry2d::from_translation(c), r * 0.42 * throb, dim(dc, 0.7 * hpf));
         gizmos.circle_2d(Isometry2d::from_translation(c), r * 0.18, Color::srgb(6.0, 4.0, 4.0));
+        // HP bar (top-center) — tracks its heal-toward-max; hidden once dying
+        if dv.dying <= 0.0 {
+            boss_hp_bar(&mut gizmos, h.y - 42.0, dv.hp as f32 / DEVOURER_HP_MAX as f32, devourer_color());
+        }
     }
 
     // cameo: the boss drifts by in the background in the run-up to its wave
@@ -3329,19 +3360,23 @@ fn render_boss(
             gizmos.linestrip_2d(star, mc);
             gizmos.circle_2d(Isometry2d::from_translation(c), BOSS_R * 0.4 * throb * scale, mc);
         }
-        // HP bar (top-center): a dim full-width track with a bright magenta fill.
-        // Hidden once it's dying (the fight's over).
+        // HP bar (top-center), hidden once it's dying (the fight's over)
         if boss.dying <= 0.0 {
-            let frac = (boss.hp as f32 / BOSS_HP as f32).clamp(0.0, 1.0);
-            let bw = 380.0;
-            let x0 = -bw / 2.0;
-            let by = h.y - 42.0;
-            for i in 0..6 {
-                let yy = by + (i as f32 - 2.5) * 2.2;
-                gizmos.line_2d(Vec2::new(x0, yy), Vec2::new(x0 + bw, yy), dim(mc, 0.18)); // track
-                gizmos.line_2d(Vec2::new(x0, yy), Vec2::new(x0 + bw * frac, yy), mc); // fill
-            }
+            boss_hp_bar(&mut gizmos, h.y - 42.0, boss.hp as f32 / BOSS_HP as f32, mc);
         }
+    }
+}
+
+// A boss HP bar across the top: a dim full-width track with a bright fill in the boss's colour.
+// Shared by the Warden and the Devourer so they read identically.
+fn boss_hp_bar(gizmos: &mut Gizmos, top_y: f32, frac: f32, color: Color) {
+    let frac = frac.clamp(0.0, 1.0);
+    let bw = 380.0;
+    let x0 = -bw / 2.0;
+    for i in 0..6 {
+        let yy = top_y + (i as f32 - 2.5) * 2.2;
+        gizmos.line_2d(Vec2::new(x0, yy), Vec2::new(x0 + bw, yy), dim(color, 0.18)); // track
+        gizmos.line_2d(Vec2::new(x0, yy), Vec2::new(x0 + bw * frac, yy), color); // fill
     }
 }
 
@@ -5522,6 +5557,39 @@ mod tests {
         assert!(dv.grow > 0.0, "eating grows it");
         assert!(dv.hp > DEVOURER_HP, "eating heals it (tankier)");
         assert_eq!(dv.fed, 1, "it ate exactly one rock");
+    }
+
+    #[test]
+    fn a_gorged_devourer_bursts_wipes_the_field_and_shrinks() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_event::<SoundFx>();
+        app.insert_resource(Stats::default());
+        app.insert_resource(RunFlags::default());
+        app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
+        app.insert_resource(Run { lives: 3, respawn: 0.0 });
+        app.insert_resource(NextState::<GameState>::default());
+        app.insert_resource(Score(0));
+        app.insert_resource(Wave { level: 10, timer: WAVE_SECS, calm: 0.0 });
+        app.insert_resource(WaveBanner::default());
+        app.insert_resource(Dev::default());
+        // fully gorged (grow == 1.0), still alive → it should OVERLOAD this frame
+        app.world_mut().spawn((Devourer { hp: 50, grow: 1.0, fed: 20, dying: 0.0, pulse: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0)));
+        // a ship within the burst reach but OUTSIDE contact range → the burst is what kills it
+        app.world_mut().spawn((Ship { angle: 0.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 }, Velocity(Vec2::ZERO), Transform::from_xyz(300.0, 0.0, 0.0)));
+        // field rocks (out of eating reach) → wiped by the burst
+        for i in 0..5 {
+            app.world_mut().spawn((
+                Asteroid { size: 1, verts: vec![Vec2::X * 22.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+                Transform::from_xyz(-300.0 + i as f32 * 20.0, 250.0, 0.0),
+            ));
+        }
+        app.add_systems(Update, devourer_update);
+        app.update();
+        let grow = app.world_mut().query::<&Devourer>().iter(app.world()).next().unwrap().grow;
+        assert!(grow < 0.01, "the devourer shrinks back to starting size after bursting");
+        assert_eq!(app.world_mut().query::<&Asteroid>().iter(app.world()).count(), 0, "the burst wipes the field");
+        assert_eq!(app.world().resource::<Run>().lives, 2, "the burst kills the player caught in range");
     }
 
     #[test]

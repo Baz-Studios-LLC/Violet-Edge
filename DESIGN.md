@@ -41,12 +41,14 @@ with the asteroids for attention.
 
 ## Bosses — the 50-level ladder
 
-Every 5th wave. Each weaponizes a different *relationship to asteroids* (see Design rules).
+Every 5th wave. Each weaponizes a different *relationship to asteroids* (see Design rules). **Every
+boss shows a top-center HP bar** (shared `boss_hp_bar`, tinted to the boss); the Glutton's tracks its
+heal-toward-max, so letting it feed visibly refills the bar.
 
 | Wave | Boss | Status | Verb → mechanic | Counterplay |
 | --- | --- | --- | --- | --- |
 | 5 | **The Warden** | ✅ | *Hoard* — shield of captured rocks on rotating arms; hurls the small ones | Strip the shield, shoot the core through the gaps (bullets hurt the core; chain/warp don't) |
-| 10 | **The Glutton** | ✅ | *Eat* — red seeker devours free rocks to grow bigger & tankier | Starve it: clear the field while chipping its (high) HP |
+| 10 | **The Glutton** | ✅ | *Eat* — red seeker devours free rocks to grow bigger & tankier; gorged to full it **OVERLOADS**: swells huge (flashing white as a tell), detonates a near screen-wide blast (wipes the field, kills you unless you're far — `DEVOURER_BURST_R`), then shrinks to nothing and starts over | Starve it: clear the field so it never fills up; chip its HP; when it's swollen and flashing, **get clear** before it bursts |
 | 15 | **The Slinger** | 🔷 | *Shoot* — large enemy ship lines a big rock between you two and blasts it at you like a cannonball | Keep the lane clear / juke the shot; break its ammo first |
 | 20 | **The Detonator** | 🔷 | *Prime* — turns nearby rocks into live bombs; itself armored | Bait the chain — only explosive blasts crack its shell |
 | 25 | **The Pulsar** | 🔷 | *Pulse* — invulnerable while lit; shockwaves fling every rock (and you) outward | Hit only on the dark beat; don't get pinned to a wall |
