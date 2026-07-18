@@ -1,0 +1,61 @@
+name: release
+
+# Builds native binaries for Windows, macOS (Apple Silicon) and Linux, and attaches them to the
+# GitHub Release. Runs automatically on a version tag (v*), or manually via "Run workflow" against
+# an existing tag. Cross-compiling Bevy from one OS to another isn't practical, so each platform
+# builds on its own runner.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and attach assets to (e.g. v0.2.2)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+            bin: violet-edge.exe
+          - os: macos-latest
+            platform: macos-arm64
+            bin: violet-edge
+          - os: ubuntu-latest
+            platform: linux
+            bin: violet-edge
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux deps (Bevy needs ALSA + udev)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
+      - name: Build
+        run: cargo build --release
+      - name: Package
+        shell: bash
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          out="violet-edge-${tag}-${{ matrix.platform }}.zip"
+          cd target/release
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            7z a "../../$out" "${{ matrix.bin }}"
+          else
+            zip "../../$out" "${{ matrix.bin }}"   # zip preserves the executable bit on macOS/Linux
+          fi
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: violet-edge-*.zip
