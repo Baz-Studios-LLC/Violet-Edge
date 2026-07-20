@@ -81,31 +81,36 @@ Each boss drops a powerup that echoes its own mechanic.
 ## Progression — 5 acts
 
 Each new asteroid debuts a few waves *before* the boss that weaponizes it: learn the toy, then fight
-the thing made of it. (This replaces the current "loop 1–10" scaffold; until the arc is built,
-content still repeats 1–10.)
+the thing made of it. (Waves 1–15 are now bespoke content; the loop resumes at 16, repeating the
+1–15 arc until later acts are built.)
 
 | Act | Waves | New asteroid(s) | New enemy | Bosses |
 | --- | --- | --- | --- | --- |
 | I — The Field | 1–10 | Blue, Green ✅ | Yellow mob ✅ | Warden (5), Glutton (10) |
-| II — Volatile | 11–20 | Orange (explosive) ✅ | Darter | Slinger (15), Detonator (20) |
+| II — Volatile | 11–20 | Orange (explosive) ✅ | Limpet | Slinger (15), Detonator (20) |
 | III — Unstable | 21–30 | Red (growing), Pulser (invuln-lit) | — | Pulsar (25), Singularity (30) |
 | IV — Deep Belt | 31–40 | **Crystal** (reflects) *or* **Ice** (shard-burst) — TBD | — | Hive (35), Prism (40) |
 | V — The Core | 41–50 | **Void** (swallows bullets) *or* **Magnetic** (bends fire) — TBD | — | Gemini (45), Progenitor (50) |
 
 ### Waves 11–15 — building now (won't extend past 15 until a no-dev-invuln run reaches 16)
 
-Per-wave content plan (the current 1–10 loop stops applying from 11):
+Per-wave content plan. `content_wave` is now identity through 15 with a `rem_euclid(15)` loop after;
+the rock mix lives in `roll_rock_kind` (orange fraction ~0.25 on waves 11–13, 1.0 on 14 — tunable):
 
 | Wave | Content | Section status |
 | --- | --- | --- |
-| 11 | green + orange | orange ✅ · wiring pending |
-| 12 | Darter (new mob) + orange | mob + wiring pending |
-| 13 | green + orange + Darters (as 12) | mob + wiring pending |
-| 14 | orange only | wiring pending |
-| 15 | **The Slinger** (boss) + green only | boss + wiring pending |
+| 11 | green + orange | wired ✅ |
+| 12 | Limpet (new mob) + orange | orange wired ✅ · mob pending |
+| 13 | green + orange + Limpets (as 12) | orange/green wired ✅ · mob pending |
+| 14 | orange only | wired ✅ |
+| 15 | **The Slinger** (boss) + green only | green wired ✅ · boss pending (shows boss #1 as placeholder) |
 
-Build order (one section at a time): **1. orange ✅ → 2. Darter mob → 3. Slinger boss → 4. wire the
-11–15 content.**
+Build order (one section at a time): **1. orange mechanic ✅ → 2. wave restructure + orange/green
+wiring ✅ (§A) → 3. Limpet mob (§B) → 4. Slinger boss (§C) → 5. Slinger's Drone powerup.**
+
+The Limpet (§B): a mob that clings to a large asteroid and fires from behind it — you must break or
+flank the rock to kill it, so it forces engagement with the rock field (never overshadows it). Its
+own spawner gates it to waves 12–13 (the old yellow lobber stays off 11–15 via `enemy_target`).
 
 ## Life economy (implemented: gold 1UP rock)
 

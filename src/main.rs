@@ -103,7 +103,7 @@ const ENEMY_SCORE: u32 = 300;
 const ENEMY_SPAWN_INTERVAL: f32 = 3.0;
 
 // Dense (green) asteroids take multiple bullet hits to crack (hp = size); chain/mine still break
-// them at once. The per-wave spawn chance lives in `roll_dense` (wave 6 mixes them in; 7-9 all-green).
+// them at once. The per-wave rock mix (blue / green / orange) lives in `roll_rock_kind`.
 
 // Octopus boss (every 5th wave): a magenta core that captures field asteroids into a
 // rotating orbital shield (its "arms") and hurls the smallest held rocks at the ship.
@@ -813,9 +813,9 @@ fn is_boss_wave(level: i32) -> bool {
     level % BOSS_WAVE_INTERVAL == 0
 }
 
-// Waves 11+ repeat the 1-10 content arc (we perfect 1-10 first); map any wave to its 1-10 slot.
+// Waves 1-15 are hand-authored; 16+ loop back over that arc (we perfect 1-15 first, then extend).
 fn content_wave(level: i32) -> i32 {
-    (level - 1).rem_euclid(10) + 1
+    (level - 1).rem_euclid(15) + 1
 }
 // Boss waves alternate: content-10 = the devourer (boss 2); content-5 = the shaman (boss 1).
 fn is_devourer_wave(level: i32) -> bool {
@@ -981,23 +981,46 @@ fn disarm_fire(mut armed: ResMut<FireArmed>) {
     armed.0 = false;
 }
 
-// Should a rock spawned for `level` be the tanky green variant? From wave 6 on, half
-// the edge spawns come in dense (single roll, shared by every edge-spawn caller).
-fn roll_dense(level: i32, rng: &mut impl Rng) -> bool {
-    // wave 6 introduces green alongside blue; waves 7-9 are ALL green; none before 6 or on the
-    // devourer wave (10 = plain blue food so the player can clear it to starve the boss).
-    let frac = match content_wave(level) {
-        6 => 0.5,
-        7..=9 => 1.0,
+// The three flavors of edge-spawned rock. A rock is exactly one — never both green and orange.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RockKind {
+    Blue,   // plain
+    Green,  // dense / tanky (takes `hp` hits)
+    Orange, // explosive (detonates instead of splitting)
+}
+
+// Which flavor should a rock spawned for `level` be? One roll shared by every edge-spawn caller,
+// so a wave's whole rock mix is defined here. Fractions are the tuning knobs for wave feel.
+fn roll_rock_kind(level: i32, rng: &mut impl Rng) -> RockKind {
+    // Orange (explosive) fraction. Debuts wave 11; wave 14 is the ALL-orange danger wave.
+    let orange = match content_wave(level) {
+        11..=13 => 0.25,
+        14 => 1.0,
         _ => 0.0,
     };
-    rng.gen_bool(frac)
+    if rng.gen_bool(orange) {
+        return RockKind::Orange;
+    }
+    // Green (dense) fraction of what's left. Wave 6 mixes green in; 7-9 are all green; the devourer
+    // wave (10) stays plain blue food. Waves 11 & 13 make their non-orange rocks green ("green +
+    // orange"), and the wave-15 boss arena is green-only.
+    let green = match content_wave(level) {
+        6 => 0.5,
+        7..=9 => 1.0,
+        11 | 13 | 15 => 1.0,
+        _ => 0.0,
+    };
+    if rng.gen_bool(green) {
+        RockKind::Green
+    } else {
+        RockKind::Blue
+    }
 }
 
 // A fresh large asteroid entering from just off a random edge (wave top-up). `dense`
 // spawns the tanky green variant (the caller decides based on the wave). Returns the entity so
 // callers can tag it (e.g. the gold 1UP rock).
-fn spawn_edge_asteroid(commands: &mut Commands, half: Vec2, rng: &mut impl Rng, dense: bool, force_big: bool) -> Entity {
+fn spawn_edge_asteroid(commands: &mut Commands, half: Vec2, rng: &mut impl Rng, kind: RockKind, force_big: bool) -> Entity {
     // mostly LARGE rocks (break into mid → small), with some MID ones mixed in. `force_big`
     // guarantees a LARGE one (used to refill the big-rock floor).
     let size = if force_big || rng.gen_bool(0.8) { 3 } else { 2 };
@@ -1010,13 +1033,17 @@ fn spawn_edge_asteroid(commands: &mut Commands, half: Vec2, rng: &mut impl Rng, 
         2 => (Vec2::new(rng.gen_range(-half.x..half.x), -half.y - r), Vec2::new(jitter, inward)),
         _ => (Vec2::new(rng.gen_range(-half.x..half.x), half.y + r), Vec2::new(jitter, -inward)),
     };
-    spawn_asteroid(commands, pos, size, vel, rng, dense)
+    let e = spawn_asteroid(commands, pos, size, vel, rng, matches!(kind, RockKind::Green));
+    if matches!(kind, RockKind::Orange) {
+        commands.entity(e).insert(Explosive); // detonates instead of splitting (see `detonate`)
+    }
+    e
 }
 
 // Spawn the rare gold 1UP asteroid: a large rock from a random edge, tagged `Gold` so it (and every
 // fragment it breaks into) is part of the lineage the player must fully clear for the extra life.
 fn spawn_gold_rock(commands: &mut Commands, half: Vec2, rng: &mut impl Rng) {
-    let e = spawn_edge_asteroid(commands, half, rng, false, true); // always large, never dense
+    let e = spawn_edge_asteroid(commands, half, rng, RockKind::Blue, true); // always large, plain (not dense/explosive)
     commands.entity(e).insert(Gold);
 }
 
@@ -1943,8 +1970,8 @@ fn wave_timer(
     let have = asteroids.iter().count() as i32;
     let mut rng = rand::thread_rng();
     for _ in 0..(target - have).max(0) {
-        let dense = roll_dense(wave.level, &mut rng);
-        spawn_edge_asteroid(&mut commands, arena.half, &mut rng, dense, false);
+        let kind = roll_rock_kind(wave.level, &mut rng);
+        spawn_edge_asteroid(&mut commands, arena.half, &mut rng, kind, false);
     }
 }
 
@@ -1987,8 +2014,8 @@ fn top_up_asteroids(
     // cap — otherwise breaking large rocks leaves the field as nothing but small debris.
     if count < population_target(wave.level) || bigs < BIG_FLOOR {
         let mut rng = rand::thread_rng();
-        let dense = roll_dense(wave.level, &mut rng);
-        spawn_edge_asteroid(&mut commands, arena.half, &mut rng, dense, bigs < BIG_FLOOR);
+        let kind = roll_rock_kind(wave.level, &mut rng);
+        spawn_edge_asteroid(&mut commands, arena.half, &mut rng, kind, bigs < BIG_FLOOR);
         clock.0 = SPAWN_INTERVAL;
     } else {
         clock.0 = 0.5; // at target — recheck shortly
@@ -2235,7 +2262,8 @@ fn warp_missile_update(
 // ─────────────────────────────── enemy ships (wave 3+) ────────────────
 fn enemy_target(level: i32, asteroids: i32) -> i32 {
     // yellow mobs run in two windows: waves 3-4 (before boss 1), then 8-9 (after the green intro,
-    // before boss 2). None on 6-7 (green rocks are the focus) or on the boss waves (5, 10).
+    // before boss 2). None on 6-7 (green rocks are the focus) or on the boss waves (5, 10). Content
+    // waves 11-15 also return 0 here — the Limpet is their mob and spawns from its own system.
     let raw = match content_wave(level) {
         3 => 2,
         4 => 4,
@@ -6010,6 +6038,39 @@ mod tests {
     }
 
     #[test]
+    fn wave_rock_mix_matches_the_authored_content() {
+        fn sample(level: i32, n: usize, rng: &mut rand::rngs::ThreadRng) -> (i32, i32, i32) {
+            let (mut blue, mut green, mut orange) = (0, 0, 0);
+            for _ in 0..n {
+                match roll_rock_kind(level, rng) {
+                    RockKind::Blue => blue += 1,
+                    RockKind::Green => green += 1,
+                    RockKind::Orange => orange += 1,
+                }
+            }
+            (blue, green, orange)
+        }
+        let mut rng = rand::thread_rng();
+        // wave 14 is the ALL-orange danger wave
+        let (b, g, o) = sample(14, 200, &mut rng);
+        assert_eq!((b, g, o), (0, 0, 200), "wave 14 is nothing but orange");
+        // wave 15 (boss) is green-only — no orange
+        let (b, g, o) = sample(15, 200, &mut rng);
+        assert_eq!((b, g, o), (0, 200, 0), "wave 15 is green-only");
+        // wave 11 "green + orange": every rock is one or the other, never plain blue
+        let (b, g, o) = sample(11, 400, &mut rng);
+        assert_eq!(b, 0, "wave 11 has no plain blue rocks");
+        assert!(g > 0 && o > 0, "wave 11 mixes green and orange, got green={g} orange={o}");
+        // wave 12 "mob + orange": orange over plain blue, never green
+        let (b, g, o) = sample(12, 400, &mut rng);
+        assert_eq!(g, 0, "wave 12 has no green rocks");
+        assert!(b > 0 && o > 0, "wave 12 mixes blue and orange, got blue={b} orange={o}");
+        // the devourer wave (10) stays plain blue food so it can be starved
+        let (_b, g, o) = sample(10, 200, &mut rng);
+        assert_eq!((g, o), (0, 0), "the devourer wave is plain blue food");
+    }
+
+    #[test]
     fn mine_target_gates_and_caps() {
         assert_eq!(mine_target(1, 10), 0, "no mines before wave 2");
         assert_eq!(mine_target(2, 10), 2, "wave 2: (2-2+1)*2 = 2, under the 50%-of-10 cap");
@@ -6181,20 +6242,23 @@ mod tests {
         assert_eq!(enemy_target(8, 100), 4, "mobs return on wave 8");
         assert_eq!(enemy_target(9, 100), 6, "wave 9 → 6");
         assert_eq!(enemy_target(9, 10), 3, "capped to a fraction of the rock count");
-        assert_eq!(enemy_target(11, 100), 0, "loop: wave 11 = content 1, no mobs");
-        assert_eq!(enemy_target(13, 100), 2, "loop: wave 13 = content 3 → 2");
+        assert_eq!(enemy_target(11, 100), 0, "waves 11-15 run no old-lobber mobs (the Limpet covers 12-13)");
+        assert_eq!(enemy_target(13, 100), 0, "wave 13's mob is the Limpet, not the lobber");
+        assert_eq!(enemy_target(16, 100), 0, "loop: wave 16 = content 1, no mobs");
+        assert_eq!(enemy_target(18, 100), 2, "loop: wave 18 = content 3 → 2");
     }
 
     #[test]
     fn content_wave_loops_and_picks_boss_type() {
         assert_eq!(content_wave(1), 1);
         assert_eq!(content_wave(10), 10);
-        assert_eq!(content_wave(11), 1, "wave 11 loops to content 1");
-        assert_eq!(content_wave(15), 5);
-        assert_eq!(content_wave(20), 10);
-        assert!(is_devourer_wave(10) && is_devourer_wave(20), "content-10 waves are boss 2");
-        assert!(!is_devourer_wave(5) && !is_devourer_wave(15), "content-5 waves are boss 1");
-        assert!(is_boss_wave(5) && is_boss_wave(10) && !is_boss_wave(6));
+        assert_eq!(content_wave(15), 15, "waves 1-15 are their own content slots");
+        assert_eq!(content_wave(16), 1, "wave 16 loops back to content 1");
+        assert_eq!(content_wave(20), 5, "wave 20 = content 5 (a boss wave again)");
+        assert_eq!(content_wave(25), 10);
+        assert!(is_devourer_wave(10) && is_devourer_wave(25), "content-10 waves are the devourer");
+        assert!(!is_devourer_wave(5) && !is_devourer_wave(15) && !is_devourer_wave(20), "content 5 & 15 are other bosses");
+        assert!(is_boss_wave(5) && is_boss_wave(10) && is_boss_wave(15) && !is_boss_wave(6));
     }
 
     #[test]
