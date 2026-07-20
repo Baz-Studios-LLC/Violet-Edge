@@ -15,6 +15,9 @@ intended design; implemented rows describe what the code does today.
   *mass*; drone ← the enemy *ship*). The base Warp weapon is core kit and exempt.
 - **Difficult but fair.** Manageable chaos is welcome; only pull back at unavoidable/instant death.
   Leave skill-gated tricks for players to discover rather than hand-holding them.
+- **Each new asteroid escalates.** Every new asteroid type should be genuinely dangerous and harder to
+  manage than the last — the player must *learn* each one (spacing, engagement order, timing). A new
+  asteroid that feels harmless is a bug; lean into the threat (bounded only by the instant-death line).
 
 ## Asteroids
 
@@ -100,17 +103,22 @@ the rock mix lives in `roll_rock_kind` (orange fraction ~0.25 on waves 11–13, 
 | Wave | Content | Section status |
 | --- | --- | --- |
 | 11 | green + orange | wired ✅ |
-| 12 | Limpet (new mob) + orange | orange wired ✅ · mob pending |
-| 13 | green + orange + Limpets (as 12) | orange/green wired ✅ · mob pending |
+| 12 | Limpet (new mob) + orange | orange wired ✅ · Limpet ✅ (core) |
+| 13 | green + orange + Limpets (as 12) | orange/green wired ✅ · Limpet ✅ (core) |
 | 14 | orange only | wired ✅ |
 | 15 | **The Slinger** (boss) + green only | green wired ✅ · boss pending (shows boss #1 as placeholder) |
 
 Build order (one section at a time): **1. orange mechanic ✅ → 2. wave restructure + orange/green
-wiring ✅ (§A) → 3. Limpet mob (§B) → 4. Slinger boss (§C) → 5. Slinger's Drone powerup.**
+wiring ✅ (§A) → 3. Limpet mob ✅ core (§B) → 4. Slinger boss (§C) → 5. Slinger's Drone powerup.**
 
-The Limpet (§B): a mob that clings to a large asteroid and fires from behind it — you must break or
-flank the rock to kill it, so it forces engagement with the rock field (never overshadows it). Its
-own spawner gates it to waves 12–13 (the old yellow lobber stays off 11–15 via `enemy_target`).
+The Limpet (§B, ✅ core): a cyan parasite that TETHERS to a large rock and hides on its far side
+(relative to the ship), peeking out to fire the slow `EnemyBullet`. Its host is a shield — shots from
+the rock-side are blocked (`guard` half-plane); you kill it by FLANKING the exposed side (it
+repositions at a limited speed, so a nimble player out-turns it) or by catching it EXPOSED while it
+transits between rocks. Break its host and it just scrambles to another large rock — it re-tethers
+until *it* is destroyed (2 HP). Gated to waves 12–13 (cap `LIMPET_MAX`); the old yellow lobber stays
+off 11–15 via `enemy_target`. **Pass-2 TODO:** direct hits from warp / orange blast / chain beam
+(right now those kill it only indirectly, by destroying whatever rock it's on).
 
 ## Life economy (implemented: gold 1UP rock)
 
