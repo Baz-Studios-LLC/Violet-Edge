@@ -1284,30 +1284,27 @@ struct ActionState {
     mute: bool,
 }
 
-fn key_mouse_held(b: &Bind, keys: &ButtonInput<KeyCode>, mouse: &ButtonInput<MouseButton>) -> bool {
-    match b {
-        Bind::Key(k) => keys.pressed(*k),
-        Bind::Mouse(m) => mouse.pressed(*m),
-        Bind::Pad(_) => false, // gamepad wired in a later section
-    }
-}
-fn key_mouse_just(b: &Bind, keys: &ButtonInput<KeyCode>, mouse: &ButtonInput<MouseButton>) -> bool {
-    match b {
-        Bind::Key(k) => keys.just_pressed(*k),
-        Bind::Mouse(m) => mouse.just_pressed(*m),
-        Bind::Pad(_) => false,
-    }
-}
+const STICK_DEADZONE: f32 = 0.2; // ignore small left-stick drift before it counts as turning
 
-// Resolve raw device state into ActionState each frame (PreUpdate, all states).
-fn gather_input(keys: Res<ButtonInput<KeyCode>>, mouse: Res<ButtonInput<MouseButton>>, bindings: Res<Bindings>, mut state: ResMut<ActionState>) {
+// Resolve raw device state (keyboard, mouse, any connected gamepad) into ActionState each frame
+// (PreUpdate, all states). Digital binds OR together; the left stick adds analog turn on top.
+fn gather_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    gamepads: Query<&Gamepad>,
+    bindings: Res<Bindings>,
+    mut state: ResMut<ActionState>,
+) {
     let mut turn = 0.0f32;
     let mut thrust = 0.0f32;
     let mut fire_held = false;
     let (mut warp, mut chain, mut toggle, mut pause, mut mute) = (false, false, false, false, false);
     for (act, b) in bindings.kbm.iter().chain(bindings.pad.iter()) {
-        let h = key_mouse_held(b, &keys, &mouse);
-        let j = key_mouse_just(b, &keys, &mouse);
+        let (h, j) = match b {
+            Bind::Key(k) => (keys.pressed(*k), keys.just_pressed(*k)),
+            Bind::Mouse(m) => (mouse.pressed(*m), mouse.just_pressed(*m)),
+            Bind::Pad(btn) => (gamepads.iter().any(|g| g.pressed(*btn)), gamepads.iter().any(|g| g.just_pressed(*btn))),
+        };
         match act {
             Action::TurnLeft => {
                 if h {
@@ -1330,6 +1327,14 @@ fn gather_input(keys: Res<ButtonInput<KeyCode>>, mouse: Res<ButtonInput<MouseBut
             Action::ToggleShot => toggle |= j,
             Action::Pause => pause |= j,
             Action::Mute => mute |= j,
+        }
+    }
+    // left stick adds analog turn (finer than the d-pad): stick right (+x) = clockwise = negative turn
+    for g in &gamepads {
+        if let Some(x) = g.get(GamepadAxis::LeftStickX) {
+            if x.abs() > STICK_DEADZONE {
+                turn -= x;
+            }
         }
     }
     *state = ActionState { turn: turn.clamp(-1.0, 1.0), thrust: thrust.clamp(0.0, 1.0), fire_held, warp, chain, toggle, pause, mute };
