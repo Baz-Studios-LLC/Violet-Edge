@@ -401,9 +401,8 @@ enum GameState {
     #[default]
     Menu,
     Achievements, // the achievements screen, reached from the main menu
-    Controls,     // the controls reference, reached from the main menu
+    Controls,     // input method + key/button rebinding, reached from the main menu
     Briefing,     // the lore + objectives screen, reached from the main menu
-    Settings,     // input method + key/button rebinding, reached from the main menu
     Playing,
     Paused,
     GameOver,
@@ -624,14 +623,13 @@ struct Hud; // HUD roots — hidden on the menu screens
 enum MenuAction {
     Play,
     Achievements,
-    Controls,
+    Controls, // main menu → the controls / input-rebinding screen
     Briefing,
-    Settings, // main menu → the input/rebinding screen
-    Back,     // return to the main menu from a sub-screen
-    Resume,   // pause menu → back to the game
-    Quit,     // pause menu → abandon the run to the main menu
-    SetInput(InputMethod), // settings: choose the input method
-    ResetBinds,            // settings: restore default bindings
+    Back,   // return to the main menu from a sub-screen
+    Resume, // pause menu → back to the game
+    Quit,   // pause menu → abandon the run to the main menu
+    SetInput(InputMethod), // controls screen: choose the input method
+    ResetBinds,            // controls screen: restore default bindings
 }
 #[derive(Component)]
 struct MenuButton(MenuAction);
@@ -3773,7 +3771,7 @@ fn pause_toggle(
                 next.set(GameState::Menu); // quit the run → OnEnter(Menu) wipes the field
             }
         }
-        GameState::Menu | GameState::Achievements | GameState::Controls | GameState::Briefing | GameState::Settings | GameState::GameOver => {}
+        GameState::Menu | GameState::Achievements | GameState::Controls | GameState::Briefing | GameState::GameOver => {}
     }
 }
 
@@ -3981,10 +3979,6 @@ fn menu_start(
         next.set(GameState::Controls);
         return;
     }
-    if keys.just_pressed(KeyCode::KeyS) || actions.contains(&MenuAction::Settings) {
-        next.set(GameState::Settings);
-        return;
-    }
     if keys.just_pressed(KeyCode::KeyB) || actions.contains(&MenuAction::Briefing) {
         next.set(GameState::Briefing);
         return;
@@ -4064,7 +4058,6 @@ fn spawn_menu_ui(mut commands: Commands, achieved: Res<Achievements>, intro: Res
         p.spawn((MenuTitle { age: title_age }, text_f(f, 82.0, title_color(), "VIOLET EDGE")));
         menu_button(p, f, MenuAction::Play, "PLAY");
         menu_button(p, f, MenuAction::Controls, "CONTROLS");
-        menu_button(p, f, MenuAction::Settings, "SETTINGS");
         menu_button(p, f, MenuAction::Briefing, "BRIEFING");
         menu_button(p, f, MenuAction::Achievements, &format!("ACHIEVEMENTS  ({done} / {})", ACHIEVEMENTS.len()));
         if best > 0 {
@@ -4111,26 +4104,34 @@ fn spawn_achievements_ui(mut commands: Commands, achieved: Res<Achievements>, fo
 }
 
 // The controls reference — a key | action table, reached from the main menu.
+// The controls screen IS the rebinding screen: pick the input method and remap any action for
+// keyboard/mouse and controller. The cells show the LIVE bindings (updated by controls_display).
 fn spawn_controls_ui(mut commands: Commands, font: Res<MenuFont>) {
     spawn_frame(&mut commands, ControlsUi);
-    let root = overlay(&mut commands, ControlsUi, 0.5);
+    let root = overlay(&mut commands, ControlsUi, 0.6);
     let f = &font.0;
-    let key = Color::srgb(0.82, 0.88, 1.1);
-    let act = Color::srgb(0.72, 0.76, 0.9);
+    let head = Color::srgb(0.72, 0.76, 0.9);
     commands.entity(root).with_children(|p| {
-        p.spawn(text_f(f, 48.0, title_color(), "CONTROLS"));
-        for (k, a) in [
-            ("Turn", "Left / Right  or  A / D"),
-            ("Thrust", "Up  or  W"),
-            ("Fire", "Space  or  Left Mouse"),
-            ("Warp (black hole)", "Shift"),
-            ("Chain shot", "Right Mouse  (once earned)"),
-            ("Mass shot: toggle", "Q  (once earned)"),
-            ("Pause", "Esc"),
-            ("Music on / off", "M"),
-        ] {
-            table_row(p, f, k, key, 300.0, a, act);
+        p.spawn(text_f(f, 44.0, title_color(), "CONTROLS"));
+        p.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(8.0), ..default() }).with_children(|row| {
+            menu_button(row, f, MenuAction::SetInput(InputMethod::Auto), "AUTO");
+            menu_button(row, f, MenuAction::SetInput(InputMethod::KeyboardMouse), "KB + MOUSE");
+            menu_button(row, f, MenuAction::SetInput(InputMethod::Controller), "CONTROLLER");
+        });
+        p.spawn((InputLabel, text_f(f, 15.0, head, "")));
+        p.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(14.0), width: Val::Px(494.0), margin: UiRect::top(Val::Px(6.0)), ..default() }).with_children(|row| {
+            row.spawn((text_f(f, 13.0, head, "ACTION"), Node { width: Val::Px(180.0), ..default() }));
+            row.spawn((text_f(f, 13.0, head, "KEYBOARD / MOUSE"), Node { width: Val::Px(150.0), ..default() }));
+            row.spawn(text_f(f, 13.0, head, "CONTROLLER"));
+        });
+        for &a in ACTIONS.iter() {
+            p.spawn(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: Val::Px(14.0), width: Val::Px(494.0), padding: UiRect::vertical(Val::Px(1.0)), ..default() }).with_children(|row| {
+                row.spawn((text_f(f, 14.0, head, action_label(a)), Node { width: Val::Px(180.0), ..default() }));
+                rebind_slot(row, f, a, false);
+                rebind_slot(row, f, a, true);
+            });
         }
+        menu_button(p, f, MenuAction::ResetBinds, "RESET TO DEFAULTS");
         menu_button(p, f, MenuAction::Back, "BACK");
     });
 }
@@ -4159,7 +4160,8 @@ fn spawn_briefing_ui(mut commands: Commands, font: Res<MenuFont>) {
     });
 }
 
-fn despawn_controls_ui(mut commands: Commands, q: Query<Entity, With<ControlsUi>>) {
+fn despawn_controls_ui(mut commands: Commands, mut rebinding: ResMut<Rebinding>, q: Query<Entity, With<ControlsUi>>) {
+    rebinding.target = None; // don't leave a capture dangling when leaving the screen
     for e in &q {
         commands.entity(e).despawn();
     }
@@ -4177,9 +4179,7 @@ fn despawn_achievements_ui(mut commands: Commands, q: Query<Entity, With<Achieve
     }
 }
 
-// ─────────────────────────────── settings / rebinding ─────────────────
-#[derive(Component)]
-struct SettingsUi;
+// ─────────────────────────────── rebinding (on the Controls screen) ────
 #[derive(Component)]
 struct InputLabel; // text showing the current input method + the device actually in use
 #[derive(Component, Clone, Copy)]
@@ -4212,7 +4212,7 @@ const PAD_BUTTONS: [GamepadButton; 14] = [
     GamepadButton::DPadRight,
 ];
 
-// One clickable bind cell (its text is filled/updated by settings_display).
+// One clickable bind cell (its text is filled/updated by controls_display).
 fn rebind_slot(p: &mut ChildSpawnerCommands, font: &Handle<Font>, action: Action, pad: bool) {
     p.spawn((
         RebindSlot { action, pad },
@@ -4232,45 +4232,8 @@ fn rebind_slot(p: &mut ChildSpawnerCommands, font: &Handle<Font>, action: Action
     });
 }
 
-fn spawn_settings_ui(mut commands: Commands, font: Res<MenuFont>) {
-    spawn_frame(&mut commands, SettingsUi);
-    let root = overlay(&mut commands, SettingsUi, 0.6);
-    let f = &font.0;
-    let head = Color::srgb(0.72, 0.76, 0.9);
-    commands.entity(root).with_children(|p| {
-        p.spawn(text_f(f, 44.0, title_color(), "SETTINGS"));
-        p.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(8.0), ..default() }).with_children(|row| {
-            menu_button(row, f, MenuAction::SetInput(InputMethod::Auto), "AUTO");
-            menu_button(row, f, MenuAction::SetInput(InputMethod::KeyboardMouse), "KB + MOUSE");
-            menu_button(row, f, MenuAction::SetInput(InputMethod::Controller), "CONTROLLER");
-        });
-        p.spawn((InputLabel, text_f(f, 15.0, head, "")));
-        p.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(14.0), width: Val::Px(494.0), margin: UiRect::top(Val::Px(6.0)), ..default() }).with_children(|row| {
-            row.spawn((text_f(f, 13.0, head, "ACTION"), Node { width: Val::Px(180.0), ..default() }));
-            row.spawn((text_f(f, 13.0, head, "KEYBOARD / MOUSE"), Node { width: Val::Px(150.0), ..default() }));
-            row.spawn(text_f(f, 13.0, head, "CONTROLLER"));
-        });
-        for &a in ACTIONS.iter() {
-            p.spawn(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: Val::Px(14.0), width: Val::Px(494.0), padding: UiRect::vertical(Val::Px(1.0)), ..default() }).with_children(|row| {
-                row.spawn((text_f(f, 14.0, head, action_label(a)), Node { width: Val::Px(180.0), ..default() }));
-                rebind_slot(row, f, a, false);
-                rebind_slot(row, f, a, true);
-            });
-        }
-        menu_button(p, f, MenuAction::ResetBinds, "RESET TO DEFAULTS");
-        menu_button(p, f, MenuAction::Back, "BACK");
-    });
-}
-
-fn despawn_settings_ui(mut commands: Commands, mut rebinding: ResMut<Rebinding>, q: Query<Entity, With<SettingsUi>>) {
-    rebinding.target = None; // don't leave a capture dangling
-    for e in &q {
-        commands.entity(e).despawn();
-    }
-}
-
-// Each frame in Settings: refresh the input-method label + every cell's bound-input text and border.
-fn settings_display(
+// Each frame on the Controls screen: refresh the input-method label + every cell's bound-input text/border.
+fn controls_display(
     bindings: Res<Bindings>,
     rebinding: Res<Rebinding>,
     method: Res<InputMethod>,
@@ -4320,7 +4283,7 @@ fn rebind_slot_click(slots: Query<(&Interaction, &RebindSlot), Changed<Interacti
 }
 
 // While a cell is capturing, bind the next input pressed (skipping the click frame). Esc is reserved
-// for cancel (handled in settings_click), so it's never captured.
+// for cancel (handled in controls_input), so it's never captured.
 fn rebind_capture(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
@@ -4348,9 +4311,9 @@ fn rebind_capture(
     }
 }
 
-// Settings buttons + navigation: input-method selection, reset, and BACK. Esc cancels an in-progress
-// capture; otherwise Esc / BACK returns to the main menu.
-fn settings_click(
+// Controls-screen buttons + navigation: input-method selection, reset, and BACK. Esc cancels an
+// in-progress capture; otherwise Esc / BACK returns to the main menu.
+fn controls_input(
     keys: Res<ButtonInput<KeyCode>>,
     mut clicks: EventReader<MenuClick>,
     mut method: ResMut<InputMethod>,
@@ -4381,8 +4344,9 @@ fn settings_click(
     }
 }
 
-// Any sub-screen (achievements / controls / briefing): Esc/Enter or the Back button returns to the
-// main menu. Runs only in those states, so it never interferes with gameplay input.
+// Read-only sub-screens (achievements / briefing): Esc/Enter or the Back button returns to the main
+// menu. Runs only in those states, so it never interferes with gameplay input. (Controls has its own
+// handler, controls_input, because it also owns rebind-capture and input-method buttons.)
 fn submenu_back(
     keys: Res<ButtonInput<KeyCode>>,
     mut next: ResMut<NextState<GameState>>,
@@ -5088,7 +5052,7 @@ fn main() {
         .add_systems(Update, menu_start.run_if(in_state(GameState::Menu)))
         .add_systems(
             Update,
-            submenu_back.run_if(in_state(GameState::Achievements).or(in_state(GameState::Controls)).or(in_state(GameState::Briefing))),
+            submenu_back.run_if(in_state(GameState::Achievements).or(in_state(GameState::Briefing))),
         )
         .add_systems(Update, gameover_restart.run_if(in_state(GameState::GameOver)))
         .add_systems(OnEnter(GameState::Playing), disarm_fire)
@@ -5098,11 +5062,9 @@ fn main() {
         .add_systems(OnExit(GameState::Achievements), despawn_achievements_ui)
         .add_systems(OnEnter(GameState::Controls), spawn_controls_ui)
         .add_systems(OnExit(GameState::Controls), despawn_controls_ui)
+        .add_systems(Update, (controls_input, rebind_slot_click, rebind_capture, controls_display).run_if(in_state(GameState::Controls)))
         .add_systems(OnEnter(GameState::Briefing), spawn_briefing_ui)
         .add_systems(OnExit(GameState::Briefing), despawn_briefing_ui)
-        .add_systems(OnEnter(GameState::Settings), spawn_settings_ui)
-        .add_systems(OnExit(GameState::Settings), despawn_settings_ui)
-        .add_systems(Update, (settings_click, rebind_slot_click, rebind_capture, settings_display).run_if(in_state(GameState::Settings)))
         .add_systems(OnEnter(GameState::Paused), spawn_pause_ui)
         .add_systems(OnExit(GameState::Paused), despawn_pause_ui)
         .add_systems(OnEnter(GameState::GameOver), (record_high_score, spawn_gameover_ui).chain())
