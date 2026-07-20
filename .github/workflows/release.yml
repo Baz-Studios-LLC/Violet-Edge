@@ -62,6 +62,7 @@ jobs:
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
           cp target/release/violet-edge "$app/Contents/MacOS/violet-edge"
           chmod +x "$app/Contents/MacOS/violet-edge"
+          rm -rf target   # reclaim disk — the release build fills the runner and hdiutil needs scratch space for the .dmg
           # PNG -> .icns (standard iconset sizes)
           mkdir icon.iconset
           sips -z 16 16     assets/logo.png --out icon.iconset/icon_16x16.png
