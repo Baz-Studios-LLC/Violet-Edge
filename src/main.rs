@@ -1205,25 +1205,150 @@ fn detonate(
     }
 }
 
+// ─────────────────────────────── input layer ──────────────────────────
+// Abstract gameplay actions. Physical keys / mouse buttons / gamepad buttons map to these via
+// `Bindings`, so input is rebindable and works on keyboard+mouse OR a controller. `gather_input`
+// resolves the raw devices into `ActionState` each frame; gameplay systems read that, not the devices.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Action {
+    TurnLeft,
+    TurnRight,
+    Thrust,
+    Fire,
+    Warp,
+    Chain,
+    ToggleShot,
+    Pause,
+    Mute,
+}
+// A physical input bindable to an action.
+#[derive(Clone, Copy, PartialEq)]
+enum Bind {
+    Key(KeyCode),
+    Mouse(MouseButton),
+    Pad(GamepadButton),
+}
+
+// The player's bindings (rebindable). Separate keyboard/mouse and gamepad lists; an action may have
+// several binds. Flat vecs so the settings screen can add / replace them easily.
+#[derive(Resource, Clone)]
+struct Bindings {
+    kbm: Vec<(Action, Bind)>,
+    pad: Vec<(Action, Bind)>,
+}
+
+impl Default for Bindings {
+    fn default() -> Self {
+        use Action::*;
+        Bindings {
+            kbm: vec![
+                (TurnLeft, Bind::Key(KeyCode::ArrowLeft)),
+                (TurnLeft, Bind::Key(KeyCode::KeyA)),
+                (TurnRight, Bind::Key(KeyCode::ArrowRight)),
+                (TurnRight, Bind::Key(KeyCode::KeyD)),
+                (Thrust, Bind::Key(KeyCode::ArrowUp)),
+                (Thrust, Bind::Key(KeyCode::KeyW)),
+                (Fire, Bind::Key(KeyCode::Space)),
+                (Fire, Bind::Mouse(MouseButton::Left)),
+                (Warp, Bind::Key(KeyCode::ShiftLeft)),
+                (Warp, Bind::Key(KeyCode::ShiftRight)),
+                (Chain, Bind::Mouse(MouseButton::Right)),
+                (ToggleShot, Bind::Key(KeyCode::KeyQ)),
+                (Pause, Bind::Key(KeyCode::Escape)),
+                (Mute, Bind::Key(KeyCode::KeyM)),
+            ],
+            pad: vec![
+                (TurnLeft, Bind::Pad(GamepadButton::DPadLeft)),
+                (TurnRight, Bind::Pad(GamepadButton::DPadRight)),
+                (Thrust, Bind::Pad(GamepadButton::RightTrigger2)),
+                (Fire, Bind::Pad(GamepadButton::South)),
+                (Warp, Bind::Pad(GamepadButton::LeftTrigger2)),
+                (Chain, Bind::Pad(GamepadButton::RightTrigger)),
+                (ToggleShot, Bind::Pad(GamepadButton::West)),
+                (Pause, Bind::Pad(GamepadButton::Start)),
+            ],
+        }
+    }
+}
+
+// Resolved input for the current frame (built by `gather_input`).
+#[derive(Resource, Default)]
+struct ActionState {
+    turn: f32,   // +1 = counter-clockwise (left), -1 = clockwise (right); analog on a stick
+    thrust: f32, // 0..1
+    fire_held: bool,
+    warp: bool,
+    chain: bool,
+    toggle: bool,
+    pause: bool,
+    mute: bool,
+}
+
+fn key_mouse_held(b: &Bind, keys: &ButtonInput<KeyCode>, mouse: &ButtonInput<MouseButton>) -> bool {
+    match b {
+        Bind::Key(k) => keys.pressed(*k),
+        Bind::Mouse(m) => mouse.pressed(*m),
+        Bind::Pad(_) => false, // gamepad wired in a later section
+    }
+}
+fn key_mouse_just(b: &Bind, keys: &ButtonInput<KeyCode>, mouse: &ButtonInput<MouseButton>) -> bool {
+    match b {
+        Bind::Key(k) => keys.just_pressed(*k),
+        Bind::Mouse(m) => mouse.just_pressed(*m),
+        Bind::Pad(_) => false,
+    }
+}
+
+// Resolve raw device state into ActionState each frame (PreUpdate, all states).
+fn gather_input(keys: Res<ButtonInput<KeyCode>>, mouse: Res<ButtonInput<MouseButton>>, bindings: Res<Bindings>, mut state: ResMut<ActionState>) {
+    let mut turn = 0.0f32;
+    let mut thrust = 0.0f32;
+    let mut fire_held = false;
+    let (mut warp, mut chain, mut toggle, mut pause, mut mute) = (false, false, false, false, false);
+    for (act, b) in bindings.kbm.iter().chain(bindings.pad.iter()) {
+        let h = key_mouse_held(b, &keys, &mouse);
+        let j = key_mouse_just(b, &keys, &mouse);
+        match act {
+            Action::TurnLeft => {
+                if h {
+                    turn += 1.0;
+                }
+            }
+            Action::TurnRight => {
+                if h {
+                    turn -= 1.0;
+                }
+            }
+            Action::Thrust => {
+                if h {
+                    thrust = 1.0;
+                }
+            }
+            Action::Fire => fire_held |= h,
+            Action::Warp => warp |= j,
+            Action::Chain => chain |= j,
+            Action::ToggleShot => toggle |= j,
+            Action::Pause => pause |= j,
+            Action::Mute => mute |= j,
+        }
+    }
+    *state = ActionState { turn: turn.clamp(-1.0, 1.0), thrust: thrust.clamp(0.0, 1.0), fire_held, warp, chain, toggle, pause, mute };
+}
+
 // ─────────────────────────────── gameplay systems (Playing only) ──────
 fn ship_control(
     time: Res<Time>,
-    keys: Res<ButtonInput<KeyCode>>,
+    input: Res<ActionState>,
     mut commands: Commands,
     mut q: Query<(&mut Ship, &mut Velocity, &Transform)>,
 ) {
     let dt = time.delta_secs();
     let mut rng = rand::thread_rng();
     for (mut ship, mut vel, t) in &mut q {
-        if keys.pressed(KeyCode::ArrowLeft) || keys.pressed(KeyCode::KeyA) {
-            ship.angle += TURN_RATE * dt;
-        }
-        if keys.pressed(KeyCode::ArrowRight) || keys.pressed(KeyCode::KeyD) {
-            ship.angle -= TURN_RATE * dt;
-        }
-        let thrusting = keys.pressed(KeyCode::ArrowUp) || keys.pressed(KeyCode::KeyW);
+        ship.angle += input.turn * TURN_RATE * dt;
+        let thrusting = input.thrust > 0.05;
         if thrusting {
-            vel.0 += Vec2::from_angle(ship.angle) * THRUST * dt;
+            vel.0 += Vec2::from_angle(ship.angle) * THRUST * input.thrust * dt;
             ship.flame = (ship.flame + dt * 5.0).min(1.0);
             // exhaust sparks straight out the BACK (opposite the nose) — NOT blended with
             // the ship's velocity, so it never sprays sideways when drifting. Sparse.
@@ -1256,8 +1381,7 @@ fn ship_control(
 fn fire(
     mut commands: Commands,
     time: Res<Time>,
-    keys: Res<ButtonInput<KeyCode>>,
-    mouse: Res<ButtonInput<MouseButton>>,
+    input: Res<ActionState>,
     mut mass: ResMut<MassShot>,
     mut armed: ResMut<FireArmed>,
     mut mode: ResMut<ShotModeFlash>,
@@ -1269,14 +1393,14 @@ fn fire(
     // bullet lifetime scales with the arena so its reach is a consistent fraction of the screen,
     // not a fixed distance that looks tiny on a big display (floored at BULLET_LIFE for small windows)
     let bullet_life = (BULLET_RANGE_FRAC * arena.half.x / BULLET_SPEED).max(BULLET_LIFE);
-    // Q toggles standard↔mass once the mass shot is unlocked — with a click + on-screen label
-    if mass.unlocked && keys.just_pressed(KeyCode::KeyQ) {
+    // ToggleShot switches standard↔mass once the mass shot is unlocked — with a click + on-screen label
+    if mass.unlocked && input.toggle {
         mass.active = !mass.active;
         mode.0 = SHOT_MODE_SHOW;
         sfx.write(SoundFx::Toggle);
     }
     let is_mass = mass.unlocked && mass.active;
-    let want_fire = keys.pressed(KeyCode::Space) || mouse.pressed(MouseButton::Left);
+    let want_fire = input.fire_held;
     if !want_fire {
         armed.0 = true; // released → the next press is a genuine fire, not the start/resume click
     }
@@ -1936,7 +2060,7 @@ fn mine_update(
 // black hole (see below). Ports the JS vortex/warp shot.
 fn warp_fire(
     time: Res<Time>,
-    keys: Res<ButtonInput<KeyCode>>,
+    input: Res<ActionState>,
     mut commands: Commands,
     mut warp: ResMut<Warp>,
     mut sfx: EventWriter<SoundFx>,
@@ -1954,8 +2078,7 @@ fn warp_fire(
         }
         return;
     }
-    let pressed = keys.just_pressed(KeyCode::ShiftLeft) || keys.just_pressed(KeyCode::ShiftRight);
-    if !pressed || warp.charges <= 0 {
+    if !input.warp || warp.charges <= 0 {
         return;
     }
     if let Some((ship, t)) = ships.iter().next() {
@@ -2667,7 +2790,7 @@ fn shield_deflect(
 // Unlocked by the post-boss pickup. (Shift is the warp; primary fire is Space/LMB.)
 fn chain_fire(
     time: Res<Time>,
-    mouse: Res<ButtonInput<MouseButton>>,
+    input: Res<ActionState>,
     mut commands: Commands,
     mut chain: ResMut<Chain>,
     ships: Query<(&Ship, &Transform, &Velocity)>,
@@ -2688,7 +2811,7 @@ fn chain_fire(
     } else {
         chain.recharge = CHAIN_RECHARGE; // primed for the next spend
     }
-    if !mouse.just_pressed(MouseButton::Right) || chain.charges <= 0 || chain.cooldown > 0.0 {
+    if !input.chain || chain.charges <= 0 || chain.cooldown > 0.0 {
         return;
     }
     if let Some((ship, t, sv)) = ships.iter().next() {
@@ -3527,6 +3650,7 @@ fn render_extras(
 // ─────────────────────────────── pause / game-over ────────────────────
 fn pause_toggle(
     keys: Res<ButtonInput<KeyCode>>,
+    input: Res<ActionState>,
     state: Res<State<GameState>>,
     mut next: ResMut<NextState<GameState>>,
     mut clicks: EventReader<MenuClick>,
@@ -3534,13 +3658,13 @@ fn pause_toggle(
     let actions: Vec<MenuAction> = clicks.read().map(|c| c.0).collect();
     match state.get() {
         GameState::Playing => {
-            if keys.just_pressed(KeyCode::Escape) {
+            if input.pause {
                 next.set(GameState::Paused);
             }
         }
         GameState::Paused => {
-            // Esc / Q keep working alongside the RESUME / QUIT buttons
-            if keys.just_pressed(KeyCode::Escape) || actions.contains(&MenuAction::Resume) {
+            // the Pause action (Esc / Start) resumes, Q / the buttons quit
+            if input.pause || actions.contains(&MenuAction::Resume) {
                 next.set(GameState::Playing); // resume
             } else if keys.just_pressed(KeyCode::KeyQ) || actions.contains(&MenuAction::Quit) {
                 next.set(GameState::Menu); // quit the run → OnEnter(Menu) wipes the field
@@ -4344,15 +4468,15 @@ fn play_track(commands: &mut Commands, handle: Handle<AudioSource>, muted: bool,
 
 // Pick the right cue for the current moment and swap to it when it changes; `M` mutes.
 fn music_director(
-    keys: Res<ButtonInput<KeyCode>>,
+    input: Res<ActionState>,
     wave: Res<Wave>,
     mut dir: ResMut<MusicDirector>,
     mut commands: Commands,
     music: Query<Entity, With<Music>>,
     mut sinks: Query<&mut AudioSink, With<Music>>,
 ) {
-    // M — mute/unmute by volume
-    if keys.just_pressed(KeyCode::KeyM) {
+    // Mute action (M) — mute/unmute by volume
+    if input.mute {
         dir.muted = !dir.muted;
         let v = Volume::Linear(if dir.muted { 0.0 } else { MUSIC_VOLUME });
         for mut sink in &mut sinks {
@@ -4573,6 +4697,9 @@ fn main() {
         .insert_resource(FireArmed::default())
         .insert_resource(TitleIntroPlayed::default())
         .insert_resource(HighScores::default())
+        .insert_resource(Bindings::default())
+        .insert_resource(ActionState::default())
+        .add_systems(PreUpdate, gather_input)
         .insert_resource(HudFlash::default())
         .insert_resource(ShotModeFlash::default())
         .add_event::<SoundFx>()
@@ -4688,19 +4815,16 @@ mod tests {
         app.insert_resource(ShotModeFlash::default());
         app.insert_resource(FireArmed(true)); // mid-run: the gun is armed
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
-        let mut input = ButtonInput::<KeyCode>::default();
-        input.press(KeyCode::Space);
-        app.insert_resource(input);
-        app.insert_resource(ButtonInput::<MouseButton>::default());
+        app.insert_resource(ActionState { fire_held: true, ..default() }); // holding fire
         app.world_mut().spawn((
             Ship { angle: TAU / 4.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 },
             Velocity(Vec2::ZERO),
             Transform::from_xyz(0.0, 0.0, 0.0),
         ));
-        app.add_systems(Update, (ship_control, fire, integrate).chain());
+        app.add_systems(Update, fire);
         app.update();
         let n = app.world_mut().query::<&Bullet>().iter(app.world()).count();
-        assert!(n > 0, "pressing Space should spawn a bullet, got {n}");
+        assert!(n > 0, "holding fire should spawn a bullet, got {n}");
     }
 
     #[test]
@@ -4714,10 +4838,7 @@ mod tests {
         app.insert_resource(ShotModeFlash::default());
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
         app.insert_resource(FireArmed(false)); // just entered Playing (disarm_fire ran)
-        let mut input = ButtonInput::<KeyCode>::default();
-        input.press(KeyCode::Space); // still holding the key that started the run
-        app.insert_resource(input);
-        app.insert_resource(ButtonInput::<MouseButton>::default());
+        app.insert_resource(ActionState { fire_held: true, ..default() }); // still holding fire from the click that started the run
         app.world_mut().spawn((
             Ship { angle: TAU / 4.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 },
             Velocity(Vec2::ZERO),
@@ -4727,13 +4848,36 @@ mod tests {
         app.update();
         assert_eq!(app.world_mut().query::<&Bullet>().iter(app.world()).count(), 0, "a held button at start must NOT fire");
         // release the button → the gun arms
-        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().release(KeyCode::Space);
+        app.world_mut().resource_mut::<ActionState>().fire_held = false;
         app.update();
         assert!(app.world().resource::<FireArmed>().0, "releasing the button arms the gun");
         // press again → now it fires
-        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::Space);
+        app.world_mut().resource_mut::<ActionState>().fire_held = true;
         app.update();
         assert!(app.world_mut().query::<&Bullet>().iter(app.world()).count() > 0, "a fresh press after release fires");
+    }
+
+    #[test]
+    fn gather_input_maps_keys_to_actions() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(Bindings::default());
+        app.insert_resource(ActionState::default());
+        let mut keys = ButtonInput::<KeyCode>::default();
+        keys.press(KeyCode::ArrowLeft); // turn left
+        keys.press(KeyCode::ArrowUp); // thrust
+        keys.press(KeyCode::Space); // fire
+        keys.press(KeyCode::KeyQ); // toggle shot
+        app.insert_resource(keys);
+        app.insert_resource(ButtonInput::<MouseButton>::default());
+        app.add_systems(Update, gather_input);
+        app.update();
+        let s = app.world().resource::<ActionState>();
+        assert!(s.turn > 0.5, "ArrowLeft = turn left (+turn), got {}", s.turn);
+        assert!(s.thrust > 0.5, "ArrowUp = thrust");
+        assert!(s.fire_held, "Space = fire (held)");
+        assert!(s.toggle, "Q = toggle shot");
+        assert!(!s.warp && !s.chain && !s.pause, "unpressed actions stay false");
     }
 
     #[test]
@@ -5493,9 +5637,7 @@ mod tests {
         app.insert_resource(RunFlags::default());
         app.insert_resource(Warp { charges: WARP_MAX_CHARGES, cooldown: 0.0 });
         app.insert_resource(HudFlash::default());
-        let mut input = ButtonInput::<KeyCode>::default();
-        input.press(KeyCode::ShiftLeft); // stays "just_pressed" (no clear system) → fires each frame
-        app.insert_resource(input);
+        app.insert_resource(ActionState { warp: true, ..default() }); // held true across frames → fires until charges run out
         app.world_mut().spawn((
             Ship { angle: 0.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 },
             Velocity(Vec2::ZERO),
@@ -6370,7 +6512,7 @@ mod tests {
     fn music_cues_follow_the_boss_cycle() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.insert_resource(ButtonInput::<KeyCode>::default());
+        app.insert_resource(ActionState::default());
         app.insert_resource(Wave { level: 1, timer: WAVE_SECS, calm: 0.0 });
         app.insert_resource(MusicDirector {
             main: Handle::default(),
@@ -6424,9 +6566,7 @@ mod tests {
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());
         app.insert_resource(Chain { unlocked: true, charges: 3, recharge: CHAIN_RECHARGE, cooldown: 0.0 });
-        let mut mouse = ButtonInput::<MouseButton>::default();
-        mouse.press(MouseButton::Right);
-        app.insert_resource(mouse);
+        app.insert_resource(ActionState { chain: true, ..default() });
         app.world_mut().spawn((Ship { angle: 0.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0)));
         app.add_systems(Update, chain_fire);
         app.update();
