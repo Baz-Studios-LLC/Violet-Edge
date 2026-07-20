@@ -3316,20 +3316,24 @@ fn render(
     // grid — faint, brighter per-line shimmer; bends toward an active warp hole (and rubber-snaps
     // back). Only while a run is on — off-run the color is zeroed so the menu shows no grid.
     let warping = wf.amount.abs() > 0.001;
-    let wamt = wf.amount.abs().clamp(0.0, 1.0); // warp-field envelope: 0 → 1 as the hole opens, eases back (with a little overshoot) on snapback
-    // while a warp bends the grid it drinks the hole's energy: it glows much harder AND takes on the
-    // warp's purple, ramping with the field so the pull really reads on the backdrop.
+    let wamt = wf.amount.abs().clamp(0.0, 1.0); // warp-field envelope: 0 → 1 as the hole opens, eases back (elastic bounce) on snapback
+    // while a warp bends the grid it brightens just a touch — NO purple tint (that blew the whole
+    // screen out); the drama lives in the flicker below, which crackles hardest as the field collapses.
     let grid = if show_run {
-        if warping {
-            dim(mix(grid_color(), warp_color(), 0.45 * wamt), 1.0 + 2.6 * wamt)
-        } else {
-            grid_color()
-        }
+        if warping { dim(grid_color(), 1.0 + 2.3 * wamt) } else { grid_color() }
     } else {
         dim(grid_color(), 0.0)
     };
-    // during a warp every line also strobes — a fast, per-line flicker that intensifies with the field
-    let warp_flick = |k: f32| if warping { (1.0 + 0.7 * wamt * (t * 28.0 + k * 2.1).sin()).max(0.08) } else { 1.0 };
+    // per-line electric flicker: two out-of-phase strobes (a crackle, not a smooth pulse), scaled by
+    // the field. The elastic snapback makes `wamt` bounce, so the lines crackle as the hole collapses.
+    let warp_flick = |k: f32| {
+        if warping {
+            let amp = 0.35 + 0.55 * wamt;
+            (1.0 + amp * (0.7 * (t * 26.0 + k * 2.1).sin() + 0.5 * (t * 43.0 + k * 3.7).sin())).max(0.05)
+        } else {
+            1.0
+        }
+    };
     const SUBDIV: usize = 14;
     let mut i = 0;
     let mut x = -(h.x / GRID_CELL).floor() * GRID_CELL;
