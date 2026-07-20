@@ -403,6 +403,7 @@ enum GameState {
     Achievements, // the achievements screen, reached from the main menu
     Controls,     // the controls reference, reached from the main menu
     Briefing,     // the lore + objectives screen, reached from the main menu
+    Settings,     // input method + key/button rebinding, reached from the main menu
     Playing,
     Paused,
     GameOver,
@@ -625,9 +626,12 @@ enum MenuAction {
     Achievements,
     Controls,
     Briefing,
-    Back,   // return to the main menu from a sub-screen
-    Resume, // pause menu → back to the game
-    Quit,   // pause menu → abandon the run to the main menu
+    Settings, // main menu → the input/rebinding screen
+    Back,     // return to the main menu from a sub-screen
+    Resume,   // pause menu → back to the game
+    Quit,     // pause menu → abandon the run to the main menu
+    SetInput(InputMethod), // settings: choose the input method
+    ResetBinds,            // settings: restore default bindings
 }
 #[derive(Component)]
 struct MenuButton(MenuAction);
@@ -1267,6 +1271,100 @@ impl Default for Bindings {
                 (ToggleShot, Bind::Pad(GamepadButton::West)),
                 (Pause, Bind::Pad(GamepadButton::Start)),
             ],
+        }
+    }
+}
+
+// Every rebindable action, in the order the settings screen lists them.
+const ACTIONS: [Action; 9] = [
+    Action::TurnLeft,
+    Action::TurnRight,
+    Action::Thrust,
+    Action::Fire,
+    Action::Warp,
+    Action::Chain,
+    Action::ToggleShot,
+    Action::Pause,
+    Action::Mute,
+];
+
+fn action_label(a: Action) -> &'static str {
+    match a {
+        Action::TurnLeft => "Turn left",
+        Action::TurnRight => "Turn right",
+        Action::Thrust => "Thrust",
+        Action::Fire => "Fire",
+        Action::Warp => "Warp",
+        Action::Chain => "Chain shot",
+        Action::ToggleShot => "Toggle mass shot",
+        Action::Pause => "Pause",
+        Action::Mute => "Mute music",
+    }
+}
+
+// A short, readable name for a bound input (for the settings rows).
+fn bind_label(b: &Bind) -> String {
+    match b {
+        Bind::Key(k) => format!("{k:?}").trim_start_matches("Key").to_string(),
+        Bind::Mouse(MouseButton::Left) => "Mouse L".into(),
+        Bind::Mouse(MouseButton::Right) => "Mouse R".into(),
+        Bind::Mouse(MouseButton::Middle) => "Mouse M".into(),
+        Bind::Mouse(m) => format!("Mouse {m:?}"),
+        Bind::Pad(b) => match b {
+            GamepadButton::South => "A".into(),
+            GamepadButton::East => "B".into(),
+            GamepadButton::West => "X".into(),
+            GamepadButton::North => "Y".into(),
+            GamepadButton::LeftTrigger => "LB".into(),
+            GamepadButton::RightTrigger => "RB".into(),
+            GamepadButton::LeftTrigger2 => "LT".into(),
+            GamepadButton::RightTrigger2 => "RT".into(),
+            GamepadButton::Select => "Select".into(),
+            GamepadButton::Start => "Start".into(),
+            GamepadButton::DPadUp => "D-Up".into(),
+            GamepadButton::DPadDown => "D-Down".into(),
+            GamepadButton::DPadLeft => "D-Left".into(),
+            GamepadButton::DPadRight => "D-Right".into(),
+            other => format!("{other:?}"),
+        },
+    }
+}
+
+// Join the binds for one action + device into a display string like "A / D" (or "—" if none).
+fn binds_label(binds: &[(Action, Bind)], a: Action) -> String {
+    let s: Vec<String> = binds.iter().filter(|(act, _)| *act == a).map(|(_, b)| bind_label(b)).collect();
+    if s.is_empty() {
+        "—".into()
+    } else {
+        s.join(" / ")
+    }
+}
+
+// How the player drives the game. Auto = use a controller if one's connected, else keyboard+mouse.
+// Both device types are always read regardless (nothing breaks if you switch mid-run); this mainly
+// drives which control prompts the settings/controls screens show.
+#[derive(Resource, Clone, Copy, PartialEq, Eq, Default)]
+enum InputMethod {
+    #[default]
+    Auto,
+    KeyboardMouse,
+    Controller,
+}
+
+impl InputMethod {
+    fn label(self) -> &'static str {
+        match self {
+            InputMethod::Auto => "Auto",
+            InputMethod::KeyboardMouse => "Keyboard + Mouse",
+            InputMethod::Controller => "Controller",
+        }
+    }
+    // The device actually in use: under Auto, a controller if one is connected, else keyboard+mouse.
+    fn active(self, gamepad_connected: bool) -> InputMethod {
+        match self {
+            InputMethod::Auto if gamepad_connected => InputMethod::Controller,
+            InputMethod::Auto => InputMethod::KeyboardMouse,
+            other => other,
         }
     }
 }
@@ -3675,7 +3773,7 @@ fn pause_toggle(
                 next.set(GameState::Menu); // quit the run → OnEnter(Menu) wipes the field
             }
         }
-        GameState::Menu | GameState::Achievements | GameState::Controls | GameState::Briefing | GameState::GameOver => {}
+        GameState::Menu | GameState::Achievements | GameState::Controls | GameState::Briefing | GameState::Settings | GameState::GameOver => {}
     }
 }
 
@@ -3883,6 +3981,10 @@ fn menu_start(
         next.set(GameState::Controls);
         return;
     }
+    if keys.just_pressed(KeyCode::KeyS) || actions.contains(&MenuAction::Settings) {
+        next.set(GameState::Settings);
+        return;
+    }
     if keys.just_pressed(KeyCode::KeyB) || actions.contains(&MenuAction::Briefing) {
         next.set(GameState::Briefing);
         return;
@@ -3962,6 +4064,7 @@ fn spawn_menu_ui(mut commands: Commands, achieved: Res<Achievements>, intro: Res
         p.spawn((MenuTitle { age: title_age }, text_f(f, 82.0, title_color(), "VIOLET EDGE")));
         menu_button(p, f, MenuAction::Play, "PLAY");
         menu_button(p, f, MenuAction::Controls, "CONTROLS");
+        menu_button(p, f, MenuAction::Settings, "SETTINGS");
         menu_button(p, f, MenuAction::Briefing, "BRIEFING");
         menu_button(p, f, MenuAction::Achievements, &format!("ACHIEVEMENTS  ({done} / {})", ACHIEVEMENTS.len()));
         if best > 0 {
@@ -4071,6 +4174,210 @@ fn despawn_briefing_ui(mut commands: Commands, q: Query<Entity, With<BriefingUi>
 fn despawn_achievements_ui(mut commands: Commands, q: Query<Entity, With<AchievementsUi>>) {
     for e in &q {
         commands.entity(e).despawn();
+    }
+}
+
+// ─────────────────────────────── settings / rebinding ─────────────────
+#[derive(Component)]
+struct SettingsUi;
+#[derive(Component)]
+struct InputLabel; // text showing the current input method + the device actually in use
+#[derive(Component, Clone, Copy)]
+struct RebindSlot {
+    action: Action,
+    pad: bool, // false = keyboard/mouse cell, true = controller cell
+}
+// Which cell (if any) is capturing a new bind. `armed` skips the click frame that started it.
+#[derive(Resource, Default)]
+struct Rebinding {
+    target: Option<(Action, bool)>,
+    armed: bool,
+}
+
+// Gamepad buttons we scan while capturing a controller bind.
+const PAD_BUTTONS: [GamepadButton; 14] = [
+    GamepadButton::South,
+    GamepadButton::East,
+    GamepadButton::West,
+    GamepadButton::North,
+    GamepadButton::LeftTrigger,
+    GamepadButton::RightTrigger,
+    GamepadButton::LeftTrigger2,
+    GamepadButton::RightTrigger2,
+    GamepadButton::Select,
+    GamepadButton::Start,
+    GamepadButton::DPadUp,
+    GamepadButton::DPadDown,
+    GamepadButton::DPadLeft,
+    GamepadButton::DPadRight,
+];
+
+// One clickable bind cell (its text is filled/updated by settings_display).
+fn rebind_slot(p: &mut ChildSpawnerCommands, font: &Handle<Font>, action: Action, pad: bool) {
+    p.spawn((
+        RebindSlot { action, pad },
+        Button,
+        Node {
+            width: Val::Px(150.0),
+            padding: UiRect::axes(Val::Px(8.0), Val::Px(5.0)),
+            border: UiRect::all(Val::Px(1.5)),
+            justify_content: JustifyContent::Center,
+            ..default()
+        },
+        BorderColor(Color::srgb(0.4, 0.3, 0.7)),
+        BorderRadius::all(Val::Px(6.0)),
+    ))
+    .with_children(|c| {
+        c.spawn(text_f(font, 15.0, Color::srgb(0.85, 0.88, 1.0), "—"));
+    });
+}
+
+fn spawn_settings_ui(mut commands: Commands, font: Res<MenuFont>) {
+    spawn_frame(&mut commands, SettingsUi);
+    let root = overlay(&mut commands, SettingsUi, 0.6);
+    let f = &font.0;
+    let head = Color::srgb(0.72, 0.76, 0.9);
+    commands.entity(root).with_children(|p| {
+        p.spawn(text_f(f, 44.0, title_color(), "SETTINGS"));
+        p.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(8.0), ..default() }).with_children(|row| {
+            menu_button(row, f, MenuAction::SetInput(InputMethod::Auto), "AUTO");
+            menu_button(row, f, MenuAction::SetInput(InputMethod::KeyboardMouse), "KB + MOUSE");
+            menu_button(row, f, MenuAction::SetInput(InputMethod::Controller), "CONTROLLER");
+        });
+        p.spawn((InputLabel, text_f(f, 15.0, head, "")));
+        p.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(14.0), width: Val::Px(494.0), margin: UiRect::top(Val::Px(6.0)), ..default() }).with_children(|row| {
+            row.spawn((text_f(f, 13.0, head, "ACTION"), Node { width: Val::Px(180.0), ..default() }));
+            row.spawn((text_f(f, 13.0, head, "KEYBOARD / MOUSE"), Node { width: Val::Px(150.0), ..default() }));
+            row.spawn(text_f(f, 13.0, head, "CONTROLLER"));
+        });
+        for &a in ACTIONS.iter() {
+            p.spawn(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: Val::Px(14.0), width: Val::Px(494.0), padding: UiRect::vertical(Val::Px(1.0)), ..default() }).with_children(|row| {
+                row.spawn((text_f(f, 14.0, head, action_label(a)), Node { width: Val::Px(180.0), ..default() }));
+                rebind_slot(row, f, a, false);
+                rebind_slot(row, f, a, true);
+            });
+        }
+        menu_button(p, f, MenuAction::ResetBinds, "RESET TO DEFAULTS");
+        menu_button(p, f, MenuAction::Back, "BACK");
+    });
+}
+
+fn despawn_settings_ui(mut commands: Commands, mut rebinding: ResMut<Rebinding>, q: Query<Entity, With<SettingsUi>>) {
+    rebinding.target = None; // don't leave a capture dangling
+    for e in &q {
+        commands.entity(e).despawn();
+    }
+}
+
+// Each frame in Settings: refresh the input-method label + every cell's bound-input text and border.
+fn settings_display(
+    bindings: Res<Bindings>,
+    rebinding: Res<Rebinding>,
+    method: Res<InputMethod>,
+    pads: Query<(), With<Gamepad>>,
+    label_q: Query<Entity, With<InputLabel>>,
+    mut slots: Query<(&RebindSlot, &Children, &Interaction, &mut BorderColor)>,
+    mut texts: Query<(&mut Text, &mut TextColor)>,
+) {
+    let active = method.active(!pads.is_empty());
+    if let Ok(e) = label_q.single() {
+        if let Ok((mut t, _)) = texts.get_mut(e) {
+            t.0 = format!("Input: {}  (using {})", method.label(), active.label());
+        }
+    }
+    for (slot, children, interaction, mut border) in &mut slots {
+        let capturing = rebinding.target == Some((slot.action, slot.pad));
+        if let Some(&child) = children.first() {
+            if let Ok((mut t, mut c)) = texts.get_mut(child) {
+                if capturing {
+                    t.0 = "press…".into();
+                    *c = TextColor(Color::srgb(0.98, 0.85, 0.35));
+                } else {
+                    let list = if slot.pad { &bindings.pad } else { &bindings.kbm };
+                    t.0 = binds_label(list, slot.action);
+                    *c = TextColor(Color::srgb(0.85, 0.88, 1.0));
+                }
+            }
+        }
+        *border = BorderColor(if capturing {
+            Color::srgb(0.98, 0.85, 0.35)
+        } else if *interaction == Interaction::Hovered {
+            Color::srgb(0.7, 0.5, 1.0)
+        } else {
+            Color::srgb(0.4, 0.3, 0.7)
+        });
+    }
+}
+
+// Click a bind cell → begin capturing a new input for it.
+fn rebind_slot_click(slots: Query<(&Interaction, &RebindSlot), Changed<Interaction>>, mut rebinding: ResMut<Rebinding>) {
+    for (interaction, slot) in &slots {
+        if *interaction == Interaction::Pressed {
+            rebinding.target = Some((slot.action, slot.pad));
+            rebinding.armed = false;
+        }
+    }
+}
+
+// While a cell is capturing, bind the next input pressed (skipping the click frame). Esc is reserved
+// for cancel (handled in settings_click), so it's never captured.
+fn rebind_capture(
+    keys: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    gamepads: Query<&Gamepad>,
+    mut rebinding: ResMut<Rebinding>,
+    mut bindings: ResMut<Bindings>,
+) {
+    let Some((action, pad)) = rebinding.target else {
+        return;
+    };
+    if !rebinding.armed {
+        rebinding.armed = true;
+        return;
+    }
+    let new: Option<Bind> = if pad {
+        gamepads.iter().flat_map(|g| PAD_BUTTONS.iter().copied().filter(move |b| g.just_pressed(*b))).map(Bind::Pad).next()
+    } else {
+        keys.get_just_pressed().find(|k| **k != KeyCode::Escape).map(|k| Bind::Key(*k)).or_else(|| mouse.get_just_pressed().next().map(|m| Bind::Mouse(*m)))
+    };
+    if let Some(bind) = new {
+        let list = if pad { &mut bindings.pad } else { &mut bindings.kbm };
+        list.retain(|(a, _)| *a != action); // one bind per action per device (replace)
+        list.push((action, bind));
+        rebinding.target = None;
+    }
+}
+
+// Settings buttons + navigation: input-method selection, reset, and BACK. Esc cancels an in-progress
+// capture; otherwise Esc / BACK returns to the main menu.
+fn settings_click(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut clicks: EventReader<MenuClick>,
+    mut method: ResMut<InputMethod>,
+    mut bindings: ResMut<Bindings>,
+    mut rebinding: ResMut<Rebinding>,
+    mut next: ResMut<NextState<GameState>>,
+) {
+    let mut back = false;
+    for c in clicks.read() {
+        match c.0 {
+            MenuAction::SetInput(m) => *method = m,
+            MenuAction::ResetBinds => {
+                *bindings = Bindings::default();
+                rebinding.target = None;
+            }
+            MenuAction::Back => back = true,
+            _ => {}
+        }
+    }
+    if rebinding.target.is_some() {
+        if keys.just_pressed(KeyCode::Escape) {
+            rebinding.target = None; // cancel the capture
+        }
+        return;
+    }
+    if back || keys.just_pressed(KeyCode::Escape) {
+        next.set(GameState::Menu);
     }
 }
 
@@ -4704,6 +5011,8 @@ fn main() {
         .insert_resource(HighScores::default())
         .insert_resource(Bindings::default())
         .insert_resource(ActionState::default())
+        .insert_resource(InputMethod::default())
+        .insert_resource(Rebinding::default())
         .add_systems(PreUpdate, gather_input)
         .insert_resource(HudFlash::default())
         .insert_resource(ShotModeFlash::default())
@@ -4791,6 +5100,9 @@ fn main() {
         .add_systems(OnExit(GameState::Controls), despawn_controls_ui)
         .add_systems(OnEnter(GameState::Briefing), spawn_briefing_ui)
         .add_systems(OnExit(GameState::Briefing), despawn_briefing_ui)
+        .add_systems(OnEnter(GameState::Settings), spawn_settings_ui)
+        .add_systems(OnExit(GameState::Settings), despawn_settings_ui)
+        .add_systems(Update, (settings_click, rebind_slot_click, rebind_capture, settings_display).run_if(in_state(GameState::Settings)))
         .add_systems(OnEnter(GameState::Paused), spawn_pause_ui)
         .add_systems(OnExit(GameState::Paused), despawn_pause_ui)
         .add_systems(OnEnter(GameState::GameOver), (record_high_score, spawn_gameover_ui).chain())
@@ -4883,6 +5195,38 @@ mod tests {
         assert!(s.fire_held, "Space = fire (held)");
         assert!(s.toggle, "Q = toggle shot");
         assert!(!s.warp && !s.chain && !s.pause, "unpressed actions stay false");
+    }
+
+    #[test]
+    fn rebind_capture_replaces_an_actions_bind() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(Bindings::default());
+        app.insert_resource(Rebinding { target: Some((Action::Fire, false)), armed: true });
+        let mut keys = ButtonInput::<KeyCode>::default();
+        keys.press(KeyCode::KeyF);
+        app.insert_resource(keys);
+        app.insert_resource(ButtonInput::<MouseButton>::default());
+        app.add_systems(Update, rebind_capture);
+        app.update();
+        let b = app.world().resource::<Bindings>();
+        assert_eq!(binds_label(&b.kbm, Action::Fire), "F", "Fire's keyboard bind is replaced with F");
+        assert!(app.world().resource::<Rebinding>().target.is_none(), "capture ends once a bind is set");
+    }
+
+    #[test]
+    fn rebind_capture_ignores_escape() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(Bindings::default());
+        app.insert_resource(Rebinding { target: Some((Action::Fire, false)), armed: true });
+        let mut keys = ButtonInput::<KeyCode>::default();
+        keys.press(KeyCode::Escape);
+        app.insert_resource(keys);
+        app.insert_resource(ButtonInput::<MouseButton>::default());
+        app.add_systems(Update, rebind_capture);
+        app.update();
+        assert!(app.world().resource::<Rebinding>().target.is_some(), "Esc is reserved for cancel, never captured as a bind");
     }
 
     #[test]
