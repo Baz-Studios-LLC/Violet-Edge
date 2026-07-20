@@ -141,8 +141,8 @@ const BOSS_SCORE: u32 = 3000;
 const BOSS_CAMEO_SECS: f32 = 10.0; // boss drifts by in the background this long before its wave
 
 // Boss 2 — the devourer (wave 10): a red seeker that eats rocks to grow + heal.
-const DEVOURER_HP: i32 = 70; // starting core HP (much tankier than the shaman's 28)
-const DEVOURER_HP_MAX: i32 = 140; // cap — eating heals toward this, never past
+const DEVOURER_HP: i32 = 70; // core HP; it STARTS full — the bar reads 100% at the start (much tankier than the shaman's 28)
+const DEVOURER_HP_MAX: i32 = DEVOURER_HP; // heal cap == starting HP: eating heals DAMAGE back toward full, never past it (it grows in SIZE, not in max HP)
 const DEVOURER_BASE_R: f32 = 22.0; // starts small (a size-1 rock)
 const DEVOURER_MAX_R: f32 = 200.0; // fully gorged — swells huge, then OVERLOADS and bursts (see devourer_update)
 const DEVOURER_BURST_R: f32 = 420.0; // overload blast reach — near screen-wide; escapable only by being far
@@ -6577,7 +6577,7 @@ mod tests {
         app.insert_resource(Dev::default());
         let dvr = app
             .world_mut()
-            .spawn((Devourer { hp: DEVOURER_HP, grow: 0.0, fed: 0, dying: 0.0, pulse: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0)))
+            .spawn((Devourer { hp: DEVOURER_HP - 20, grow: 0.0, fed: 0, dying: 0.0, pulse: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0)))
             .id();
         app.world_mut().spawn((
             Asteroid { size: 2, verts: vec![Vec2::X * 40.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
@@ -6588,7 +6588,7 @@ mod tests {
         assert_eq!(app.world_mut().query::<&Asteroid>().iter(app.world()).count(), 0, "the overlapping rock is eaten");
         let dv = app.world().entity(dvr).get::<Devourer>().unwrap();
         assert!(dv.grow > 0.0, "eating grows it");
-        assert!(dv.hp > DEVOURER_HP, "eating heals it (tankier)");
+        assert!(dv.hp > DEVOURER_HP - 20 && dv.hp <= DEVOURER_HP, "eating heals damage back toward full, never past its start");
         assert_eq!(dv.fed, 1, "it ate exactly one rock");
     }
 

@@ -45,8 +45,9 @@ with the asteroids for attention.
 ## Bosses — the 50-level ladder
 
 Every 5th wave. Each weaponizes a different *relationship to asteroids* (see Design rules). **Every
-boss shows a top-center HP bar** (shared `boss_hp_bar`, tinted to the boss); the Glutton's tracks its
-heal-toward-max, so letting it feed visibly refills the bar.
+boss shows a top-center HP bar** (shared `boss_hp_bar`, tinted to the boss) and STARTS full. The
+Glutton starts full too (heal cap == starting HP); eating heals the damage you've dealt back toward
+full (never past — it grows in *size*, not max HP), so letting it feed visibly refills the bar.
 
 | Wave | Boss | Status | Verb → mechanic | Counterplay |
 | --- | --- | --- | --- | --- |
