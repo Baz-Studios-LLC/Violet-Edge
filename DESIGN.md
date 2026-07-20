@@ -112,10 +112,11 @@ the rock mix lives in `roll_rock_kind` (orange fraction ~0.25 on waves 11–13, 
 Build order (one section at a time): **1. orange mechanic ✅ → 2. wave restructure + orange/green
 wiring ✅ (§A) → 3. Limpet mob ✅ core (§B) → 4. Slinger boss (§C) → 5. Slinger's Drone powerup.**
 
-The Limpet (§B, ✅ core): a cyan parasite that TETHERS to a large rock and hides on its far side
-(relative to the ship), peeking out to fire the slow `EnemyBullet`. Its host is a shield — shots from
-the rock-side are blocked (`guard` half-plane); you kill it by FLANKING the exposed side (it
-repositions at a limited speed, so a nimble player out-turns it) or by catching it EXPOSED while it
+The Limpet (§B, ✅ core): a cyan parasite that TETHERS to a large rock — it rigidly rides the rim
+(glued to the rock's edge with little gripping claws, not floating near it) and slides around it
+toward the far side from the ship at a limited angular rate (`LIMPET_TURN`), peeking out to fire the
+slow `EnemyBullet`. Its host is a shield — shots from the rock-side are blocked (`guard` half-plane);
+you kill it by FLANKING the exposed side (out-turn its slide) or by catching it EXPOSED while it
 transits between rocks. Break its host and it just scrambles to another large rock — it re-tethers
 until *it* is destroyed (2 HP). Gated to waves 12–13 (cap `LIMPET_MAX`); the old yellow lobber stays
 off 11–15 via `enemy_target`. **Pass-2 TODO:** direct hits from warp / orange blast / chain beam

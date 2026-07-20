@@ -112,7 +112,7 @@ const LIMPET_SPEED: f32 = 140.0; // reposition speed — slow enough to swing ar
 const LIMPET_FIRE_EVERY: f32 = 2.0; // s between peek-shots
 const LIMPET_FIRE_JITTER: f32 = 0.8;
 const LIMPET_SCORE: u32 = 350; // a bit more than the lobber — harder to reach
-const LIMPET_PEEK: f32 = 5.0; // how far its body pokes past the host's rim (a sliver to shoot at)
+const LIMPET_TURN: f32 = 1.8; // max rad/s it slides around the rim to re-hide — slow enough for a nimble player to flank
 const LIMPET_MAX: i32 = 3; // hard cap on live limpets
 const LIMPET_HOST_MIN_SIZE: u8 = 3; // only tethers to LARGE rocks
 const LIMPET_SPAWN_INTERVAL: f32 = 4.0;
@@ -143,7 +143,7 @@ const BOSS_CAMEO_SECS: f32 = 10.0; // boss drifts by in the background this long
 // Boss 2 — the devourer (wave 10): a red seeker that eats rocks to grow + heal.
 const DEVOURER_HP: i32 = 70; // core HP; it STARTS full — the bar reads 100% at the start (much tankier than the shaman's 28)
 const DEVOURER_HP_MAX: i32 = DEVOURER_HP; // heal cap == starting HP: eating heals DAMAGE back toward full, never past it (it grows in SIZE, not in max HP)
-const DEVOURER_BASE_R: f32 = 22.0; // starts small (a size-1 rock)
+const DEVOURER_BASE_R: f32 = 42.0; // fully-shrunk floor (was 22 — too small to keep hitting once you clawed it down)
 const DEVOURER_MAX_R: f32 = 200.0; // fully gorged — swells huge, then OVERLOADS and bursts (see devourer_update)
 const DEVOURER_BURST_R: f32 = 420.0; // overload blast reach — near screen-wide; escapable only by being far
 const DEVOURER_GROW_PER_EAT: f32 = 0.09; // grow step per rock (~11 rocks → max size)
@@ -322,6 +322,15 @@ fn mix(a: Color, b: Color, t: f32) -> Color {
     )
 }
 
+// Ease angle `from` toward `to` (radians) by at most `max_step`, taking the short way around.
+fn step_angle(from: f32, to: f32, max_step: f32) -> f32 {
+    let mut d = (to - from).rem_euclid(TAU);
+    if d > TAU * 0.5 {
+        d -= TAU;
+    }
+    from + d.clamp(-max_step, max_step)
+}
+
 // Inward pull a black hole applies to a body at `pos` this frame (velocity delta).
 // Zero outside `pull_r`; a strong floor at the rim, ramping harder toward the core.
 // Shared by every hazard the warp drags in (rocks, enemies, mines).
@@ -453,6 +462,7 @@ type GameplayEntity = Or<(
     With<Enemy>,
     With<EnemyBullet>,
     With<Limpet>,
+    With<Shockwave>,
     With<Boss>,
     With<Devourer>,
     With<ChainShot>,
@@ -532,8 +542,9 @@ struct Limpet {
     hp: i32,
     fire: f32,             // countdown to the next peek-shot
     host: Option<Entity>,  // the large rock it's riding (re-acquired when the old one is destroyed)
-    guard: Option<Vec2>,   // while hidden in position: the exposed direction (host→limpet). Shots from
-                           // the other side are blocked by the host. None while transiting → fully vulnerable.
+    angle: f32,            // its position AROUND the host rim (radians); eases toward "hide from ship"
+    guard: Option<Vec2>,   // while tethered: the exposed direction (host→limpet). Shots from the other
+                           // side are blocked by the host. None while transiting → fully vulnerable.
 }
 
 // The octopus boss core.
@@ -592,6 +603,16 @@ struct Explosive;
 #[derive(Component)]
 struct Detonating {
     fuse: f32,
+}
+
+// A brief expanding ring drawn where an explosion went off (the orange blast) — pure visual, no
+// gameplay. Expands to `max_r` (the actual kill radius) over `ttl`, brightening the danger zone.
+#[derive(Component)]
+struct Shockwave {
+    age: f32,
+    ttl: f32,
+    max_r: f32,
+    color: Color,
 }
 
 // Tracks the current gold-rock hunt. `active` while a gold lineage is in play; `forfeited` latches if
@@ -1223,7 +1244,14 @@ fn detonate(
             continue; // still flashing — blows when the fuse elapses
         }
         let c = ot.translation.truncate();
-        burst(&mut commands, c, orange_color(), 34, 440.0, &mut rng);
+        // a big, punchy blast: a dense orange debris burst + a white-hot flash spray, and an expanding
+        // shockwave ring that reaches the actual kill radius (so the danger zone is unmistakable).
+        burst(&mut commands, c, orange_color(), 64, 560.0, &mut rng);
+        burst(&mut commands, c, Color::srgb(6.0, 4.2, 1.6), 20, 300.0, &mut rng);
+        commands.spawn((
+            Shockwave { age: 0.0, ttl: 0.32, max_r: ORANGE_BLAST_R, color: orange_color() },
+            Transform::from_xyz(c.x, c.y, 0.0),
+        ));
         sfx.write(SoundFx::Mine); // reuse the explosion thump
         score.0 += match oa.size { 3 => 20, 2 => 50, _ => 100 }; // scores like a normal rock of its size
         commands.entity(oe).despawn();
@@ -1704,6 +1732,30 @@ fn particle_update(
         if p.life <= 0.0 {
             commands.entity(e).despawn();
         }
+    }
+}
+
+// Age out the brief explosion rings.
+fn shockwave_update(time: Res<Time>, mut commands: Commands, mut q: Query<(Entity, &mut Shockwave)>) {
+    let dt = time.delta_secs();
+    for (e, mut sw) in &mut q {
+        sw.age += dt;
+        if sw.age >= sw.ttl {
+            commands.entity(e).despawn();
+        }
+    }
+}
+
+// Draw each shockwave as a bright ring expanding (ease-out) to its kill radius, fading as it goes.
+// Its own Gizmos system so `render`'s params stay under Bevy's limit.
+fn render_shockwaves(mut gizmos: Gizmos, q: Query<(&Shockwave, &Transform)>) {
+    for (sw, t) in &q {
+        let f = (sw.age / sw.ttl).clamp(0.0, 1.0);
+        let r = (sw.max_r * (1.0 - (1.0 - f) * (1.0 - f))).max(1.0); // ease-out toward max_r
+        let fade = (1.0 - f) * (1.0 - f); // brightness falls off as it expands
+        let c = t.translation.truncate();
+        gizmos.circle_2d(Isometry2d::from_translation(c), r, dim(sw.color, 2.4 * fade)); // bright leading edge
+        gizmos.circle_2d(Isometry2d::from_translation(c), r * 0.86, dim(sw.color, 1.0 * fade)); // trailing thickness
     }
 }
 
@@ -2540,7 +2592,7 @@ fn spawn_edge_limpet(commands: &mut Commands, half: Vec2, rng: &mut impl Rng) {
         _ => (Vec2::new(rng.gen_range(-half.x..half.x), half.y + LIMPET_R), Vec2::new(jitter, -inward)),
     };
     commands.spawn((
-        Limpet { hp: LIMPET_HP, fire: LIMPET_FIRE_EVERY + rng.gen_range(0.0..LIMPET_FIRE_JITTER), host: None, guard: None },
+        Limpet { hp: LIMPET_HP, fire: LIMPET_FIRE_EVERY + rng.gen_range(0.0..LIMPET_FIRE_JITTER), host: None, angle: 0.0, guard: None },
         Velocity(vel),
         Transform::from_xyz(pos.x, pos.y, 0.0),
     ));
@@ -2582,20 +2634,20 @@ fn limpet_update(
     time: Res<Time>,
     mut commands: Commands,
     mut sfx: EventWriter<SoundFx>,
-    mut limpets: Query<(&Transform, &mut Velocity, &mut Limpet)>,
-    rocks: Query<(Entity, &Transform, &Asteroid)>,
-    ships: Query<&Transform, With<Ship>>,
+    mut limpets: Query<(&mut Transform, &mut Velocity, &mut Limpet)>,
+    rocks: Query<(Entity, &Transform, &Asteroid), Without<Limpet>>,
+    ships: Query<&Transform, (With<Ship>, Without<Limpet>)>,
 ) {
     let dt = time.delta_secs();
     let mut rng = rand::thread_rng();
     let ship = ships.iter().next().map(|t| t.translation.truncate());
-    for (lt, mut lv, mut lp) in &mut limpets {
+    for (mut lt, mut lv, mut lp) in &mut limpets {
         let lc = lt.translation.truncate();
         // drop a host that's been destroyed
         if lp.host.is_some_and(|h| rocks.get(h).is_err()) {
             lp.host = None;
         }
-        // acquire the nearest LARGE rock if we have none (transiting = exposed)
+        // acquire the nearest LARGE rock if we have none
         if lp.host.is_none() {
             lp.guard = None;
             let mut best: Option<(Entity, f32)> = None;
@@ -2610,41 +2662,49 @@ fn limpet_update(
             }
             lp.host = best.map(|(e, _)| e);
         }
-        // ride to the hiding spot on the host's far side (relative to the ship)
-        if let Some((_, htf, ha)) = lp.host.and_then(|h| rocks.get(h).ok()) {
-            let hc = htf.translation.truncate();
-            let mut away = ship.map(|s| (hc - s).normalize_or_zero()).unwrap_or(Vec2::Y);
-            if away == Vec2::ZERO {
-                away = Vec2::Y;
-            }
-            let spot = hc + away * (asteroid_radius(ha.size) + LIMPET_R + LIMPET_PEEK);
-            let to = spot - lc;
-            lv.0 = (to * 5.0).clamp_length_max(LIMPET_SPEED);
-            if to.length() < LIMPET_R * 1.5 {
-                // hidden & settled → raise the guard (exposed dir) and peek-fire at the ship
-                lp.guard = Some((lc - hc).normalize_or_zero());
-                lp.fire -= dt;
-                if lp.fire <= 0.0 {
-                    lp.fire = LIMPET_FIRE_EVERY + rng.gen_range(0.0..LIMPET_FIRE_JITTER);
-                    if let Some(s) = ship {
-                        let dir = (s - lc).normalize_or_zero();
-                        if dir != Vec2::ZERO {
-                            commands.spawn((
-                                EnemyBullet { life: ENEMY_BULLET_LIFE },
-                                Velocity(dir * ENEMY_BULLET_SPEED),
-                                Transform::from_xyz(lc.x, lc.y, 0.0),
-                            ));
-                            sfx.write(SoundFx::EnemyShot);
-                        }
-                    }
-                }
-            } else {
-                lp.guard = None; // still moving into position → exposed
-            }
-        } else {
-            // no large rock anywhere → drift gently toward center so it doesn't wander off
+        let Some((_, htf, ha)) = lp.host.and_then(|h| rocks.get(h).ok()) else {
+            // no large rock anywhere → drift gently toward center, fully exposed
             lp.guard = None;
             lv.0 = (-lc).clamp_length_max(LIMPET_SPEED * 0.5);
+            continue;
+        };
+        let hc = htf.translation.truncate();
+        let rr = asteroid_radius(ha.size);
+        let cling = (rr - LIMPET_R * 0.35).max(4.0); // center just inside the rim → the body straddles the edge (clings)
+        // the hiding angle = the side of the rock facing AWAY from the ship
+        let hide = ship.map(|s| (hc - s).to_angle()).unwrap_or(lp.angle);
+        let from_center = lc - hc;
+        if from_center.length() <= rr + LIMPET_R * 2.5 {
+            // TETHERED: rigidly ride the rim, sliding toward the hide angle at a limited rate (flankable)
+            lp.angle = step_angle(lp.angle, hide, LIMPET_TURN * dt);
+            let dir = Vec2::from_angle(lp.angle);
+            let rim = hc + dir * cling;
+            lt.translation.x = rim.x;
+            lt.translation.y = rim.y;
+            lv.0 = Vec2::ZERO;
+            lp.guard = Some(dir);
+            // peek-fire at the ship
+            lp.fire -= dt;
+            if lp.fire <= 0.0 {
+                lp.fire = LIMPET_FIRE_EVERY + rng.gen_range(0.0..LIMPET_FIRE_JITTER);
+                if let Some(s) = ship {
+                    let sd = (s - rim).normalize_or_zero();
+                    if sd != Vec2::ZERO {
+                        commands.spawn((
+                            EnemyBullet { life: ENEMY_BULLET_LIFE },
+                            Velocity(sd * ENEMY_BULLET_SPEED),
+                            Transform::from_xyz(rim.x, rim.y, 0.0),
+                        ));
+                        sfx.write(SoundFx::EnemyShot);
+                    }
+                }
+            }
+        } else {
+            // TRANSITING toward the rock → fly to the hide-side rim point; exposed en route
+            lp.angle = from_center.to_angle(); // stay synced so there's no snap when it arrives
+            let approach = hc + Vec2::from_angle(hide) * cling;
+            lv.0 = (approach - lc).clamp_length_max(LIMPET_SPEED);
+            lp.guard = None;
         }
     }
 }
@@ -3448,12 +3508,17 @@ fn shot_mode_update(time: Res<Time>, mut flash: ResMut<ShotModeFlash>, mass: Res
     if flash.0 > 0.0 {
         flash.0 -= time.delta_secs();
     }
-    let alpha = (flash.0 / 0.3).clamp(0.0, 1.0); // full while > 0.3s left, then fade out
+    // Persistent once the mass shot is unlocked (there's a real choice then): a dim baseline that reads
+    // at a glance, flaring bright right after a toggle. Hidden entirely before the unlock. Colour-coded
+    // so the active mode is obvious — violet (player kit) for MASS, cool steel for STANDARD.
+    let base: f32 = if mass.unlocked { 0.5 } else { 0.0 };
+    let alpha = base.max((flash.0 / 0.3).clamp(0.0, 1.0));
+    let rgb = if mass.active { Color::srgb(0.72, 0.28, 1.0) } else { Color::srgb(0.58, 0.72, 0.9) };
     for (mut text, mut color) in &mut q {
-        if flash.0 > 0.0 {
+        if mass.unlocked {
             text.0 = if mass.active { "MASS SHOT" } else { "STANDARD SHOT" }.to_string();
         }
-        color.0 = color.0.with_alpha(alpha);
+        color.0 = rgb.with_alpha(alpha);
     }
 }
 
@@ -3654,6 +3719,14 @@ fn render(
             .collect();
         gizmos.linestrip_2d(pts, dim(lcol, bright));
         gizmos.circle_2d(Isometry2d::from_translation(c), LIMPET_R * 0.42 * throb, dim(lcol, bright)); // core
+        // gripping claws reaching INTO the rock (opposite the exposed face) — sells the tether
+        if let Some(g) = lp.guard {
+            let inward = (-g).to_angle();
+            for k in -1..=1 {
+                let a = inward + k as f32 * 0.5;
+                gizmos.line_2d(c + Vec2::from_angle(a) * LIMPET_R * 0.5, c + Vec2::from_angle(a) * LIMPET_R * 1.6, dim(lcol, 0.85));
+            }
+        }
     }
 
     // warp: a big black-hole DRAIN spiral (streams corkscrew inward, like water
@@ -5254,7 +5327,7 @@ fn main() {
         .add_systems(Update, menu_title_fx.run_if(in_state(GameState::Menu)))
         // render in PostUpdate so it ALWAYS runs after every Update system (incl.
         // ship_bounds) — draws final positions, no border ghosting; runs in all states
-        .add_systems(PostUpdate, (render, render_boss, render_extras))
+        .add_systems(PostUpdate, (render, render_boss, render_extras, render_shockwaves))
         // gameplay only while Playing
         .add_systems(
             Update,
@@ -5292,6 +5365,7 @@ fn main() {
                     .chain(),
                 (
                     particle_update,
+                    shockwave_update,
                     spin_asteroids,
                     ship_bounds,
                     asteroid_bounds,
@@ -5934,7 +6008,7 @@ mod tests {
         app.insert_resource(Score(0));
         let limpet = app
             .world_mut()
-            .spawn((Limpet { hp: 2, fire: 1.0, host: None, guard: Some(Vec2::X) }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0)))
+            .spawn((Limpet { hp: 2, fire: 1.0, host: None, angle: 0.0, guard: Some(Vec2::X) }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0)))
             .id();
         app.world_mut()
             .spawn((Bullet { life: 1.0, trail: Vec::new(), mass: false }, Velocity(Vec2::ZERO), Transform::from_xyz(bullet_x, 0.0, 0.0)));
@@ -5958,7 +6032,7 @@ mod tests {
         app.insert_resource(Score(0));
         // guard None = transiting/exposed, hp 1
         app.world_mut()
-            .spawn((Limpet { hp: 1, fire: 1.0, host: None, guard: None }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0)));
+            .spawn((Limpet { hp: 1, fire: 1.0, host: None, angle: 0.0, guard: None }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0)));
         app.world_mut()
             .spawn((Bullet { life: 1.0, trail: Vec::new(), mass: false }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0)));
         app.add_systems(Update, collisions);
@@ -5976,7 +6050,7 @@ mod tests {
         let rock1 = app.world_mut().spawn(big(200.0)).id();
         let rock2 = app.world_mut().spawn(big(-200.0)).id();
         app.world_mut()
-            .spawn((Limpet { hp: 2, fire: 1.0, host: Some(rock1), guard: Some(Vec2::X) }, Velocity(Vec2::ZERO), Transform::from_xyz(200.0, 0.0, 0.0)));
+            .spawn((Limpet { hp: 2, fire: 1.0, host: Some(rock1), angle: 0.0, guard: Some(Vec2::X) }, Velocity(Vec2::ZERO), Transform::from_xyz(200.0, 0.0, 0.0)));
         app.add_systems(Update, limpet_update);
         app.update();
         assert_eq!(app.world_mut().query::<&Limpet>().iter(app.world()).next().unwrap().host, Some(rock1), "still tethered to its host");
@@ -5985,6 +6059,27 @@ mod tests {
         app.update();
         assert_eq!(app.world_mut().query::<&Limpet>().iter(app.world()).count(), 1, "the limpet does NOT die when its host is destroyed");
         assert_eq!(app.world_mut().query::<&Limpet>().iter(app.world()).next().unwrap().host, Some(rock2), "it re-tethers to another large rock");
+    }
+
+    #[test]
+    fn a_limpet_glues_onto_its_host_rim() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_event::<SoundFx>();
+        let rr = asteroid_radius(3);
+        let rock = app
+            .world_mut()
+            .spawn((Asteroid { size: 3, verts: vec![Vec2::X * rr], rot: 0.0, spin: 0.0, dense: false, hp: 1 }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0)))
+            .id();
+        // starts just off the rim → within tether range
+        app.world_mut()
+            .spawn((Limpet { hp: 2, fire: 1.0, host: Some(rock), angle: 0.0, guard: None }, Velocity(Vec2::ZERO), Transform::from_xyz(rr + 10.0, 0.0, 0.0)));
+        app.add_systems(Update, limpet_update);
+        app.update();
+        let (lt, lp) = app.world_mut().query::<(&Transform, &Limpet)>().iter(app.world()).next().unwrap();
+        assert!(lp.guard.is_some(), "it raises its guard once tethered to a host");
+        let d = lt.translation.truncate().length(); // distance from the rock centre (at origin)
+        assert!((d - (rr - LIMPET_R * 0.35)).abs() < 1.0, "it snaps rigidly onto the rim (cling radius), not floating off — got {d}");
     }
 
     #[test]
