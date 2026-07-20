@@ -107,7 +107,7 @@ const ENEMY_SPAWN_INTERVAL: f32 = 3.0;
 // by the host (the `guard` half-plane); to kill it you FLANK the exposed side, or break its host so
 // it has to scramble to another rock — it re-tethers until IT is destroyed. Reuses ENEMY_BULLET_*.
 const LIMPET_R: f32 = 13.0;
-const LIMPET_HP: i32 = 2; // clean hits to the exposed side to kill it
+const LIMPET_HP: i32 = 1; // one clean hit — a mob never has more effective health than the ship (which dies in one)
 const LIMPET_SPEED: f32 = 140.0; // reposition speed — slow enough to swing around and flank, fast enough to track a drifting rock
 const LIMPET_FIRE_EVERY: f32 = 2.0; // s between peek-shots
 const LIMPET_FIRE_JITTER: f32 = 0.8;
@@ -2637,12 +2637,19 @@ fn limpet_update(
     mut limpets: Query<(&mut Transform, &mut Velocity, &mut Limpet)>,
     rocks: Query<(Entity, &Transform, &Asteroid), Without<Limpet>>,
     ships: Query<&Transform, (With<Ship>, Without<Limpet>)>,
+    holes: Query<&Transform, (With<BlackHole>, Without<Limpet>)>,
 ) {
     let dt = time.delta_secs();
     let mut rng = rand::thread_rng();
     let ship = ships.iter().next().map(|t| t.translation.truncate());
     for (mut lt, mut lv, mut lp) in &mut limpets {
         let lc = lt.translation.truncate();
+        // caught in a warp → yield: let black_hole_update drag it off its rock + consume it (don't
+        // fight the pull by rigidly re-gluing to the rim)
+        if holes.iter().any(|ht| ht.translation.truncate().distance(lc) < WARP_PULL_RADIUS) {
+            lp.guard = None; // exposed while being dragged in
+            continue;
+        }
         // drop a host that's been destroyed
         if lp.host.is_some_and(|h| rocks.get(h).is_err()) {
             lp.host = None;
@@ -3367,6 +3374,7 @@ fn black_hole_update(
     mut asteroids: Query<(Entity, &Transform, &mut Velocity, &Asteroid), Without<Shielded>>,
     mut enemies: Query<(Entity, &Transform, &mut Velocity), (With<Enemy>, Without<Asteroid>)>,
     mut mines: Query<(Entity, &Transform, &mut Velocity), (With<Mine>, Without<Asteroid>, Without<Enemy>)>,
+    mut limpets: Query<(Entity, &Transform, &mut Velocity), (With<Limpet>, Without<Asteroid>, Without<Enemy>, Without<Mine>)>,
 ) {
     let dt = time.delta_secs();
     let pull_r = WARP_PULL_RADIUS;
@@ -3407,6 +3415,17 @@ fn black_hole_update(
                 commands.entity(me).despawn();
             } else {
                 mv.0 += warp_pull(mp, hp, pull_r, dt);
+            }
+        }
+        // Limpets are pulled off their rocks and swallowed like everything else
+        for (le, lt, mut lv) in &mut limpets {
+            let lp2 = lt.translation.truncate();
+            if lp2.distance(hp) < WARP_CONSUME_R + LIMPET_R {
+                score.0 += LIMPET_SCORE;
+                burst(&mut commands, lp2, limpet_color(), 18, 300.0, &mut rng);
+                commands.entity(le).despawn();
+            } else {
+                lv.0 += warp_pull(lp2, hp, pull_r, dt);
             }
         }
         // suck-in sparks streaking toward the core (extra juice)
@@ -6910,6 +6929,27 @@ mod tests {
         let enemies = app.world_mut().query::<&Enemy>().iter(app.world()).count();
         assert_eq!(enemies, 0, "an enemy at the core is consumed by the warp");
         assert_eq!(app.world().resource::<Score>().0, ENEMY_SCORE, "consuming an enemy scores");
+    }
+
+    #[test]
+    fn warp_consumes_limpet() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_event::<SoundFx>();
+        app.insert_resource(Stats::default());
+        app.insert_resource(RunFlags::default());
+        app.insert_resource(Score(0));
+        app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
+        app.world_mut().spawn((BlackHole { life: 1.0, spin: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0)));
+        app.world_mut().spawn((
+            Limpet { hp: 1, fire: 1.0, host: None, angle: 0.0, guard: Some(Vec2::X) },
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+        ));
+        app.add_systems(Update, black_hole_update);
+        app.update();
+        assert_eq!(app.world_mut().query::<&Limpet>().iter(app.world()).count(), 0, "a limpet at the core is consumed by the warp");
+        assert_eq!(app.world().resource::<Score>().0, LIMPET_SCORE, "consuming a limpet scores");
     }
 
     #[test]

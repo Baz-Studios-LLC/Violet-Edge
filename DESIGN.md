@@ -118,9 +118,12 @@ toward the far side from the ship at a limited angular rate (`LIMPET_TURN`), pee
 slow `EnemyBullet`. Its host is a shield — shots from the rock-side are blocked (`guard` half-plane);
 you kill it by FLANKING the exposed side (out-turn its slide) or by catching it EXPOSED while it
 transits between rocks. Break its host and it just scrambles to another large rock — it re-tethers
-until *it* is destroyed (2 HP). Gated to waves 12–13 (cap `LIMPET_MAX`); the old yellow lobber stays
-off 11–15 via `enemy_target`. **Pass-2 TODO:** direct hits from warp / orange blast / chain beam
-(right now those kill it only indirectly, by destroying whatever rock it's on).
+until *it* is destroyed (**1 HP** — dies in one hit; a mob never out-HPs the ship). Gated to waves
+12–13 (cap `LIMPET_MAX`); the old yellow lobber stays off 11–15 via `enemy_target`. **Warp kills it**
+✅ (yields to a nearby hole → dragged off its rock + consumed, like everything except the player,
+bosses, and boss-held rocks). **Pass-2 TODO:** direct hits from the orange blast + chain beam (today
+those kill it only by destroying whatever rock it's on). ⚠️ **Open:** the peek-fire mechanic — it
+currently shoots *through* its host rock, which reads wrong; mechanic under review.
 
 ## Life economy (implemented: gold 1UP rock)
 
