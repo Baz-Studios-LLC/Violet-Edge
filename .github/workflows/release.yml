@@ -44,14 +44,18 @@ jobs:
       - name: Build
         run: cargo build --release
 
+      # NOTE: native asset names are VERSION-LESS on purpose — the Baz Studios launcher matches a
+      # fixed asset name across releases (like WriftHeart's `*-windows-x86_64.zip` /
+      # `*-macos-aarch64.app.tar.gz`). The release TAG carries the version. Don't reintroduce ${TAG}
+      # into these names or the launcher can't find the newest build. (The human .dmg stays versioned.)
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: bash
-        run: (cd target/release && 7z a "../../violet-edge-${TAG}-windows.zip" violet-edge.exe)
+        run: (cd target/release && 7z a "../../violet-edge-windows-x86_64.zip" violet-edge.exe)
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
-        run: zip -j "violet-edge-${TAG}-linux.zip" target/release/violet-edge
+        run: zip -j "violet-edge-linux-x86_64.zip" target/release/violet-edge
 
       - name: Package (macOS .app in a .dmg)
         if: runner.os == 'macOS'
@@ -97,6 +101,9 @@ jobs:
           cp -R "$app" dmgroot/
           ln -s /Applications dmgroot/Applications
           hdiutil create -volname "VIOLET EDGE" -srcfolder dmgroot -ov -format UDZO "violet-edge-${TAG}-macos-arm64.dmg"
+          # ALSO ship the .app as a tarball for the Baz Studios launcher (it untars via system `tar`,
+          # preserving the bundle's exec bits + structure a zip would mangle, then `open`s the .app).
+          tar -czf "violet-edge-macos-aarch64.app.tar.gz" "$app"
 
       - name: Attach to release
         uses: softprops/action-gh-release@v2
@@ -105,3 +112,4 @@ jobs:
           files: |
             violet-edge-*.zip
             violet-edge-*.dmg
+            violet-edge-*.app.tar.gz
