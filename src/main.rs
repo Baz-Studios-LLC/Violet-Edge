@@ -60,9 +60,9 @@ const WARP_MISSILE_SPEED: f32 = 550.0;
 const WARP_MISSILE_LIFE: f32 = 1.4; // ~770px max — but it detonates the instant it hits a rock, so in a busy field it opens the hole right there rather than sailing across the arena
 const WARP_MISSILE_R: f32 = 10.0; // contact radius for detonating on an asteroid
 const WARP_HOLE_LIFE: f32 = 2.6;
-const WARP_PULL_RADIUS: f32 = 500.0; // a bit bigger than the old 440 (JS 360 read too small
+const WARP_PULL_RADIUS: f32 = 560.0; // a bit bigger than the old 440 (JS 360 read too small
 // with our longer missile throw); still well short of arena-spanning (~755 was too far)
-const WARP_PULL: f32 = 2000.0; // much more aggressive inward yank than JS (was 900)
+const WARP_PULL: f32 = 2600.0; // very aggressive inward yank — the hole should feel greedy (JS was 900)
 const WARP_CONSUME_R: f32 = 120.0; // event horizon — anything whose EDGE crosses this is
 // instantly destroyed (rocks/enemies/mines), like a real black hole. Big enough that pulled-in
 // rocks are eaten on contact instead of clumping + colliding around a tiny mouth.
@@ -3288,14 +3288,26 @@ fn render(
     // grid — faint, brighter per-line shimmer; bends toward an active warp hole (and rubber-snaps
     // back). Only while a run is on — off-run the color is zeroed so the menu shows no grid.
     let warping = wf.amount.abs() > 0.001;
-    // grid brightens while a warp is stretching it, so the pull reads on the backdrop
-    let grid = dim(grid_color(), if show_run { if warping { 3.0 } else { 1.0 } } else { 0.0 });
+    let wamt = wf.amount.abs().clamp(0.0, 1.0); // warp-field envelope: 0 → 1 as the hole opens, eases back (with a little overshoot) on snapback
+    // while a warp bends the grid it drinks the hole's energy: it glows much harder AND takes on the
+    // warp's purple, ramping with the field so the pull really reads on the backdrop.
+    let grid = if show_run {
+        if warping {
+            dim(mix(grid_color(), warp_color(), 0.45 * wamt), 1.0 + 2.6 * wamt)
+        } else {
+            grid_color()
+        }
+    } else {
+        dim(grid_color(), 0.0)
+    };
+    // during a warp every line also strobes — a fast, per-line flicker that intensifies with the field
+    let warp_flick = |k: f32| if warping { (1.0 + 0.7 * wamt * (t * 28.0 + k * 2.1).sin()).max(0.08) } else { 1.0 };
     const SUBDIV: usize = 14;
     let mut i = 0;
     let mut x = -(h.x / GRID_CELL).floor() * GRID_CELL;
     while x <= h.x {
         let sh = 0.5 + 1.1 * (0.5 + 0.5 * (i as f32 * 0.7 + t * 1.2).sin());
-        let col = dim(grid, sh);
+        let col = dim(grid, sh * warp_flick(i as f32));
         if warping {
             let pts: Vec<Vec2> = (0..=SUBDIV)
                 .map(|s| warp_point(Vec2::new(x, -h.y + 2.0 * h.y * (s as f32 / SUBDIV as f32)), &wf))
@@ -3311,7 +3323,7 @@ fn render(
     let mut y = -(h.y / GRID_CELL).floor() * GRID_CELL;
     while y <= h.y {
         let sh = 0.5 + 1.1 * (0.5 + 0.5 * (j as f32 * 0.7 + t * 1.2 + 1.7).sin());
-        let col = dim(grid, sh);
+        let col = dim(grid, sh * warp_flick(j as f32 + 5.0));
         if warping {
             let pts: Vec<Vec2> = (0..=SUBDIV)
                 .map(|s| warp_point(Vec2::new(-h.x + 2.0 * h.x * (s as f32 / SUBDIV as f32), y), &wf))
