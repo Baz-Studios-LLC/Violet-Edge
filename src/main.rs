@@ -109,10 +109,10 @@ const ENEMY_SPAWN_INTERVAL: f32 = 3.0;
 const LIMPET_R: f32 = 13.0;
 const LIMPET_HP: i32 = 1; // one clean hit — a mob never has more effective health than the ship (which dies in one)
 const LIMPET_SPEED: f32 = 140.0; // reposition speed — slow enough to swing around and flank, fast enough to track a drifting rock
-const LIMPET_FIRE_EVERY: f32 = 2.0; // s between peek-shots
+const LIMPET_FIRE_EVERY: f32 = 1.3; // s hiding between pop-outs
 const LIMPET_FIRE_JITTER: f32 = 0.8;
 const LIMPET_SCORE: u32 = 350; // a bit more than the lobber — harder to reach
-const LIMPET_TURN: f32 = 1.8; // max rad/s it slides around the rim to re-hide — slow enough for a nimble player to flank
+const LIMPET_TURN: f32 = 2.4; // rad/s it slides around the rim (to hide, or to pop out to the ship-side to fire)
 const LIMPET_MAX: i32 = 3; // hard cap on live limpets
 const LIMPET_HOST_MIN_SIZE: u8 = 3; // only tethers to LARGE rocks
 const LIMPET_SPAWN_INTERVAL: f32 = 4.0;
@@ -2678,38 +2678,48 @@ fn limpet_update(
         let hc = htf.translation.truncate();
         let rr = asteroid_radius(ha.size);
         let cling = (rr - LIMPET_R * 0.35).max(4.0); // center just inside the rim → the body straddles the edge (clings)
-        // the hiding angle = the side of the rock facing AWAY from the ship
-        let hide = ship.map(|s| (hc - s).to_angle()).unwrap_or(lp.angle);
+        // the ship-facing (near) side is where it pops out to fire; the far side is where it hides
+        let to_ship = ship.map(|s| s - hc).unwrap_or(Vec2::Y);
+        let near_ang = to_ship.to_angle();
+        let hide_ang = (-to_ship).to_angle();
         let from_center = lc - hc;
         if from_center.length() <= rr + LIMPET_R * 2.5 {
-            // TETHERED: rigidly ride the rim, sliding toward the hide angle at a limited rate (flankable)
-            lp.angle = step_angle(lp.angle, hide, LIMPET_TURN * dt);
+            // TETHERED: rigidly ride the rim. It hides on the FAR side, then POPS OUT to the ship-side
+            // rim to fire — a clear lane, never through the rock — exposing itself while it shoots.
+            lp.fire -= dt;
+            let peeking = lp.fire <= 0.0;
+            let target = if peeking { near_ang } else { hide_ang };
+            lp.angle = step_angle(lp.angle, target, LIMPET_TURN * dt);
             let dir = Vec2::from_angle(lp.angle);
             let rim = hc + dir * cling;
             lt.translation.x = rim.x;
             lt.translation.y = rim.y;
             lv.0 = Vec2::ZERO;
-            lp.guard = Some(dir);
-            // peek-fire at the ship
-            lp.fire -= dt;
-            if lp.fire <= 0.0 {
-                lp.fire = LIMPET_FIRE_EVERY + rng.gen_range(0.0..LIMPET_FIRE_JITTER);
-                if let Some(s) = ship {
-                    let sd = (s - rim).normalize_or_zero();
-                    if sd != Vec2::ZERO {
-                        commands.spawn((
-                            EnemyBullet { life: ENEMY_BULLET_LIFE },
-                            Velocity(sd * ENEMY_BULLET_SPEED),
-                            Transform::from_xyz(rim.x, rim.y, 0.0),
-                        ));
-                        sfx.write(SoundFx::EnemyShot);
+            lp.guard = Some(dir); // far side → the rock shields it; near side (peeking) → it's open to fire
+            // fire once it has popped out far enough that the shot clears its own host rock
+            if peeking {
+                match ship {
+                    // rock is behind the muzzle (dot <= 0) → clear lane to the ship
+                    Some(s) if (hc - rim).dot(s - rim) <= 0.0 => {
+                        let sd = (s - rim).normalize_or_zero();
+                        if sd != Vec2::ZERO {
+                            commands.spawn((
+                                EnemyBullet { life: ENEMY_BULLET_LIFE },
+                                Velocity(sd * ENEMY_BULLET_SPEED),
+                                Transform::from_xyz(rim.x, rim.y, 0.0),
+                            ));
+                            sfx.write(SoundFx::EnemyShot);
+                        }
+                        lp.fire = LIMPET_FIRE_EVERY + rng.gen_range(0.0..LIMPET_FIRE_JITTER); // duck back + dwell
                     }
+                    None => lp.fire = LIMPET_FIRE_EVERY, // nothing to shoot → reset
+                    _ => {} // still sliding out to a clear lane
                 }
             }
         } else {
             // TRANSITING toward the rock → fly to the hide-side rim point; exposed en route
             lp.angle = from_center.to_angle(); // stay synced so there's no snap when it arrives
-            let approach = hc + Vec2::from_angle(hide) * cling;
+            let approach = hc + Vec2::from_angle(hide_ang) * cling;
             lv.0 = (approach - lc).clamp_length_max(LIMPET_SPEED);
             lp.guard = None;
         }
@@ -6099,6 +6109,30 @@ mod tests {
         assert!(lp.guard.is_some(), "it raises its guard once tethered to a host");
         let d = lt.translation.truncate().length(); // distance from the rock centre (at origin)
         assert!((d - (rr - LIMPET_R * 0.35)).abs() < 1.0, "it snaps rigidly onto the rim (cling radius), not floating off — got {d}");
+    }
+
+    #[test]
+    fn a_limpet_pops_out_to_fire_a_clear_lane() {
+        fn bullets_after(fire: f32) -> usize {
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins);
+            app.add_event::<SoundFx>();
+            let rr = asteroid_radius(3);
+            let rock = app
+                .world_mut()
+                .spawn((Asteroid { size: 3, verts: vec![Vec2::X * rr], rot: 0.0, spin: 0.0, dense: false, hp: 1 }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0)))
+                .id();
+            app.world_mut()
+                .spawn((Ship { angle: 0.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 }, Velocity(Vec2::ZERO), Transform::from_xyz(300.0, 0.0, 0.0)));
+            // tethered on the ship-side (+x) rim — i.e. already popped out, with a clear lane to the ship
+            app.world_mut()
+                .spawn((Limpet { hp: 1, fire, host: Some(rock), angle: 0.0, guard: Some(Vec2::X) }, Velocity(Vec2::ZERO), Transform::from_xyz(rr - LIMPET_R * 0.35, 0.0, 0.0)));
+            app.add_systems(Update, limpet_update);
+            app.update();
+            app.world_mut().query::<&EnemyBullet>().iter(app.world()).count()
+        }
+        assert_eq!(bullets_after(-0.1), 1, "popped out (timer elapsed) on a clear near-side lane → it fires");
+        assert_eq!(bullets_after(1.0), 0, "still hiding (timer not elapsed) → it holds fire, never shooting through the rock");
     }
 
     #[test]

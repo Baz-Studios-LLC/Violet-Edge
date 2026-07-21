@@ -113,17 +113,18 @@ Build order (one section at a time): **1. orange mechanic ✅ → 2. wave restru
 wiring ✅ (§A) → 3. Limpet mob ✅ core (§B) → 4. Slinger boss (§C) → 5. Slinger's Drone powerup.**
 
 The Limpet (§B, ✅ core): a cyan parasite that TETHERS to a large rock — it rigidly rides the rim
-(glued to the rock's edge with little gripping claws, not floating near it) and slides around it
-toward the far side from the ship at a limited angular rate (`LIMPET_TURN`), peeking out to fire the
-slow `EnemyBullet`. Its host is a shield — shots from the rock-side are blocked (`guard` half-plane);
-you kill it by FLANKING the exposed side (out-turn its slide) or by catching it EXPOSED while it
-transits between rocks. Break its host and it just scrambles to another large rock — it re-tethers
-until *it* is destroyed (**1 HP** — dies in one hit; a mob never out-HPs the ship). Gated to waves
-12–13 (cap `LIMPET_MAX`); the old yellow lobber stays off 11–15 via `enemy_target`. **Warp kills it**
+(glued to the rock's edge with little gripping claws, not floating near it). **Peek-to-fire:** it
+hides on the FAR side (rock between it and the ship — protected), then POPS OUT around the rim to the
+ship-side and fires the slow `EnemyBullet` only once the lane is clear of its host (never *through*
+the rock), then ducks back. It's exposed on the near side while shooting — that's the kill window.
+Its host is a shield — rock-side shots are blocked (`guard` half-plane); you kill it by catching it
+popped-out/flanked, or EXPOSED while it transits between rocks. Break its host and it scrambles to
+another large rock — it re-tethers until *it* is destroyed (**1 HP** — dies in one hit; a mob never
+out-HPs the ship). Slide rate `LIMPET_TURN`. Gated to waves 12–13 (cap `LIMPET_MAX`); the old yellow
+lobber stays off 11–15 via `enemy_target`. **Warp kills it**
 ✅ (yields to a nearby hole → dragged off its rock + consumed, like everything except the player,
 bosses, and boss-held rocks). **Pass-2 TODO:** direct hits from the orange blast + chain beam (today
-those kill it only by destroying whatever rock it's on). ⚠️ **Open:** the peek-fire mechanic — it
-currently shoots *through* its host rock, which reads wrong; mechanic under review.
+those kill it only by destroying whatever rock it's on).
 
 ## Life economy (implemented: gold 1UP rock)
 
