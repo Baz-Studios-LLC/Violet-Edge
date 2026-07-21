@@ -114,15 +114,21 @@ wiring ✅ (§A) → 3. Limpet mob ✅ core (§B) → 4. Slinger boss ✅ (§C) 
 ### Waves 16–20 — building now
 
 `content_wave` is now identity through **20** (`rem_euclid(20)` loop after 20). No blue anywhere (any
-would-be-blue on waves 11+ falls back to green in `roll_rock_kind`). The **Pulser** debuts here.
+would-be-blue on waves 11+ falls back to green in `roll_rock_kind`). The **Pulser** debuts here, and
+the **gravity Well** hazard appears on 18–19 (no mobs — Limpets stay in 12–13).
 
 | Wave | Content | Status |
 | --- | --- | --- |
 | 16 | green + pulser (learn the beat) | ✅ Pulser mechanic + wiring |
 | 17 | green + orange + pulser | ✅ wired |
-| 18 | pulser-heavy + orange (+ green filler) | ✅ wired |
-| 19 | green + orange + pulser + Limpets | ✅ wired |
+| 18 | pulser-heavy + orange + **Well** | ✅ wired |
+| 19 | green + orange + pulser + **Well** | ✅ wired |
 | 20 | **The Detonator** (boss) + green | green wired ✅ · boss = **Warden placeholder** (Detonator 🔷 next) |
+
+The **gravity Well** (`WELL_*`, ✅): an "opposite warp" HAZARD — a rose-red inward vortex that drags the
+*ship* toward it (`well_pull`, weaker than `THRUST` so you can always fly out — a compile-time invariant).
+It doesn't kill on its own; the threat is that it fouls your dodging. Ship-only pull, ~2 at a time,
+collapses after `WELL_LIFE`. A field-hazard preview of the Singularity boss's *Pull* (W30).
 
 **Next:** the **Detonator** (boss 4, wave 20) — *Prime*: turns nearby rocks into live bombs, itself
 armored so only explosive blasts crack its shell. Unique boss colour (Warden magenta · Devourer red ·

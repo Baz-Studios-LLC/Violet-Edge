@@ -86,6 +86,19 @@ const WARP_ROCK_SCORE: u32 = 25; // a rock swallowed by the warp scores a low fl
 const MINE_SPAWN_INTERVAL: f32 = 2.6;
 const MINE_CHUNK_MULT: f32 = 1.9; // HIDDEN: rocks shattered by a mine blast fling chunks this much faster
 
+// The Well (waves 18+): a gravity well — an "opposite warp" that drags the SHIP toward it. Deliberately
+// weaker than the ship's thrust, so you can always fly out; the threat is that it fouls your dodging,
+// not a direct kill. (A field-hazard preview of the Singularity boss's Pull, W30.)
+const WELL_R: f32 = 16.0; // core radius (visual)
+const WELL_PULL_RADIUS: f32 = 300.0; // reach — smaller than the player warp's 560
+const WELL_PULL: f32 = 520.0; // inward accel at the core — well under THRUST (1000), so thrusting escapes
+const WELL_LIFE: f32 = 14.0; // s it lingers before it collapses (the field cycles)
+const WELL_MAX: i32 = 2; // hard cap on live wells
+const WELL_SPAWN_INTERVAL: f32 = 5.0;
+// Escapability is a hard invariant: the well's pull must stay under the ship's thrust so you can
+// always fly out. Enforced at compile time — bump WELL_PULL past THRUST and the build fails.
+const _: () = assert!(WELL_PULL < THRUST);
+
 // Enemy ships (wave 3+): drift in, hover-and-strafe while firing at the ship, dodge
 // mines/rocks, get sucked into the warp, and bug out if they linger too long.
 const ENEMY_MAX_FRACTION: f32 = 0.3; // mob count is capped well below the rock count (a garnish)
@@ -295,6 +308,9 @@ fn slinger_color() -> Color {
 fn drone_color() -> Color {
     Color::srgb(2.6, 2.2, 5.6)
 } // lavender-violet — the ally Drone (player kit, so it reads as yours; distinct from the ship's core purple)
+fn well_color() -> Color {
+    Color::srgb(5.0, 0.9, 2.4)
+} // hot rose-red — the gravity-well hazard (a "dark" swirl, clearly NOT the player's blue-purple warp)
 // A Pulser is LIT (invulnerable) when its beat is in the bright half. Derived from global time + the
 // rock's own phase offset, so no per-frame state is needed — collisions/chain/render all agree.
 fn pulser_lit(offset: f32, t: f32) -> bool {
@@ -396,6 +412,18 @@ fn warp_pull(pos: Vec2, hole: Vec2, pull_r: f32, dt: f32) -> Vec2 {
     let dir = (hole - pos) / d;
     let falloff = 1.0 - d / pull_r;
     dir * (WARP_PULL * (0.35 + 0.65 * falloff)) * dt
+}
+
+// Inward velocity delta a gravity Well applies to the ship. Like `warp_pull` but weaker (`WELL_PULL`
+// < THRUST), so the ship can always thrust free — the well fouls your movement, it doesn't trap you.
+fn well_pull(ship: Vec2, well: Vec2, dt: f32) -> Vec2 {
+    let d = ship.distance(well);
+    if !(1.0..WELL_PULL_RADIUS).contains(&d) {
+        return Vec2::ZERO;
+    }
+    let dir = (well - ship) / d;
+    let falloff = 1.0 - d / WELL_PULL_RADIUS;
+    dir * (WELL_PULL * (0.3 + 0.7 * falloff)) * dt
 }
 
 // Squared distance from point `p` to segment `a`–`b` (for chain-beam vs target hits).
@@ -522,7 +550,7 @@ type GameplayEntity = Or<(
     With<Slinger>,
     // (Cannonball entities are also Asteroids, so With<Asteroid> already covers them.)
     // Nested Or keeps this within Bevy's 15-element tuple-filter limit.
-    Or<(With<ChainShot>, With<Pickup>, With<Drone>)>,
+    Or<(With<ChainShot>, With<Pickup>, With<Drone>, With<Well>)>,
 )>;
 
 #[derive(Component)]
@@ -687,6 +715,14 @@ struct Detonating {
 #[derive(Component)]
 struct Pulser {
     offset: f32,
+}
+
+// A gravity-well hazard (waves 18+): drags the ship inward (see `well_pull`), then collapses after
+// `life`. `spin` drives its swirl visual.
+#[derive(Component)]
+struct Well {
+    life: f32,
+    spin: f32,
 }
 
 // A brief expanding ring drawn where an explosion went off (the orange blast) — pure visual, no
@@ -873,6 +909,10 @@ struct EnemyClock(f32);
 // Throttles Limpet spawns.
 #[derive(Resource, Default)]
 struct LimpetClock(f32);
+
+// Throttles gravity-well spawns.
+#[derive(Resource, Default)]
+struct WellClock(f32);
 
 // Tracks the last boss wave a boss was spawned for, so exactly one spawns per wave.
 #[derive(Resource, Default)]
@@ -2950,6 +2990,70 @@ fn limpet_update(
     }
 }
 
+// Stream gravity Wells in on their content waves (18-19), capped at WELL_MAX; not during the calm or a
+// boss wave. Each spawns away from the ship so it never appears right on top of you.
+fn top_up_wells(
+    time: Res<Time>,
+    mut clock: ResMut<WellClock>,
+    wave: Res<Wave>,
+    arena: Res<Arena>,
+    mut commands: Commands,
+    wells: Query<(), With<Well>>,
+    ships: Query<&Transform, With<Ship>>,
+) {
+    if wave.calm > 0.0 || is_boss_wave(wave.level) || !matches!(content_wave(wave.level), 18..=19) {
+        return;
+    }
+    clock.0 -= time.delta_secs();
+    if clock.0 > 0.0 {
+        return;
+    }
+    if (wells.iter().count() as i32) < WELL_MAX {
+        let mut rng = rand::thread_rng();
+        let h = arena.half;
+        let ship = ships.iter().next().map(|t| t.translation.truncate()).unwrap_or(Vec2::ZERO);
+        let mut pos = Vec2::ZERO;
+        for _ in 0..8 {
+            pos = Vec2::new(rng.gen_range(-h.x * 0.78..h.x * 0.78), rng.gen_range(-h.y * 0.78..h.y * 0.78));
+            if pos.distance(ship) > WELL_PULL_RADIUS * 0.8 {
+                break; // not right on top of the player
+            }
+        }
+        commands.spawn((Well { life: WELL_LIFE, spin: 0.0 }, Transform::from_xyz(pos.x, pos.y, 0.0)));
+        clock.0 = WELL_SPAWN_INTERVAL;
+    } else {
+        clock.0 = 1.0;
+    }
+}
+
+// Gravity Wells: tick each one's life (collapse at 0) and drag the ship toward every live one. The
+// pull is weaker than thrust (`well_pull`), so the player can always fly out.
+fn well_update(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut wells: Query<(Entity, &Transform, &mut Well)>,
+    mut ships: Query<(&Transform, &mut Velocity), With<Ship>>,
+) {
+    let dt = time.delta_secs();
+    let mut rng = rand::thread_rng();
+    for (we, wt, mut w) in &mut wells {
+        w.spin += dt * 2.2;
+        w.life -= dt;
+        if w.life <= 0.0 {
+            burst(&mut commands, wt.translation.truncate(), well_color(), 18, 260.0, &mut rng); // collapse
+            commands.entity(we).despawn();
+        }
+    }
+    if let Some((st, mut sv)) = ships.iter_mut().next() {
+        let sp = st.translation.truncate();
+        for (_we, wt, w) in &wells {
+            if w.life > 0.0 {
+                sv.0 += well_pull(sp, wt.translation.truncate(), dt);
+            }
+        }
+    }
+}
+
 // Enemy shots: `integrate` carries them; here we expire them (time / off-screen) and
 // kill the ship on contact (respecting invuln + dev invincibility).
 fn enemy_bullets(
@@ -4635,6 +4739,7 @@ fn render_extras(
     chains: Query<(&Transform, &ChainShot)>,
     pickups: Query<(&Transform, &Pickup)>,
     drones: Query<(&Drone, &Transform)>,
+    wells: Query<(&Well, &Transform)>,
 ) {
     let t = time.elapsed_secs();
     let cc = chain_color();
@@ -4681,6 +4786,27 @@ fn render_extras(
         let tri: Vec<Vec2> = (0..=3).map(|i| c + Vec2::from_angle(spin + i as f32 / 3.0 * TAU) * DRONE_R).collect();
         gizmos.linestrip_2d(tri, dcol);
         gizmos.circle_2d(Isometry2d::from_translation(c), DRONE_R * 0.4, white);
+    }
+    // gravity wells — inward-spiraling rose-red arms + a pulsing core, fading in on spawn / out on collapse
+    let wc = well_color();
+    for (w, wt) in &wells {
+        let c = wt.translation.truncate();
+        let fade = (w.life / 1.2).clamp(0.0, 1.0).min((WELL_LIFE - w.life) / 0.4).clamp(0.0, 1.0); // in then out
+        let arms = 5;
+        let segs = 8;
+        for a in 0..arms {
+            let a0 = a as f32 / arms as f32 * TAU;
+            let pts: Vec<Vec2> = (0..=segs)
+                .map(|s| {
+                    let p = s as f32 / segs as f32;
+                    let rad = WELL_PULL_RADIUS * 0.5 * (1.0 - p); // spirals inward
+                    c + Vec2::from_angle(a0 + 2.2 * p + w.spin) * rad
+                })
+                .collect();
+            gizmos.linestrip_2d(pts, dim(wc, 0.7 * fade * (0.4 + 0.6 * (t * 6.0).sin().abs())));
+        }
+        gizmos.circle_2d(Isometry2d::from_translation(c), WELL_R * (1.0 + 0.12 * (t * 5.0).sin()), dim(wc, fade));
+        gizmos.circle_2d(Isometry2d::from_translation(c), WELL_R * 0.45, dim(Color::srgb(6.0, 2.0, 3.5), fade)); // hot core
     }
 }
 
@@ -5896,6 +6022,7 @@ fn main() {
         .insert_resource(MineClock::default())
         .insert_resource(EnemyClock::default())
         .insert_resource(LimpetClock::default())
+        .insert_resource(WellClock::default())
         .insert_resource(Warp { charges: WARP_MAX_CHARGES, cooldown: 0.0 })
         .insert_resource(WarpField::default())
         .insert_resource(Arena { half: Vec2::new(640.0, 400.0) })
@@ -5955,6 +6082,7 @@ fn main() {
                     enemy_update,
                     enemy_bullets,
                     limpet_update,
+                    well_update,
                     boss_director,
                     boss_update,
                     devourer_update,
@@ -5980,6 +6108,7 @@ fn main() {
                     top_up_mines,
                     top_up_enemies,
                     top_up_limpets,
+                    top_up_wells,
                     clear_calm_field,
                     gold_spawn,
                     gold_rush_update,
@@ -7179,6 +7308,15 @@ mod tests {
         use std::f32::consts::FRAC_PI_2;
         assert_eq!(rocks_after(FRAC_PI_2), 1, "a LIT pulser (sin>threshold) is invulnerable — the shot fizzles, it survives");
         assert_eq!(rocks_after(-FRAC_PI_2), 0, "a DARK pulser takes the hit and breaks");
+    }
+
+    #[test]
+    fn a_well_pulls_the_ship_but_stays_escapable() {
+        // ship at origin, a well to the +x within reach → the pull drags the ship toward it
+        let pull = well_pull(Vec2::ZERO, Vec2::new(100.0, 0.0), 1.0 / 60.0);
+        assert!(pull.x > 0.0 && pull.y.abs() < 0.001, "the well drags the ship toward it (+x)");
+        // and there's no pull beyond its reach (escapability itself is a compile-time invariant, below)
+        assert_eq!(well_pull(Vec2::ZERO, Vec2::new(1000.0, 0.0), 1.0 / 60.0), Vec2::ZERO, "no pull past WELL_PULL_RADIUS");
     }
 
     #[test]
