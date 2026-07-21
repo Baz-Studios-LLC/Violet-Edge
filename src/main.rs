@@ -4324,13 +4324,15 @@ fn render_boss(
             boss_hp_bar(&mut gizmos, h.y - 42.0, sl.hp as f32 / SLINGER_HP as f32, sc);
         }
     }
-    // the Slinger's loaded/launched round: a hot pulsing ring over the rock so the charged shot reads
+    // the Slinger's loaded/launched round: a hot pulsing CORE inside the rock marks it as the charged
+    // shot (brighter once launched) — no big encircling ring (it read as clutter around the rock).
     for (cb, cbt) in &cannonballs {
         let c = cbt.translation.truncate();
-        let pulse = 0.7 + 0.3 * (t * 12.0).sin();
+        let pulse = 0.6 + 0.4 * (t * 12.0).sin();
+        let glow = if cb.launched { 1.4 } else { pulse };
         let r = asteroid_radius(3);
-        gizmos.circle_2d(Isometry2d::from_translation(c), r * 1.15, dim(sc, if cb.launched { 1.4 } else { pulse }));
-        gizmos.circle_2d(Isometry2d::from_translation(c), r * 0.5, dim(sc, 0.8 * pulse));
+        gizmos.circle_2d(Isometry2d::from_translation(c), r * 0.5, dim(sc, glow));
+        gizmos.circle_2d(Isometry2d::from_translation(c), r * 0.24, dim(sc, glow)); // hotter center
     }
 }
 
