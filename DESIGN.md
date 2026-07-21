@@ -119,7 +119,7 @@ the **gravity Well** hazard appears on 18–19 (no mobs — Limpets stay in 12�
 
 | Wave | Content | Status |
 | --- | --- | --- |
-| 16 | green + pulser (learn the beat) | ✅ Pulser mechanic + wiring |
+| 16 | pulser ONLY (a pure timing wave to learn the beat) | ✅ Pulser mechanic + wiring |
 | 17 | green + orange + pulser | ✅ wired |
 | 18 | pulser-heavy + orange + **Well** | ✅ wired |
 | 19 | green + orange + pulser + **Well** | ✅ wired |

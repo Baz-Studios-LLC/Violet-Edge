@@ -1247,7 +1247,7 @@ enum RockKind {
 fn roll_rock_kind(level: i32, rng: &mut impl Rng) -> RockKind {
     // Pulser (invuln-when-lit) fraction. Debuts wave 16; wave 18 leans on it.
     let pulser = match content_wave(level) {
-        16 => 0.4,
+        16 => 1.0, // wave 16 is pulser-ONLY — a pure timing wave to learn the beat
         17 | 19 => 0.3,
         18 => 0.55,
         _ => 0.0,
@@ -7283,10 +7283,9 @@ mod tests {
         let (b, g, o, _p) = sample(12, 400, &mut rng);
         assert_eq!(b, 0, "wave 12 has no plain blue rocks (none past wave 10)");
         assert!(g > 0 && o > 0, "wave 12 mixes green and orange");
-        // wave 16: pulsers debut, mixed with green — still no blue
-        let (b, g, o, p) = sample(16, 400, &mut rng);
-        assert_eq!((b, o), (0, 0), "wave 16 has no blue and no orange");
-        assert!(g > 0 && p > 0, "wave 16 mixes green and pulsers, got green={g} pulser={p}");
+        // wave 16 is pulser-ONLY (a pure timing wave to debut the mechanic)
+        let (b, g, o, p) = sample(16, 200, &mut rng);
+        assert_eq!((b, g, o, p), (0, 0, 0, 200), "wave 16 is nothing but pulsers");
         // wave 20 (boss) is green-only — no pulsers/orange in the arena
         let (b, g, o, p) = sample(20, 200, &mut rng);
         assert_eq!((b, o, p), (0, 0, 0), "wave 20 is green-only");
