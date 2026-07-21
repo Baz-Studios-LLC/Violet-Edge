@@ -47,7 +47,7 @@ const MASS_BULLET_R: f32 = 7.0; // fat round (vs 3.0 standard)
 const MASS_POWER: i32 = 3; // damage per hit (standard = 1): 1-shots dense rocks, chunks bosses
 
 const GRID_CELL: f32 = 52.0;
-const WAVE_SECS: f32 = 180.0; // 3-minute waves — survive the timer to advance
+const WAVE_SECS: f32 = 120.0; // 2-minute waves — survive the timer to advance (was 180; shortened so reaching wave 15 is achievable in one sitting)
 const POP_BASE: i32 = 5; // asteroids on screen = POP_BASE + wave...
 const POP_CAP: i32 = 18; // ...capped so the field never becomes an unavoidable wall
 const BIG_FLOOR: i32 = 4; // always keep at least this many LARGE (size-3) rocks around: keeps the
