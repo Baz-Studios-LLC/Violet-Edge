@@ -27,7 +27,7 @@ intended design; implemented rows describe what the code does today.
 | **Green** | ✅ | Dense — takes multiple hits (HP = size, so a large green needs 3). A normal bullet *chips* it; the chain beam, a mine blast, or a **mass shot** shear it in one. Introduced wave 6 (mixed with blue), waves 7–9 are all green. |
 | **Orange** | ✅ | Explosive. Instead of splitting, a destroyed orange **detonates** after a brief fuse — a big AOE (`ORANGE_BLAST_R`) that **destroys everything inside outright** (rocks obliterated, not split), pops mines/enemies, kills the ship if caught, and lights other oranges (chain reaction). **Gold is spared**; bullet/chain/mine all *light* it. **Mechanic done; not yet in wave content** — dev **F3** spawns one to test. |
 | **Red** | 🔷 | Grows, like the Glutton boss: absorbs nearby asteroids to gain size. A large red that's broken splits into two, and *those* can absorb more and swell back up — an emergent "whack-a-mole" if you don't clear the field around them. |
-| **Pulser** | 🔷 | Pulses bright white on a cycle; **invulnerable while lit**. You have to time shots to its dark phase. |
+| **Pulser** | ✅ | Pulses bright white ↔ dim on its own beat (`PULSE_RATE`, per-rock phase); **invulnerable while LIT** — bullets/chain/mine-blast all no-op on it (a shot fizzles with a white spark). Hit it on the **dark** beat. Internally a dense rock so its fragments are green (never blue) and it takes a few dark-beat hits. Debuts wave 16. `pulser_lit()` derives the beat from global time. |
 | **Gold (1UP)** | ✅ | Not a hazard — a *reward*. A rare shimmering gold rock that drifts in at random times during play (any wave, boss waves included). Destroy the **whole lineage** (it + every fragment) for +1 life. Its pieces get a **long grace** (`GOLD_GRACE`, they recycle) so they're never lost *immediately* — but after that a piece that drifts off is culled and the life is **forfeit**, so clear them before they scatter. **Only your shots break it** — mines bounce off, the Devourer won't eat it. See Life economy below. |
 
 ## Enemies
@@ -91,15 +91,14 @@ the thing made of it. (Waves 1–15 are now bespoke content; the loop resumes at
 | Act | Waves | New asteroid(s) | New enemy | Bosses |
 | --- | --- | --- | --- | --- |
 | I — The Field | 1–10 | Blue, Green ✅ | Yellow mob ✅ | Warden (5), Glutton (10) |
-| II — Volatile | 11–20 | Orange (explosive) ✅ | Limpet | Slinger (15), Detonator (20) |
-| III — Unstable | 21–30 | Red (growing), Pulser (invuln-lit) | — | Pulsar (25), Singularity (30) |
+| II — Volatile | 11–20 | Orange (explosive) ✅, Pulser (invuln-lit) ✅ | Limpet ✅ | Slinger (15) ✅, Detonator (20) |
+| III — Unstable | 21–30 | Red (growing) | — | Pulsar (25), Singularity (30) |
 | IV — Deep Belt | 31–40 | **Crystal** (reflects) *or* **Ice** (shard-burst) — TBD | — | Hive (35), Prism (40) |
 | V — The Core | 41–50 | **Void** (swallows bullets) *or* **Magnetic** (bends fire) — TBD | — | Gemini (45), Progenitor (50) |
 
-### Waves 11–15 — building now (won't extend past 15 until a no-dev-invuln run reaches 16)
+### Waves 11–15 ✅ (Act II front half)
 
-Per-wave content plan. `content_wave` is now identity through 15 with a `rem_euclid(15)` loop after;
-the rock mix lives in `roll_rock_kind` (orange fraction ~0.25 on waves 11–13, 1.0 on 14 — tunable):
+Per-wave content plan. The rock mix lives in `roll_rock_kind` (orange fraction ~0.25 on 11–13, 1.0 on 14):
 
 | Wave | Content | Section status |
 | --- | --- | --- |
@@ -111,7 +110,23 @@ the rock mix lives in `roll_rock_kind` (orange fraction ~0.25 on waves 11–13, 
 
 Build order (one section at a time): **1. orange mechanic ✅ → 2. wave restructure + orange/green
 wiring ✅ (§A) → 3. Limpet mob ✅ core (§B) → 4. Slinger boss ✅ (§C) → 5. Slinger's Drone powerup ✅.**
-Waves 1–15 are content-complete — hold here for deep playtesting (reach 15 without dev mode).
+
+### Waves 16–20 — building now
+
+`content_wave` is now identity through **20** (`rem_euclid(20)` loop after 20). No blue anywhere (any
+would-be-blue on waves 11+ falls back to green in `roll_rock_kind`). The **Pulser** debuts here.
+
+| Wave | Content | Status |
+| --- | --- | --- |
+| 16 | green + pulser (learn the beat) | ✅ Pulser mechanic + wiring |
+| 17 | green + orange + pulser | ✅ wired |
+| 18 | pulser-heavy + orange (+ green filler) | ✅ wired |
+| 19 | green + orange + pulser + Limpets | ✅ wired |
+| 20 | **The Detonator** (boss) + green | green wired ✅ · boss = **Warden placeholder** (Detonator 🔷 next) |
+
+**Next:** the **Detonator** (boss 4, wave 20) — *Prime*: turns nearby rocks into live bombs, itself
+armored so only explosive blasts crack its shell. Unique boss colour (Warden magenta · Devourer red ·
+Slinger ice-blue · Detonator = TBD). Then deep-playtest 1–20.
 
 The Slinger (§C, ✅): boss 3, wave 15 — a large **ice-blue gunship** (its nose/cannon tracks the
 player; unique boss colour, apart from the Warden's magenta + Devourer's red). Glides in, then hovers

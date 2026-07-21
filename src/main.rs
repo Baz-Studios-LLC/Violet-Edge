@@ -199,6 +199,12 @@ const GOLD_GRACE: f32 = 6.0; // gold fragments get a longer window (recycle, not
 const ORANGE_BLAST_R: f32 = 250.0; // explosive-asteroid kill/chain radius (+ the victim's own radius). Was 150 — too small on big screens, so it looked huge (the particle burst throws to ~440) but barely caught neighbours. Now the reach matches the visual.
 const ORANGE_FUSE: f32 = 0.09; // brief lit flash after a lethal hit before it detonates (a visible "pop")
 
+// Pulser (waves 16+): a rock that pulses LIT (bright white, invulnerable) ↔ DARK (dim, vulnerable) on
+// its own beat. Shots only hurt it on the dark beat — time them. Internally a dense rock (so its bits
+// are green, never blue) with a render override; `pulser_lit` derives the beat from global time.
+const PULSE_RATE: f32 = 3.4; // rad/s → a full lit/dark cycle every ~1.85s
+const PULSE_LIT_THRESHOLD: f32 = 0.15; // sin above this = LIT (≈45% lit / 55% dark — a generous dark window)
+
 const RESPAWN_DELAY: f32 = 1.3; // s the ship stays gone after dying
 const GAMEOVER_DELAY: f32 = 1.5; // s to let the final death play out before the Game Over screen
 const HUD_FLASH_TIME: f32 = 0.7; // s the warp pips / life icons flicker after refilling / gaining a life
@@ -289,6 +295,11 @@ fn slinger_color() -> Color {
 fn drone_color() -> Color {
     Color::srgb(2.6, 2.2, 5.6)
 } // lavender-violet — the ally Drone (player kit, so it reads as yours; distinct from the ship's core purple)
+// A Pulser is LIT (invulnerable) when its beat is in the bright half. Derived from global time + the
+// rock's own phase offset, so no per-frame state is needed — collisions/chain/render all agree.
+fn pulser_lit(offset: f32, t: f32) -> bool {
+    (t * PULSE_RATE + offset).sin() > PULSE_LIT_THRESHOLD
+}
 fn limpet_color() -> Color {
     Color::srgb(0.4, 3.6, 4.2)
 } // cold cyan — the Limpet parasite (balanced green+blue reads apart from the blue rocks it clings to)
@@ -671,6 +682,13 @@ struct Detonating {
     fuse: f32,
 }
 
+// A pulsing rock (waves 16+): invulnerable while LIT, vulnerable while DARK. `offset` phases its beat
+// (from global time). Rendered white/dim; internally a dense rock so its fragments are green, not blue.
+#[derive(Component)]
+struct Pulser {
+    offset: f32,
+}
+
 // A brief expanding ring drawn where an explosion went off (the orange blast) — pure visual, no
 // gameplay. Expands to `max_r` (the actual kill radius) over `ttl`, brightening the danger zone.
 #[derive(Component)]
@@ -954,9 +972,9 @@ fn is_boss_wave(level: i32) -> bool {
     level % BOSS_WAVE_INTERVAL == 0
 }
 
-// Waves 1-15 are hand-authored; 16+ loop back over that arc (we perfect 1-15 first, then extend).
+// Waves 1-20 are hand-authored; 21+ loop back over that arc (we build the arc out in five-wave acts).
 fn content_wave(level: i32) -> i32 {
-    (level - 1).rem_euclid(15) + 1
+    (level - 1).rem_euclid(20) + 1
 }
 // Boss waves alternate: content-10 = the devourer (boss 2); content-5 = the shaman (boss 1).
 fn is_devourer_wave(level: i32) -> bool {
@@ -1180,27 +1198,39 @@ enum RockKind {
     Blue,   // plain
     Green,  // dense / tanky (takes `hp` hits)
     Orange, // explosive (detonates instead of splitting)
+    Pulser, // pulses lit (invulnerable) ↔ dark (vulnerable) — hit it on the dark beat
 }
 
 // Which flavor should a rock spawned for `level` be? One roll shared by every edge-spawn caller,
 // so a wave's whole rock mix is defined here. Fractions are the tuning knobs for wave feel.
 fn roll_rock_kind(level: i32, rng: &mut impl Rng) -> RockKind {
+    // Pulser (invuln-when-lit) fraction. Debuts wave 16; wave 18 leans on it.
+    let pulser = match content_wave(level) {
+        16 => 0.4,
+        17 | 19 => 0.3,
+        18 => 0.55,
+        _ => 0.0,
+    };
+    if rng.gen_bool(pulser) {
+        return RockKind::Pulser;
+    }
     // Orange (explosive) fraction. Debuts wave 11; wave 14 is the ALL-orange danger wave.
     let orange = match content_wave(level) {
         11..=13 => 0.25,
         14 => 1.0,
+        17..=19 => 0.3,
         _ => 0.0,
     };
     if rng.gen_bool(orange) {
         return RockKind::Orange;
     }
     // Green (dense) fraction of what's left. Wave 6 mixes green in; 7-9 are all green; the devourer
-    // wave (10) stays plain blue food. Waves 11-13 make their non-orange rocks green, and wave 15 is
-    // green-only.
+    // wave (10) stays plain blue food. Waves 11-13 make their non-orange rocks green; 15 & 20 (boss
+    // waves) are green; and 16/17/19 fill the remainder with green.
     let green = match content_wave(level) {
         6 => 0.5,
         7..=9 => 1.0,
-        11..=13 | 15 => 1.0,
+        11..=13 | 15..=17 | 19..=20 => 1.0,
         _ => 0.0,
     };
     if rng.gen_bool(green) {
@@ -1231,9 +1261,15 @@ fn spawn_edge_asteroid(commands: &mut Commands, half: Vec2, rng: &mut impl Rng, 
         2 => (Vec2::new(rng.gen_range(-half.x..half.x), -half.y - r), Vec2::new(jitter, inward)),
         _ => (Vec2::new(rng.gen_range(-half.x..half.x), half.y + r), Vec2::new(jitter, -inward)),
     };
-    let e = spawn_asteroid(commands, pos, size, vel, rng, matches!(kind, RockKind::Green));
+    // Pulsers spawn as DENSE rocks (so their fragments are green, never blue, and they take a few
+    // dark-beat hits) with the Pulser tag + a random beat phase.
+    let dense = matches!(kind, RockKind::Green | RockKind::Pulser);
+    let e = spawn_asteroid(commands, pos, size, vel, rng, dense);
     if matches!(kind, RockKind::Orange) {
         commands.entity(e).insert(Explosive); // detonates instead of splitting (see `detonate`)
+    }
+    if matches!(kind, RockKind::Pulser) {
+        commands.entity(e).insert(Pulser { offset: rng.gen_range(0.0..TAU) });
     }
     e
 }
@@ -1323,17 +1359,21 @@ fn blast_asteroids(
     commands: &mut Commands,
     rng: &mut impl Rng,
     score: &mut Score,
-    asteroids: &Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>), (Without<Mine>, Without<Shielded>)>,
+    asteroids: &Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>), (Without<Mine>, Without<Shielded>)>,
     broken: &mut HashSet<Entity>,
     center: Vec2,
+    t: f32,
 ) {
     // shared &Query → iterates read-only, so we just read size/dense/gold/explosive here
-    for (ae, at, a, gold, explosive) in asteroids {
+    for (ae, at, a, gold, explosive, pulser) in asteroids {
         if broken.contains(&ae) {
             continue;
         }
         if gold.is_some() {
             continue; // gold 1UP rocks are immune to mines — only the player's shots may break them
+        }
+        if pulser.is_some_and(|pl| pulser_lit(pl.offset, t)) {
+            continue; // a LIT pulser is invulnerable — the blast can't crack it either
         }
         let ap = at.translation.truncate();
         let br = MINE_BLAST_R + asteroid_radius(a.size);
@@ -2019,8 +2059,9 @@ fn bullet_bounds(
 
 fn collisions(
     mut commands: Commands,
+    time: Res<Time>,
     bullets: Query<(Entity, &Transform, &Bullet)>,
-    mut asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>), (Without<Mine>, Without<Shielded>)>,
+    mut asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>), (Without<Mine>, Without<Shielded>)>,
     mines: Query<(Entity, &Transform), With<Mine>>,
     enemies: Query<(Entity, &Transform), With<Enemy>>,
     mut limpets: Query<(Entity, &Transform, &mut Limpet)>,
@@ -2046,13 +2087,20 @@ fn collisions(
         let bp = bt.translation.truncate();
         let br = bullet_radius(b.mass); // mass shots are fatter…
         let power = bullet_power(b.mass); // …and hit harder
-        for (ae, at, mut a, gold, explosive) in &mut asteroids {
+        for (ae, at, mut a, gold, explosive, pulser) in &mut asteroids {
             if dead_a.contains(&ae) {
                 continue;
             }
             let ap = at.translation.truncate();
             let rr = asteroid_radius(a.size) + br;
             if bp.distance_squared(ap) < rr * rr {
+                // a LIT pulser is invulnerable — the shot fizzles on its shield (spent, no damage)
+                if pulser.is_some_and(|pl| pulser_lit(pl.offset, time.elapsed_secs())) {
+                    dead_b.insert(be);
+                    commands.entity(be).despawn();
+                    burst(&mut commands, bp, Color::srgb(6.0, 6.0, 7.0), 4, 130.0, &mut rng); // white spark
+                    break;
+                }
                 dead_b.insert(be);
                 commands.entity(be).despawn(); // bullet is spent either way
                 a.hp -= power;
@@ -2093,7 +2141,7 @@ fn collisions(
                 burst(&mut commands, mp, mine_color(), 24, 320.0, &mut rng);
                 // shooting a mine detonates it: the blast shatters rocks in range
                 // with fast chunks, same as any other detonation.
-                blast_asteroids(&mut commands, &mut rng, &mut score, &asteroids, &mut dead_a, mp);
+                blast_asteroids(&mut commands, &mut rng, &mut score, &asteroids, &mut dead_a, mp, time.elapsed_secs());
                 sfx.write(SoundFx::Mine);
                 break;
             }
@@ -2375,7 +2423,7 @@ fn mine_update(
     ships: Query<(Entity, &Transform, &Ship), Without<Mine>>,
     mut mines: Query<(Entity, &mut Transform, &mut Velocity, &mut Mine)>,
     // &mut to match blast_asteroids' type; only read here (iter + shared borrow)
-    asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>), (Without<Mine>, Without<Shielded>)>,
+    asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>), (Without<Mine>, Without<Shielded>)>,
 ) {
     let dt = time.delta_secs();
     let h = arena.half;
@@ -2403,7 +2451,7 @@ fn mine_update(
 
         // Gold 1UP rocks are immune to mines: a drifting mine bounces off them instead of
         // detonating, so a mine can never clear the gold lineage for you (only your shots may).
-        for (_, at, a, gold, _) in &asteroids {
+        for (_, at, a, gold, _, _) in &asteroids {
             if gold.is_none() {
                 continue;
             }
@@ -2428,7 +2476,7 @@ fn mine_update(
         // Gold rocks are excluded (handled above) so a mine never detonates on one.
         let inside = p.x.abs() < h.x && p.y.abs() < h.y;
         if inside
-            && asteroids.iter().any(|(_, at, a, gold, _)| {
+            && asteroids.iter().any(|(_, at, a, gold, _, _)| {
                 gold.is_none() && {
                     let rr = MINE_R + asteroid_radius(a.size);
                     p.distance_squared(at.translation.truncate()) < rr * rr
@@ -2436,7 +2484,7 @@ fn mine_update(
             })
         {
             burst(&mut commands, p, mine_color(), 26, 300.0, &mut rng);
-            blast_asteroids(&mut commands, &mut rng, &mut score, &asteroids, &mut broken, p);
+            blast_asteroids(&mut commands, &mut rng, &mut score, &asteroids, &mut broken, p, time.elapsed_secs());
             sfx.write(SoundFx::Mine);
             commands.entity(me).despawn();
             continue;
@@ -2460,7 +2508,7 @@ fn mine_update(
                 let contact = d < MINE_R + SHIP_R;
                 if contact || (mine.fuse <= 0.0 && d < MINE_BLAST_R) {
                     burst(&mut commands, p, mine_color(), 26, 300.0, &mut rng);
-                    blast_asteroids(&mut commands, &mut rng, &mut score, &asteroids, &mut broken, p);
+                    blast_asteroids(&mut commands, &mut rng, &mut score, &asteroids, &mut broken, p, time.elapsed_secs());
                     sfx.write(SoundFx::Mine);
                     commands.entity(me).despawn();
                     kill_ship(&mut commands, &mut run, &mut next, &mut sfx, se, sp, &mut rng);
@@ -3428,7 +3476,7 @@ fn chain_update(
     mut sfx: EventWriter<SoundFx>,
     mut stats: ResMut<Stats>,
     mut chains: Query<(Entity, &Transform, &mut ChainShot)>,
-    asteroids: Query<(Entity, &Transform, &Asteroid, Option<&Gold>, Option<&Explosive>), (Without<Mine>, Without<Shielded>)>,
+    asteroids: Query<(Entity, &Transform, &Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>), (Without<Mine>, Without<Shielded>)>,
     enemies: Query<(Entity, &Transform), With<Enemy>>,
     mines: Query<(Entity, &Transform), With<Mine>>,
 ) {
@@ -3445,13 +3493,17 @@ fn chain_update(
         }
         let a = c + cs.perp * CHAIN_HALF;
         let b = c - cs.perp * CHAIN_HALF;
-        for (ae, at, ast, gold, explosive) in &asteroids {
+        for (ae, at, ast, gold, explosive, pulser) in &asteroids {
             if dead.contains(&ae) {
                 continue;
             }
             let ap = at.translation.truncate();
             let rr = asteroid_radius(ast.size) + CHAIN_R;
             if seg_dist2(ap, a, b) < rr * rr {
+                // a LIT pulser is invulnerable — the beam passes over it (don't mark it dead)
+                if pulser.is_some_and(|pl| pulser_lit(pl.offset, time.elapsed_secs())) {
+                    continue;
+                }
                 dead.insert(ae);
                 if explosive.is_some() {
                     commands.entity(ae).insert(Detonating { fuse: ORANGE_FUSE }); // the beam lights the orange
@@ -3832,7 +3884,7 @@ fn render(
     wf: Res<WarpField>,
     stars: Query<(&Star, &Transform)>,
     ships: Query<(&Ship, &Transform)>,
-    asteroids: Query<(&Asteroid, &Transform, Option<&Gold>, Option<&Explosive>, Option<&Detonating>)>,
+    asteroids: Query<(&Asteroid, &Transform, Option<&Gold>, Option<&Explosive>, Option<&Detonating>, Option<&Pulser>)>,
     bullets: Query<(&Bullet, &Transform)>,
     particles: Query<(&Particle, &Transform)>,
     holes: Query<(&BlackHole, &Transform)>,
@@ -3932,11 +3984,12 @@ fn render(
     // they're chipped, so their tanky state reads at a glance.
     let rock = rock_color();
     let dense = dense_color();
-    for (a, at, gold, explosive, det) in &asteroids {
+    for (a, at, gold, explosive, det, pulser) in &asteroids {
         let c = at.translation.truncate();
         let rot = Vec2::from_angle(a.rot);
         // colour by type: a lit orange flashes white-hot as its fuse burns; a live orange pulses; gold
-        // shimmers; green=dense; blue=standard.
+        // shimmers; a pulser is bright-white when LIT (invulnerable) / dim when DARK; green=dense; blue=standard.
+        let lit = pulser.map(|pl| pulser_lit(pl.offset, t));
         let col = if let Some(d) = det {
             let f = 1.0 - (d.fuse / ORANGE_FUSE).clamp(0.0, 1.0); // ramps up as it's about to blow
             dim(Color::srgb(8.0, 6.0, 3.5), 0.7 + 0.9 * f)
@@ -3944,6 +3997,9 @@ fn render(
             dim(orange_color(), 0.75 + 0.25 * (t * 5.0).sin())
         } else if gold.is_some() {
             dim(gold_color(), 0.7 + 0.3 * (t * 6.0).sin())
+        } else if let Some(lit) = lit {
+            // bright white shield when lit, dim steel-blue when it's open to fire
+            if lit { Color::srgb(6.0, 6.2, 7.0) } else { Color::srgb(0.9, 1.1, 1.7) }
         } else if a.dense {
             dense
         } else {
@@ -3957,7 +4013,10 @@ fn render(
             pts
         };
         gizmos.linestrip_2d(ring(1.0), col);
-        if a.dense {
+        if let Some(lit) = lit {
+            // a Pulser: an inner ring that snaps bright when the shield is up (a clear "don't shoot" tell)
+            gizmos.linestrip_2d(ring(0.55), if lit { col } else { dim(col, 0.6) });
+        } else if a.dense {
             let frac = a.hp.max(1) as f32 / a.size.max(1) as f32; // full shell → shrinks to a small core
             gizmos.linestrip_2d(ring(0.35 + 0.3 * frac), col);
         }
@@ -7036,38 +7095,48 @@ mod tests {
 
     #[test]
     fn wave_rock_mix_matches_the_authored_content() {
-        fn sample(level: i32, n: usize, rng: &mut rand::rngs::ThreadRng) -> (i32, i32, i32) {
-            let (mut blue, mut green, mut orange) = (0, 0, 0);
+        // returns (blue, green, orange, pulser) counts
+        fn sample(level: i32, n: usize, rng: &mut rand::rngs::ThreadRng) -> (i32, i32, i32, i32) {
+            let (mut blue, mut green, mut orange, mut pulser) = (0, 0, 0, 0);
             for _ in 0..n {
                 match roll_rock_kind(level, rng) {
                     RockKind::Blue => blue += 1,
                     RockKind::Green => green += 1,
                     RockKind::Orange => orange += 1,
+                    RockKind::Pulser => pulser += 1,
                 }
             }
-            (blue, green, orange)
+            (blue, green, orange, pulser)
         }
         let mut rng = rand::thread_rng();
         // wave 14 is the ALL-orange danger wave
-        let (b, g, o) = sample(14, 200, &mut rng);
-        assert_eq!((b, g, o), (0, 0, 200), "wave 14 is nothing but orange");
-        // wave 15 (boss) is green-only — no orange
-        let (b, g, o) = sample(15, 200, &mut rng);
-        assert_eq!((b, g, o), (0, 200, 0), "wave 15 is green-only");
+        let (b, g, o, p) = sample(14, 200, &mut rng);
+        assert_eq!((b, g, o, p), (0, 0, 200, 0), "wave 14 is nothing but orange");
+        // wave 15 (boss) is green-only
+        let (b, g, o, p) = sample(15, 200, &mut rng);
+        assert_eq!((b, g, o, p), (0, 200, 0, 0), "wave 15 is green-only");
         // wave 11 "green + orange": every rock is one or the other, never plain blue
-        let (b, g, o) = sample(11, 400, &mut rng);
-        assert_eq!(b, 0, "wave 11 has no plain blue rocks");
-        assert!(g > 0 && o > 0, "wave 11 mixes green and orange, got green={g} orange={o}");
-        // wave 12 "mob + orange": no plain BLUE past wave 10 — non-orange rocks are green
-        let (b, g, o) = sample(12, 400, &mut rng);
+        let (b, _g, o, p) = sample(11, 400, &mut rng);
+        assert_eq!((b, p), (0, 0), "wave 11 has no blue and no pulsers");
+        assert!(o > 0, "wave 11 has orange");
+        // wave 12: no plain BLUE past wave 10 — non-orange rocks are green
+        let (b, g, o, _p) = sample(12, 400, &mut rng);
         assert_eq!(b, 0, "wave 12 has no plain blue rocks (none past wave 10)");
-        assert!(g > 0 && o > 0, "wave 12 mixes green and orange, got green={g} orange={o}");
+        assert!(g > 0 && o > 0, "wave 12 mixes green and orange");
+        // wave 16: pulsers debut, mixed with green — still no blue
+        let (b, g, o, p) = sample(16, 400, &mut rng);
+        assert_eq!((b, o), (0, 0), "wave 16 has no blue and no orange");
+        assert!(g > 0 && p > 0, "wave 16 mixes green and pulsers, got green={g} pulser={p}");
+        // wave 20 (boss) is green-only — no pulsers/orange in the arena
+        let (b, g, o, p) = sample(20, 200, &mut rng);
+        assert_eq!((b, o, p), (0, 0, 0), "wave 20 is green-only");
+        assert_eq!(g, 200);
         // the devourer wave (10) stays plain blue food so it can be starved
-        let (_b, g, o) = sample(10, 200, &mut rng);
-        assert_eq!((g, o), (0, 0), "the devourer wave is plain blue food");
-        // NO blue past wave 10 — even the 16+ loop (content maps back to early waves) spawns green, not blue
-        let (b, _g, _o) = sample(16, 200, &mut rng);
-        assert_eq!(b, 0, "wave 16 (looped content 1) spawns green, never blue — no blue past wave 10");
+        let (_b, g, o, p) = sample(10, 200, &mut rng);
+        assert_eq!((g, o, p), (0, 0, 0), "the devourer wave is plain blue food");
+        // NO blue past wave 10 — even the 21+ loop (content maps back to early waves) spawns green
+        let (b, ..) = sample(21, 200, &mut rng);
+        assert_eq!(b, 0, "wave 21 (looped content 1) spawns green, never blue");
     }
 
     #[test]
@@ -7075,15 +7144,41 @@ mod tests {
         assert_eq!(mine_target(1, 10), 0, "no mines before wave 2");
         assert_eq!(mine_target(2, 10), 2, "wave 2: (2-2+1)*2 = 2, under the 50%-of-10 cap");
         assert_eq!(mine_target(5, 4), 2, "capped at 50% of 4 asteroids");
-        assert_eq!(mine_target(16, 100), 0, "loop: wave 16 = content 1 → no mines (not pinned at the cap)");
-        assert_eq!(mine_target(17, 100), 2, "loop: wave 17 = content 2 → back to 2");
+        assert_eq!(mine_target(21, 100), 0, "loop: wave 21 = content 1 → no mines (not pinned at the cap)");
+        assert_eq!(mine_target(22, 100), 2, "loop: wave 22 = content 2 → back to 2");
     }
 
     #[test]
     fn slinger_wave_keeps_a_sparse_field() {
         assert_eq!(population_target(15), SLINGER_WAVE_ROCKS, "the Slinger wave stays sparse (it makes its own ammo)");
         assert_eq!(population_target(14), POP_CAP, "the all-orange wave 14 keeps the full field");
-        assert_eq!(population_target(30), SLINGER_WAVE_ROCKS, "the looped Slinger wave (content 15) is sparse too");
+        assert_eq!(population_target(35), SLINGER_WAVE_ROCKS, "the looped Slinger wave (content 15 = wave 35) is sparse too");
+    }
+
+    #[test]
+    fn a_lit_pulser_shrugs_off_shots_but_a_dark_one_breaks() {
+        fn rocks_after(offset: f32) -> usize {
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins);
+            app.add_event::<SoundFx>();
+            app.insert_resource(Stats::default());
+            app.insert_resource(Score(0));
+            app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
+            // a small dense pulser (hp 1 → one dark hit clears it) with a bullet on top
+            app.world_mut().spawn((
+                Asteroid { size: 1, verts: vec![Vec2::X * 22.0], rot: 0.0, spin: 0.0, dense: true, hp: 1 },
+                Velocity(Vec2::ZERO),
+                Transform::from_xyz(0.0, 0.0, 0.0),
+                Pulser { offset },
+            ));
+            app.world_mut().spawn((Bullet { life: 1.0, trail: Vec::new(), mass: false }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0)));
+            app.add_systems(Update, collisions);
+            app.update();
+            app.world_mut().query::<&Asteroid>().iter(app.world()).count()
+        }
+        use std::f32::consts::FRAC_PI_2;
+        assert_eq!(rocks_after(FRAC_PI_2), 1, "a LIT pulser (sin>threshold) is invulnerable — the shot fizzles, it survives");
+        assert_eq!(rocks_after(-FRAC_PI_2), 0, "a DARK pulser takes the hit and breaks");
     }
 
     #[test]
@@ -7253,21 +7348,23 @@ mod tests {
         assert_eq!(enemy_target(9, 10), 3, "capped to a fraction of the rock count");
         assert_eq!(enemy_target(11, 100), 0, "waves 11-15 run no old-lobber mobs (the Limpet covers 12-13)");
         assert_eq!(enemy_target(13, 100), 0, "wave 13's mob is the Limpet, not the lobber");
-        assert_eq!(enemy_target(16, 100), 0, "loop: wave 16 = content 1, no mobs");
-        assert_eq!(enemy_target(18, 100), 2, "loop: wave 18 = content 3 → 2");
+        assert_eq!(enemy_target(16, 100), 0, "waves 16-20 run no old-lobber mobs either");
+        assert_eq!(enemy_target(21, 100), 0, "loop: wave 21 = content 1, no mobs");
+        assert_eq!(enemy_target(23, 100), 2, "loop: wave 23 = content 3 → 2");
     }
 
     #[test]
     fn content_wave_loops_and_picks_boss_type() {
         assert_eq!(content_wave(1), 1);
         assert_eq!(content_wave(10), 10);
-        assert_eq!(content_wave(15), 15, "waves 1-15 are their own content slots");
-        assert_eq!(content_wave(16), 1, "wave 16 loops back to content 1");
-        assert_eq!(content_wave(20), 5, "wave 20 = content 5 (a boss wave again)");
-        assert_eq!(content_wave(25), 10);
-        assert!(is_devourer_wave(10) && is_devourer_wave(25), "content-10 waves are the devourer");
-        assert!(!is_devourer_wave(5) && !is_devourer_wave(15) && !is_devourer_wave(20), "content 5 & 15 are other bosses");
-        assert!(is_boss_wave(5) && is_boss_wave(10) && is_boss_wave(15) && !is_boss_wave(6));
+        assert_eq!(content_wave(20), 20, "waves 1-20 are their own content slots");
+        assert_eq!(content_wave(21), 1, "wave 21 loops back to content 1");
+        assert_eq!(content_wave(25), 5, "wave 25 = content 5 (a boss wave again)");
+        assert_eq!(content_wave(30), 10);
+        assert!(is_devourer_wave(10) && is_devourer_wave(30), "content-10 waves are the devourer");
+        assert!(is_slinger_wave(15) && is_slinger_wave(35), "content-15 waves are the Slinger");
+        assert!(!is_devourer_wave(5) && !is_devourer_wave(15) && !is_devourer_wave(20), "other boss waves aren't the devourer");
+        assert!(is_boss_wave(5) && is_boss_wave(15) && is_boss_wave(20) && !is_boss_wave(6));
     }
 
     #[test]
