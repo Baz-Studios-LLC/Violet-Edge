@@ -215,7 +215,7 @@ const ORANGE_FUSE: f32 = 0.09; // brief lit flash after a lethal hit before it d
 // Pulser (waves 16+): a rock that pulses LIT (bright white, invulnerable) ↔ DARK (dim, vulnerable) on
 // its own beat. Shots only hurt it on the dark beat — time them. Internally a dense rock (so its bits
 // are green, never blue) with a render override; `pulser_lit` derives the beat from global time.
-const PULSE_RATE: f32 = 3.4; // rad/s → a full lit/dark cycle every ~1.85s
+const PULSE_RATE: f32 = 1.7; // rad/s → a slow lit/dark cycle (~3.7s) — long invulnerable windows make it harder
 const PULSE_LIT_THRESHOLD: f32 = 0.15; // sin above this = LIT (≈45% lit / 55% dark — a generous dark window)
 
 const RESPAWN_DELAY: f32 = 1.3; // s the ship stays gone after dying
@@ -1301,8 +1301,8 @@ fn spawn_edge_asteroid(commands: &mut Commands, half: Vec2, rng: &mut impl Rng, 
         2 => (Vec2::new(rng.gen_range(-half.x..half.x), -half.y - r), Vec2::new(jitter, inward)),
         _ => (Vec2::new(rng.gen_range(-half.x..half.x), half.y + r), Vec2::new(jitter, -inward)),
     };
-    // Pulsers spawn as DENSE rocks (so their fragments are green, never blue, and they take a few
-    // dark-beat hits) with the Pulser tag + a random beat phase.
+    // Pulsers spawn as DENSE rocks (a few dark-beat hits, and no blue since fragments stay dense) with
+    // the Pulser tag + a random beat phase; they break into smaller pulsers (see `break_asteroid`).
     let dense = matches!(kind, RockKind::Green | RockKind::Pulser);
     let e = spawn_asteroid(commands, pos, size, vel, rng, dense);
     if matches!(kind, RockKind::Orange) {
@@ -1357,7 +1357,7 @@ fn spawn_asteroid(commands: &mut Commands, pos: Vec2, size: u8, vel: Vec2, rng: 
 // the child fling speed — 1.0 for a normal bullet break; a mine blast passes a
 // bigger value so its chunks scatter faster (a discoverable interaction).
 #[allow(clippy::too_many_arguments)]
-fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score, e: Entity, pos: Vec2, size: u8, chunk_mult: f32, dense: bool, gold: bool) {
+fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score, e: Entity, pos: Vec2, size: u8, chunk_mult: f32, dense: bool, gold: bool, pulser: bool) {
     commands.entity(e).despawn();
     let base = match size {
         3 => 20,
@@ -1365,7 +1365,14 @@ fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score
         _ => 100,
     };
     score.0 += if dense { base * 2 } else { base }; // dense rocks are worth more
-    burst(commands, pos, if dense { dense_color() } else { rock_color() }, 10 + size as usize * 5, 260.0, rng);
+    let splash = if pulser {
+        Color::srgb(4.5, 4.8, 5.6)
+    } else if dense {
+        dense_color()
+    } else {
+        rock_color()
+    };
+    burst(commands, pos, splash, 10 + size as usize * 5, 260.0, rng);
     if size > 1 {
         // Split into two chunks that fly APART along a random axis. Each is spawned
         // already clear of the other (offset past their combined radii) so the pair
@@ -1386,6 +1393,11 @@ fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score
             commands.entity(child).insert(Fresh(if gold { GOLD_GRACE } else { FRAGMENT_GRACE }));
             if gold {
                 commands.entity(child).insert(Gold); // the whole lineage stays gold until fully cleared
+            }
+            if pulser {
+                // a pulser breaks into smaller PULSERS (own beat each) — a sustained timing puzzle, not
+                // inert green rubble. They stay dense so there's still no blue.
+                commands.entity(child).insert(Pulser { offset: rng.gen_range(0.0..TAU) });
             }
         }
     }
@@ -1422,7 +1434,7 @@ fn blast_asteroids(
             if explosive.is_some() {
                 commands.entity(ae).insert(Detonating { fuse: ORANGE_FUSE }); // a mine lights the orange → it chain-detonates
             } else {
-                break_asteroid(commands, rng, score, ae, ap, a.size, MINE_CHUNK_MULT, a.dense, false); // mine obliterates (ignores hp); never gold (skipped above)
+                break_asteroid(commands, rng, score, ae, ap, a.size, MINE_CHUNK_MULT, a.dense, false, pulser.is_some()); // mine obliterates (ignores hp); never gold (skipped above)
             }
         }
     }
@@ -2151,7 +2163,7 @@ fn collisions(
                     if explosive.is_some() {
                         commands.entity(ae).insert(Detonating { fuse: ORANGE_FUSE }); // orange: detonates, doesn't split
                     } else {
-                        break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, a.dense, gold.is_some());
+                        break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, a.dense, gold.is_some(), pulser.is_some());
                         sfx.write(SoundFx::Break(a.size));
                         if a.dense {
                             stats.green += 1;
@@ -3614,7 +3626,7 @@ fn chain_update(
                     continue;
                 }
                 // chain beam shears dense rocks outright — the beam ignores hp, like a mine
-                break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, ast.size, 1.0, ast.dense, gold.is_some());
+                break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, ast.size, 1.0, ast.dense, gold.is_some(), pulser.is_some());
                 sfx.write(SoundFx::Break(ast.size));
                 if ast.dense {
                     stats.green += 1;
