@@ -1,7 +1,12 @@
 # VIOLET EDGE — Changelog
 
 Patch notes for the Rust + Bevy build. Newest first. (Releases are cut to GitHub and picked up by the
-Baz Studios launcher.)
+Baz Studios launcher.) **Keep this current with every change** — it's the record testers read.
+
+## Unreleased
+
+- **Mines toned down** — they no longer scale to a wall: fewer per wave, capped at 30% of the rock
+  count and a hard cap of 6, so they stay a garnish instead of a constant swarm.
 
 ## v0.2.7 — Volatile: waves 16–20, the Slinger, pulsers & wells (2026-07-21)
 

@@ -74,8 +74,9 @@ const WARP_SNAP_DUR: f32 = 0.7; // rubber-band snapback time after the hole clos
 
 // Mines (wave 2+): drifting proximity crimson mines.
 const MINE_FIRST_WAVE: i32 = 2;
-const MINE_PER_WAVE: i32 = 2; // target = (wave - first + 1) * per...
-const MINE_MAX_FRACTION: f32 = 0.5; // ...never more than this fraction of the asteroid count
+const MINE_PER_WAVE: i32 = 1; // target = (wave - first + 1) * per... (gentle ramp — was 2)
+const MINE_MAX_FRACTION: f32 = 0.3; // ...never more than this fraction of the asteroid count (was 0.5 — mines are a garnish, not half the field)
+const MINE_HARD_CAP: i32 = 6; // and never more than this many at once, so mines never become a wall
 const MINE_R: f32 = 13.0;
 const MINE_SPEED: f32 = 62.0; // px/s drift
 const MINE_TRIGGER_R: f32 = 92.0; // ship within → the mine arms (blinks)
@@ -329,7 +330,7 @@ fn mine_target(level: i32, asteroids: i32) -> i32 {
         return 0;
     }
     let raw = (cw - MINE_FIRST_WAVE + 1) * MINE_PER_WAVE;
-    raw.min((asteroids as f32 * MINE_MAX_FRACTION) as i32)
+    raw.min((asteroids as f32 * MINE_MAX_FRACTION) as i32).min(MINE_HARD_CAP)
 }
 
 fn asteroid_radius(size: u8) -> f32 {
@@ -7308,10 +7309,11 @@ mod tests {
     #[test]
     fn mine_target_gates_and_caps() {
         assert_eq!(mine_target(1, 10), 0, "no mines before wave 2");
-        assert_eq!(mine_target(2, 10), 2, "wave 2: (2-2+1)*2 = 2, under the 50%-of-10 cap");
-        assert_eq!(mine_target(5, 4), 2, "capped at 50% of 4 asteroids");
-        assert_eq!(mine_target(21, 100), 0, "loop: wave 21 = content 1 → no mines (not pinned at the cap)");
-        assert_eq!(mine_target(22, 100), 2, "loop: wave 22 = content 2 → back to 2");
+        assert_eq!(mine_target(2, 10), 1, "wave 2: (2-2+1)*1 = 1");
+        assert_eq!(mine_target(5, 4), 1, "capped at 30% of 4 asteroids");
+        assert_eq!(mine_target(9, 100), 6, "deep waves hit the hard cap of 6, never a wall");
+        assert_eq!(mine_target(21, 100), 0, "loop: wave 21 = content 1 → no mines");
+        assert_eq!(mine_target(22, 100), 1, "loop: wave 22 = content 2 → back to 1");
     }
 
     #[test]
