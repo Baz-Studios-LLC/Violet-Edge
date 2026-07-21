@@ -125,10 +125,12 @@ the **gravity Well** hazard appears on 18–19 (no mobs — Limpets stay in 12�
 | 19 | green + orange + pulser + **Well** | ✅ wired |
 | 20 | **The Detonator** (boss) + green | green wired ✅ · boss = **Warden placeholder** (Detonator 🔷 next) |
 
-The **gravity Well** (`WELL_*`, ✅): an "opposite warp" HAZARD — a rose-red inward vortex that drags the
-*ship* toward it (`well_pull`, weaker than `THRUST` so you can always fly out — a compile-time invariant).
-It doesn't kill on its own; the threat is that it fouls your dodging. Ship-only pull, ~2 at a time,
-collapses after `WELL_LIFE`. A field-hazard preview of the Singularity boss's *Pull* (W30).
+The **gravity Well** (`WELL_*`, ✅): an "opposite warp" HAZARD — a small, tight rose-red swirl that
+**pops in at random intervals** (`WELL_MIN_GAP`..`WELL_MAX_GAP`), drags the *ship* toward it
+(`well_pull`, under `THRUST` so you can always fly out — a compile-time invariant), and **collapses
+after ~5s** (`WELL_LIFE`). A fleeting flight-disruptor, not a fixture: it doesn't kill on its own — the
+threat is that it yanks your movement while you're dodging. Ship-only pull, ≤2 at a time. A
+field-hazard preview of the Singularity boss's *Pull* (W30).
 
 **Next:** the **Detonator** (boss 4, wave 20) — *Prime*: turns nearby rocks into live bombs, itself
 armored so only explosive blasts crack its shell. Unique boss colour (Warden magenta · Devourer red ·

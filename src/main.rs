@@ -89,12 +89,13 @@ const MINE_CHUNK_MULT: f32 = 1.9; // HIDDEN: rocks shattered by a mine blast fli
 // The Well (waves 18+): a gravity well — an "opposite warp" that drags the SHIP toward it. Deliberately
 // weaker than the ship's thrust, so you can always fly out; the threat is that it fouls your dodging,
 // not a direct kill. (A field-hazard preview of the Singularity boss's Pull, W30.)
-const WELL_R: f32 = 16.0; // core radius (visual)
+const WELL_R: f32 = 12.0; // small, tight core (a compact swirl — not a screen-filling spiral)
 const WELL_PULL_RADIUS: f32 = 300.0; // reach — smaller than the player warp's 560
-const WELL_PULL: f32 = 520.0; // inward accel at the core — well under THRUST (1000), so thrusting escapes
-const WELL_LIFE: f32 = 14.0; // s it lingers before it collapses (the field cycles)
+const WELL_PULL: f32 = 660.0; // inward accel at the core — stronger than before, still under THRUST (escapable)
+const WELL_LIFE: f32 = 5.0; // s it lingers — it POPS IN, yanks your flight, then collapses (was 14, lingered too long)
 const WELL_MAX: i32 = 2; // hard cap on live wells
-const WELL_SPAWN_INTERVAL: f32 = 5.0;
+const WELL_MIN_GAP: f32 = 4.0; // random gap between pop-ins → sporadic surprises, not a steady stream
+const WELL_MAX_GAP: f32 = 9.0;
 // Escapability is a hard invariant: the well's pull must stay under the ship's thrust so you can
 // always fly out. Enforced at compile time — bump WELL_PULL past THRUST and the build fails.
 const _: () = assert!(WELL_PULL < THRUST);
@@ -3032,7 +3033,7 @@ fn top_up_wells(
             }
         }
         commands.spawn((Well { life: WELL_LIFE, spin: 0.0 }, Transform::from_xyz(pos.x, pos.y, 0.0)));
-        clock.0 = WELL_SPAWN_INTERVAL;
+        clock.0 = rng.gen_range(WELL_MIN_GAP..WELL_MAX_GAP); // sporadic — next one pops in at a random time
     } else {
         clock.0 = 1.0;
     }
@@ -4804,18 +4805,18 @@ fn render_extras(
     for (w, wt) in &wells {
         let c = wt.translation.truncate();
         let fade = (w.life / 1.2).clamp(0.0, 1.0).min((WELL_LIFE - w.life) / 0.4).clamp(0.0, 1.0); // in then out
-        let arms = 5;
-        let segs = 8;
+        let arms = 4;
+        let segs = 7;
         for a in 0..arms {
             let a0 = a as f32 / arms as f32 * TAU;
             let pts: Vec<Vec2> = (0..=segs)
                 .map(|s| {
                     let p = s as f32 / segs as f32;
-                    let rad = WELL_PULL_RADIUS * 0.5 * (1.0 - p); // spirals inward
-                    c + Vec2::from_angle(a0 + 2.2 * p + w.spin) * rad
+                    let rad = WELL_R * 3.6 * (1.0 - p); // a small, tight inward swirl (not a big spiral)
+                    c + Vec2::from_angle(a0 + 2.4 * p + w.spin) * rad
                 })
                 .collect();
-            gizmos.linestrip_2d(pts, dim(wc, 0.7 * fade * (0.4 + 0.6 * (t * 6.0).sin().abs())));
+            gizmos.linestrip_2d(pts, dim(wc, 0.8 * fade * (0.4 + 0.6 * (t * 6.0).sin().abs())));
         }
         gizmos.circle_2d(Isometry2d::from_translation(c), WELL_R * (1.0 + 0.12 * (t * 5.0).sin()), dim(wc, fade));
         gizmos.circle_2d(Isometry2d::from_translation(c), WELL_R * 0.45, dim(Color::srgb(6.0, 2.0, 3.5), fade)); // hot core
