@@ -3633,6 +3633,14 @@ fn wave_banner_update(
     mut banner: ResMut<WaveBanner>,
     mut q: Query<(&mut Text, &mut TextColor), With<WaveBannerText>>,
 ) {
+    // During the post-boss calm the "NEXT WAVE IN n" countdown owns the screen — hold the WAVE banner
+    // hidden and FROZEN (don't tick it down) so it flashes only when the calm ends and the wave begins.
+    if wave.calm > 0.0 {
+        for (_, mut color) in &mut q {
+            color.0 = color.0.with_alpha(0.0);
+        }
+        return;
+    }
     if banner.timer > 0.0 {
         banner.timer -= time.delta_secs();
     }
