@@ -53,7 +53,7 @@ full (never past — it grows in *size*, not max HP), so letting it feed visibly
 | --- | --- | --- | --- | --- |
 | 5 | **The Warden** | ✅ | *Hoard* — shield of captured rocks on rotating arms; hurls the small ones | Strip the shield, shoot the core through the gaps (bullets hurt the core; chain/warp don't) |
 | 10 | **The Glutton** | ✅ | *Eat* — red seeker devours free rocks to grow bigger & tankier; gorged to full it **OVERLOADS**: swells huge (flashing white as a tell), detonates a near screen-wide blast (wipes the field, kills you unless you're far — `DEVOURER_BURST_R`), then shrinks to nothing and starts over | Starve it (clear the field) + **shoot it down** — gunfire chips its HP *and* claws its size back (`DEVOURER_SHRINK_PER_HIT`), so active fire holds off the overload; when it's swollen and flashing, **get clear** before it bursts |
-| 15 | **The Slinger** | ✅ | *Shoot* — hovers up high (mirroring your x), LOADS a big rock muzzle-forward (a charging telegraph), then LAUNCHES it at you like a cannonball; exposed core, no shield | Dodge the shot, or shoot the loaded rock to disarm it; chip the core between barrages |
+| 15 | **The Slinger** | ✅ | *Shoot* — a large gunship that hovers high and TRACTOR-BEAMS a field rock, reels it to its muzzle, then fires it at you like a cannonball; exposed core, no shield. Its wave is green (dense) rocks, so grabbed rounds resist being shot away | Dodge the fast shots (you can't reliably spam-break a dense round); chip the core between barrages |
 | 20 | **The Detonator** | 🔷 | *Prime* — turns nearby rocks into live bombs; itself armored | Bait the chain — only explosive blasts crack its shell |
 | 25 | **The Pulsar** | 🔷 | *Pulse* — invulnerable while lit; shockwaves fling every rock (and you) outward | Hit only on the dark beat; don't get pinned to a wall |
 | 30 | **The Singularity** | 🔷 | *Pull* — gravity drags all rocks + you into a crushing orbit | Thrust against the pull; let it crush on its own haul, or feed it an explosive |
@@ -112,14 +112,17 @@ the rock mix lives in `roll_rock_kind` (orange fraction ~0.25 on waves 11–13, 
 Build order (one section at a time): **1. orange mechanic ✅ → 2. wave restructure + orange/green
 wiring ✅ (§A) → 3. Limpet mob ✅ core (§B) → 4. Slinger boss ✅ (§C) → 5. Slinger's Drone powerup.**
 
-The Slinger (§C, ✅): boss 3, wave 15. Glides in, then hovers high mirroring the ship's x; on a cadence
-it spawns a `Cannonball` (a large rock) muzzle-forward, holds it charging for `SLINGER_LOAD`s (a
-telegraph — shoot the rock to disarm), then launches it at the ship at `SLINGER_CANNON_SPEED`. Reuses
-the asteroid systems (bullets shatter the ammo; it kills the ship on contact) but a launched round
-despawns off-screen instead of recycling. Exposed core (`SLINGER_HP`, no shield); dodge + chip.
-Because it doesn't use field rocks, its wave runs a **sparse field** (`SLINGER_WAVE_ROCKS`, not the
-usual `POP_BASE+level`) and the field is **cleared when it arrives** (a clean green-only slate — the
-Warden/Devourer keep their rocks). **TODO:** drop the Drone pickup on death (currently just advances).
+The Slinger (§C, ✅): boss 3, wave 15 — a large **ice-blue gunship** (its nose/cannon tracks the
+player; unique boss colour, apart from the Warden's magenta + Devourer's red). Glides in, then hovers
+high mirroring the ship's x. **Tractor beam:** it grabs the nearest field rock (tags it `Cannonball`,
+draws a beam), reels it to its muzzle at `SLINGER_REEL_SPEED`, holds `SLINGER_HOLD`s, then launches it
+at the ship at `SLINGER_CANNON_SPEED`; grabs every `SLINGER_COOL`s. Because its wave is **green
+(dense)** rocks, a grabbed round takes several hits to break — you can't spam it away, you *dodge*.
+Grabs refill from the field (`top_up`) so it never runs dry; a launched round despawns off-screen. Its
+wave runs a **sparse field** (`SLINGER_WAVE_ROCKS`, the beam's ammo reservoir), cleared when it arrives
+(clean green-only slate — the Warden/Devourer keep their rocks). Exposed core (`SLINGER_HP`, no shield).
+**TODO:** drop the Drone pickup on death (currently just advances). Rule of thumb going forward: **each
+boss gets a unique colour** (Warden magenta · Devourer red · Slinger ice-blue).
 
 The Limpet (§B, ✅ core): a cyan parasite that TETHERS to a large rock — it rigidly rides the rim
 (glued to the rock's edge with little gripping claws, not floating near it). **Peek-to-fire:** it

@@ -142,18 +142,20 @@ const BOSS_CALM: f32 = 10.0; // s post-kill lull before the next wave (the picku
 const BOSS_SCORE: u32 = 3000;
 const BOSS_CAMEO_SECS: f32 = 10.0; // boss drifts by in the background this long before its wave
 
-// The Slinger (boss 3, wave 15): a long-range gunner that hovers across the arena, LOADS a big rock in
-// front of itself (a charging telegraph), then LAUNCHES it at you like a cannonball. Counterplay: dodge
-// the shot, or shoot the loaded rock before it fires ("break its ammo"). Its core is always exposed —
-// a straight duel of chipping its HP while dodging. Drops the Drone (wired when the pickup is built).
-const SLINGER_HP: i32 = 24; // core hits to kill (no shield — you just have to survive the barrage)
-const SLINGER_R: f32 = 34.0;
-const SLINGER_SPEED: f32 = 155.0; // hover reposition speed (stays across the arena from the ship)
+// The Slinger (boss 3, wave 15): a large gunship that hovers high and uses a TRACTOR BEAM — it grabs a
+// field rock, reels it to its muzzle, holds a beat, then FIRES it at you. On wave 15 the field is
+// green (dense) rocks, so a grabbed round takes several hits to break — you can't just spam it away;
+// dodge the fast shots and chip its exposed core. Grabs refill from the field (top_up), so it never
+// runs dry. Drops the Drone (wired when the pickup is built).
+const SLINGER_HP: i32 = 24; // core hits to kill (no shield — survive the barrage while you chip it)
+const SLINGER_R: f32 = 40.0; // a big ship — a decent target
+const SLINGER_SPEED: f32 = 155.0; // hover reposition speed (stays high, mirroring the ship's x)
 const SLINGER_ENTER_SPEED: f32 = 340.0; // glide-in from the top
 const SLINGER_INTRO: f32 = 1.2; // invulnerable power-up after entering
-const SLINGER_COOL: f32 = 1.6; // s after a launch before it loads the next round
-const SLINGER_LOAD: f32 = 1.1; // s the cannonball charges in front of it — the window to shoot its ammo
-const SLINGER_CANNON_SPEED: f32 = 640.0; // px/s of a launched cannonball — fast; must be dodged
+const SLINGER_COOL: f32 = 0.9; // s between grabs (a steady barrage → you must keep dodging, can't camp)
+const SLINGER_REEL_SPEED: f32 = 420.0; // px/s it reels a grabbed rock toward its muzzle
+const SLINGER_HOLD: f32 = 0.45; // s it holds the reeled rock at the muzzle (aiming) before firing
+const SLINGER_CANNON_SPEED: f32 = 640.0; // px/s of a launched rock — fast; must be dodged
 const SLINGER_DEATH_SECS: f32 = 2.2; // slow death animation before it despawns
 
 // Boss 2 — the devourer (wave 10): a red seeker that eats rocks to grow + heal.
@@ -272,8 +274,9 @@ fn orange_color() -> Color {
     Color::srgb(6.0, 2.0, 0.25)
 } // hot orange — explosive asteroids (high R, low B; distinct from the yellow enemy)
 fn slinger_color() -> Color {
-    Color::srgb(6.0, 1.5, 0.55)
-} // hot red-orange artillery glow — the Slinger (boss 3); distinct on its green-only wave
+    Color::srgb(0.9, 2.2, 5.2)
+} // cold electric ICE-BLUE — the Slinger gunship (boss 3); a unique boss hue, clearly apart from the
+  // Warden's magenta + Devourer's red, and no blue rocks exist on its wave to confuse it with
 fn limpet_color() -> Color {
     Color::srgb(0.4, 3.6, 4.2)
 } // cold cyan — the Limpet parasite (balanced green+blue reads apart from the blue rocks it clings to)
@@ -1143,15 +1146,20 @@ fn roll_rock_kind(level: i32, rng: &mut impl Rng) -> RockKind {
         return RockKind::Orange;
     }
     // Green (dense) fraction of what's left. Wave 6 mixes green in; 7-9 are all green; the devourer
-    // wave (10) stays plain blue food. Waves 11 & 13 make their non-orange rocks green ("green +
-    // orange"), and the wave-15 boss arena is green-only.
+    // wave (10) stays plain blue food. Waves 11-13 make their non-orange rocks green, and wave 15 is
+    // green-only.
     let green = match content_wave(level) {
         6 => 0.5,
         7..=9 => 1.0,
-        11 | 13 | 15 => 1.0,
+        11..=13 | 15 => 1.0,
         _ => 0.0,
     };
     if rng.gen_bool(green) {
+        return RockKind::Green;
+    }
+    // NO blue past wave 10 — the belt has hardened. Any would-be-blue spawn on waves 11+ (incl. the
+    // 16+ loop, where content maps back to early waves) becomes green instead. Blue lives only in 1-10.
+    if level > 10 {
         RockKind::Green
     } else {
         RockKind::Blue
@@ -4098,6 +4106,7 @@ fn slinger_update(
     ships: Query<(Entity, &Transform, &Ship), Without<Slinger>>,
     mut slingers: Query<(Entity, &mut Transform, &mut Slinger)>,
     mut ammo_q: Query<(&mut Transform, &mut Velocity), (With<Cannonball>, Without<Slinger>, Without<Ship>)>,
+    grabbable: Query<(Entity, &Transform), (With<Asteroid>, Without<Cannonball>, Without<Slinger>, Without<Shielded>)>,
 ) {
     let dt = time.delta_secs();
     let (mut score, mut wave, mut banner) = reward;
@@ -4165,38 +4174,51 @@ fn slinger_update(
             continue; // no loading / firing during the intro power-up
         }
 
-        // a loaded round that got shot out from under it → disarmed, reload
+        // the grabbed round got shot out from under it (or otherwise vanished) → grab another after cooldown
         if sl.ammo.is_some_and(|a| ammo_q.get(a).is_err()) {
             sl.ammo = None;
-            sl.load = 0.0;
             sl.cool = SLINGER_COOL;
         }
-        let barrel = SLINGER_R + asteroid_radius(3) + 6.0; // where the round sits, muzzle-forward
+        let muzzle = p + aim_from(p) * (SLINGER_R + asteroid_radius(3) + 12.0); // where a round is held, between it and the ship
         if sl.ammo.is_none() {
-            // cooling down, then load the next round
+            // COOL, then TRACTOR-GRAB the nearest free field rock (green on wave 15 → hard to shoot away)
             sl.cool -= dt;
             if sl.cool <= 0.0 {
-                let load_pos = p + aim_from(p) * barrel;
-                let e = spawn_asteroid(&mut commands, load_pos, 3, Vec2::ZERO, &mut rng, false);
-                commands.entity(e).insert(Cannonball { launched: false });
-                sl.ammo = Some(e);
-                sl.load = SLINGER_LOAD;
-                sfx.write(SoundFx::EnemyShot); // charge cue
+                if let Some((re, _)) = grabbable.iter().min_by(|(_, a), (_, b)| {
+                    let (da, db) = (a.translation.truncate().distance_squared(p), b.translation.truncate().distance_squared(p));
+                    da.total_cmp(&db)
+                }) {
+                    commands.entity(re).insert(Cannonball { launched: false });
+                    sl.ammo = Some(re);
+                    sl.load = SLINGER_HOLD;
+                    sfx.write(SoundFx::Warp); // beam-on cue
+                }
+                // no rock in reach → stay ready (cool <= 0), grab the instant one drifts in
             }
         } else if let Some(a) = sl.ammo {
-            // charging: hold the round muzzle-forward (re-aimed at the ship); launch when the timer ends
-            sl.load -= dt;
             if let Ok((mut at, mut av)) = ammo_q.get_mut(a) {
-                let hold = p + aim_from(p) * barrel;
-                at.translation.x = hold.x;
-                at.translation.y = hold.y;
-                av.0 = Vec2::ZERO;
-                if sl.load <= 0.0 {
-                    av.0 = aim_from(hold) * SLINGER_CANNON_SPEED; // FIRE at the ship's current spot
-                    commands.entity(a).insert(Cannonball { launched: true });
-                    sl.ammo = None;
-                    sl.cool = SLINGER_COOL;
-                    sfx.write(SoundFx::Mine); // launch thump
+                let rp = at.translation.truncate();
+                let to = muzzle - rp;
+                if to.length() > 10.0 {
+                    // REEL: haul the rock along the beam toward the muzzle (dwell only starts on arrival)
+                    let np = rp + to.clamp_length_max(SLINGER_REEL_SPEED * dt);
+                    at.translation.x = np.x;
+                    at.translation.y = np.y;
+                    av.0 = Vec2::ZERO;
+                    sl.load = SLINGER_HOLD;
+                } else {
+                    // HOLD at the muzzle (aiming), then LAUNCH at the ship's current spot
+                    at.translation.x = muzzle.x;
+                    at.translation.y = muzzle.y;
+                    av.0 = Vec2::ZERO;
+                    sl.load -= dt;
+                    if sl.load <= 0.0 {
+                        av.0 = aim_from(muzzle) * SLINGER_CANNON_SPEED;
+                        commands.entity(a).insert(Cannonball { launched: true });
+                        sl.ammo = None;
+                        sl.cool = SLINGER_COOL;
+                        sfx.write(SoundFx::Mine); // launch thump
+                    }
                 }
             }
         }
@@ -4229,6 +4251,7 @@ fn render_boss(
     devourers: Query<(&Devourer, &Transform)>,
     slingers: Query<(&Slinger, &Transform)>,
     cannonballs: Query<(&Cannonball, &Transform)>,
+    players: Query<&Transform, (With<Ship>, Without<Slinger>)>,
 ) {
     let h = arena.half;
     let t = time.elapsed_secs();
@@ -4318,36 +4341,59 @@ fn render_boss(
         }
     }
 
-    // ── the Slinger (boss 3): a chunky angular gun-platform; blinks while charging, shrinks while dying ──
+    // ── the Slinger (boss 3): a large ice-blue GUNSHIP, its nose (cannon) tracking the player ──
     let sc = slinger_color();
+    let ship_pos = players.iter().next().map(|t| t.translation.truncate());
+    let slinger_pos = slingers.iter().next().map(|(_, t)| t.translation.truncate());
     for (sl, sltf) in &slingers {
         let c = sltf.translation.truncate();
         let scale = if sl.dying > 0.0 { (sl.dying / SLINGER_DEATH_SECS).clamp(0.0, 1.0) } else { 1.0 };
-        let throb = 1.0 + 0.08 * sl.pulse.sin();
+        let throb = 1.0 + 0.05 * sl.pulse.sin();
+        let s = SLINGER_R * throb * scale;
+        // point the hull at the player (nose = cannon); default facing down if there's no ship
+        let face = ship_pos.map(|sp| (sp - c).to_angle()).unwrap_or(-std::f32::consts::FRAC_PI_2);
+        let rot = Vec2::from_angle(face);
+        let tf = |x: f32, y: f32| c + rot.rotate(Vec2::new(x, y)); // ship-space (nose +X) → world
         let blink = sl.charge > 0.0 || sl.dying > 0.0;
         if !blink || ((sl.pulse * 3.0) as i32) % 2 == 0 {
-            let hull: Vec<Vec2> = (0..=6)
-                .map(|k| {
-                    let a = k as f32 / 6.0 * TAU + 0.4;
-                    c + Vec2::from_angle(a) * SLINGER_R * throb * scale
-                })
-                .collect();
+            // elongated dart hull (nose forward, notched tail) + swept wings + a barrel + a reactor core
+            let hull = [
+                tf(1.35 * s, 0.0),
+                tf(0.25 * s, 0.62 * s),
+                tf(-0.9 * s, 0.5 * s),
+                tf(-0.55 * s, 0.0),
+                tf(-0.9 * s, -0.5 * s),
+                tf(0.25 * s, -0.62 * s),
+                tf(1.35 * s, 0.0),
+            ];
             gizmos.linestrip_2d(hull, sc);
-            gizmos.circle_2d(Isometry2d::from_translation(c), SLINGER_R * 0.42 * throb * scale, sc);
+            gizmos.linestrip_2d([tf(-0.2 * s, 0.55 * s), tf(-1.15 * s, 1.05 * s), tf(-0.95 * s, 0.35 * s)], dim(sc, 0.85)); // wing
+            gizmos.linestrip_2d([tf(-0.2 * s, -0.55 * s), tf(-1.15 * s, -1.05 * s), tf(-0.95 * s, -0.35 * s)], dim(sc, 0.85)); // wing
+            gizmos.line_2d(tf(0.6 * s, 0.0), tf(1.7 * s, 0.0), sc); // cannon barrel
+            gizmos.circle_2d(Isometry2d::from_translation(tf(-0.1 * s, 0.0)), 0.34 * s, sc); // reactor core
+            gizmos.circle_2d(Isometry2d::from_translation(tf(-0.1 * s, 0.0)), 0.16 * s, Color::srgb(4.5, 6.0, 8.0)); // hot center
         }
         if sl.dying <= 0.0 {
             boss_hp_bar(&mut gizmos, h.y - 42.0, sl.hp as f32 / SLINGER_HP as f32, sc);
         }
     }
-    // the Slinger's loaded/launched round: a hot pulsing CORE inside the rock marks it as the charged
-    // shot (brighter once launched) — no big encircling ring (it read as clutter around the rock).
+    // the Slinger's round: a tractor BEAM to a rock it's reeling in (not launched) + a hot core marking it
     for (cb, cbt) in &cannonballs {
-        let c = cbt.translation.truncate();
+        let rc = cbt.translation.truncate();
+        if !cb.launched {
+            if let Some(sp) = slinger_pos {
+                let beam = 0.5 + 0.5 * (t * 22.0).sin();
+                let perp = (rc - sp).perp().normalize_or_zero() * 7.0;
+                gizmos.line_2d(sp, rc, dim(sc, 0.9 * beam)); // core beam
+                gizmos.line_2d(sp + perp, rc + perp * 2.2, dim(sc, 0.35 * beam)); // cone edges
+                gizmos.line_2d(sp - perp, rc - perp * 2.2, dim(sc, 0.35 * beam));
+            }
+        }
         let pulse = 0.6 + 0.4 * (t * 12.0).sin();
         let glow = if cb.launched { 1.4 } else { pulse };
         let r = asteroid_radius(3);
-        gizmos.circle_2d(Isometry2d::from_translation(c), r * 0.5, dim(sc, glow));
-        gizmos.circle_2d(Isometry2d::from_translation(c), r * 0.24, dim(sc, glow)); // hotter center
+        gizmos.circle_2d(Isometry2d::from_translation(rc), r * 0.5, dim(sc, glow));
+        gizmos.circle_2d(Isometry2d::from_translation(rc), r * 0.24, dim(sc, glow)); // hotter center
     }
 }
 
@@ -6820,13 +6866,16 @@ mod tests {
         let (b, g, o) = sample(11, 400, &mut rng);
         assert_eq!(b, 0, "wave 11 has no plain blue rocks");
         assert!(g > 0 && o > 0, "wave 11 mixes green and orange, got green={g} orange={o}");
-        // wave 12 "mob + orange": orange over plain blue, never green
+        // wave 12 "mob + orange": no plain BLUE past wave 10 — non-orange rocks are green
         let (b, g, o) = sample(12, 400, &mut rng);
-        assert_eq!(g, 0, "wave 12 has no green rocks");
-        assert!(b > 0 && o > 0, "wave 12 mixes blue and orange, got blue={b} orange={o}");
+        assert_eq!(b, 0, "wave 12 has no plain blue rocks (none past wave 10)");
+        assert!(g > 0 && o > 0, "wave 12 mixes green and orange, got green={g} orange={o}");
         // the devourer wave (10) stays plain blue food so it can be starved
         let (_b, g, o) = sample(10, 200, &mut rng);
         assert_eq!((g, o), (0, 0), "the devourer wave is plain blue food");
+        // NO blue past wave 10 — even the 16+ loop (content maps back to early waves) spawns green, not blue
+        let (b, _g, _o) = sample(16, 200, &mut rng);
+        assert_eq!(b, 0, "wave 16 (looped content 1) spawns green, never blue — no blue past wave 10");
     }
 
     #[test]
