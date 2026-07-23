@@ -3,6 +3,10 @@
 Patch notes for the Rust + Bevy build. Newest first. (Releases are cut to GitHub and picked up by the
 Baz Studios launcher.) **Keep this current with every change** — it's the record testers read.
 
+## Unreleased
+
+_Nothing yet — work in progress lands here, then gets renamed to the next version when a release is cut._
+
 ## v0.3.0 — The Haunt: Act III, the six-boss run & the finale (2026-07-23)
 
 The standard run is now complete end-to-end — **thirty waves, six bosses, and a final boss.**
