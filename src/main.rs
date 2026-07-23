@@ -4713,8 +4713,10 @@ fn boss_warning_update(
     let kind = boss_kind(wave.level + 1);
     let col = boss_kind_color(kind);
     let prog = if on { ((BOSS_CAMEO_SECS - wave.timer) / BOSS_CAMEO_SECS).clamp(0.0, 1.0) } else { 0.0 };
-    // wave.timer drives the strobe phase — it counts BOSS_CAMEO_SECS→0 across the run-up
-    let pulse = 0.5 + 0.5 * (wave.timer * 8.0).sin();
+    // wave.timer drives the pulse phase — it counts BOSS_CAMEO_SECS→0 across the run-up. A SLOW, gentle
+    // breath (~0.7 Hz) that never fully vanishes (0.2..1.0) — this is a full-screen tint, so it must not
+    // strobe or fully flash on/off (photosensitivity).
+    let pulse = 0.6 + 0.4 * (wave.timer * 4.5).sin();
     let fade_in = (prog / 0.04).clamp(0.0, 1.0); // ease the name in over the first ~0.4s
     for (mut text, mut color) in &mut text_q {
         if on {
@@ -4788,7 +4790,7 @@ fn render(
     let show_run = run_active(abilities.2.get()); // grid + HUD icons only while a run is on
     let hud_flash = &abilities.3;
     // a rapid bright shimmer applied to pips/lives right after they refill / a life is gained
-    let flick = |active: bool| if active { 1.1 + 0.8 * (t * 40.0).sin() } else { 1.0 };
+    let flick = |active: bool| if active { 1.1 + 0.8 * (t * 18.0).sin() } else { 1.0 }; // ~2.9 Hz (was ~6.4) — no strobe
 
     // stars (backmost). Subtle during a run so they never distract; on the menu they're a feature —
     // bigger, brighter, with a soft glow and diagonal sparkle rays on the brightest ones.
@@ -4825,12 +4827,13 @@ fn render(
     } else {
         dim(grid_color(), 0.0)
     };
-    // per-line electric flicker: two out-of-phase strobes (a crackle, not a smooth pulse), scaled by
-    // the field. The elastic snapback makes `wamt` bounce, so the lines crackle as the hole collapses.
+    // per-line electric flicker: two out-of-phase crackles, scaled by the field. The elastic snapback makes
+    // `wamt` bounce, so the lines crackle as the hole collapses. Both rates kept ≤~2.9 Hz — the grid is a
+    // large-area element, so it must never strobe (photosensitivity).
     let warp_flick = |k: f32| {
         if warping {
-            let amp = 0.35 + 0.55 * wamt;
-            (1.0 + amp * (0.7 * (t * 26.0 + k * 2.1).sin() + 0.5 * (t * 43.0 + k * 3.7).sin())).max(0.05)
+            let amp = 0.3 + 0.45 * wamt;
+            (1.0 + amp * (0.7 * (t * 14.0 + k * 2.1).sin() + 0.5 * (t * 18.0 + k * 3.7).sin())).max(0.1)
         } else {
             1.0
         }
@@ -4921,7 +4924,8 @@ fn render(
     let mc = mine_color();
     for (mine, mt) in &mines_q {
         let c = mt.translation.truncate();
-        if !mine.armed || ((t * 12.0) as i32) % 2 == 0 {
+        if !mine.armed || ((t * 6.0) as i32) % 2 == 0 {
+            // armed-mine blink at ~3 Hz (was 6) — several arm in sync, so their combined flash area matters
             let r = MINE_R;
             let pts = [
                 c + Vec2::new(0.0, r),
@@ -5089,8 +5093,8 @@ fn render(
             let pulse = 1.0 + 0.06 * (t * 4.0).sin();
             gizmos.circle_2d(Isometry2d::from_translation(c), SHIP_R * 2.2 * pulse, dim(sc, 0.6));
         }
-        if s.invuln > 0.0 && (s.invuln * 12.0) as i32 % 2 == 0 {
-            continue;
+        if s.invuln > 0.0 && (s.invuln * 6.0) as i32 % 2 == 0 {
+            continue; // spawn-protection blink at ~3 Hz (was 6 — kept ≤3/sec so it doesn't strobe)
         }
         let rot = Vec2::from_angle(s.angle);
         if s.flame > 0.02 {
@@ -6136,9 +6140,11 @@ fn render_boss(
         let scale = if dv.dying > 0.0 { (dv.dying / BOSS_DEATH_SECS).clamp(0.0, 1.0) } else { 1.0 };
         let r = devourer_radius(dv.grow) * scale;
         let throb = 1.0 + 0.06 * dv.pulse.sin();
-        // overload telegraph: as it nears full it flashes white-hot (about to burst — get clear!)
+        // overload telegraph: as it nears full it flashes white-hot (about to burst — get clear!). The
+        // URGENCY ramps via the white-hot MIX (charge·flash below), NOT the flash rate — the rate stays
+        // ≤~2.8 Hz (pulse advances at 5/s) so this big boss never strobes (photosensitivity).
         let charge = ((dv.grow - 0.7) / 0.3).clamp(0.0, 1.0);
-        let flash = 0.5 + 0.5 * (dv.pulse * (4.0 + 9.0 * charge)).sin();
+        let flash = 0.5 + 0.5 * (dv.pulse * (2.0 + 1.5 * charge)).sin();
         let dc = if dv.dying <= 0.0 { mix(devourer_color(), Color::srgb(8.0, 7.5, 7.0), charge * flash) } else { devourer_color() };
         let body: Vec<Vec2> = (0..=18)
             .map(|k| {
@@ -6263,7 +6269,7 @@ fn render_boss(
         // phase-3 AIM telegraph: the locked charge line flashes ahead of the dash — sidestep it
         if sg.aim > 0.0 {
             let frac = 1.0 - (sg.aim / PHANTOM_CHARGE_AIM).clamp(0.0, 1.0);
-            let flash = 0.25 + 0.6 * frac * (sg.pulse * 8.0).sin().abs();
+            let flash = 0.25 + 0.6 * frac * (sg.pulse * 3.0).sin().abs(); // ≤~2.9 Hz (pulse at 3/s) — no strobe
             gizmos.line_2d(c, c + sg.charge_dir * (h.length() * 1.2), dim(phantom_ray_color(), flash));
         }
         // phase-start flash: a bright ring blows outward as it fractures into the next phase
@@ -6277,7 +6283,7 @@ fn render_boss(
         match sg.ray {
             RayPhase::Telegraph => {
                 let frac = (sg.ray_t / PHANTOM_RAY_TELEGRAPH).clamp(0.0, 1.0);
-                let flash = 0.18 + 0.5 * frac * (sg.pulse * 7.0).sin().abs(); // pulses harder as ignition nears
+                let flash = 0.18 + 0.5 * frac * (sg.pulse * 3.0).sin().abs(); // pulses harder as ignition nears (rate ≤~2.9 Hz — the quadrant must not strobe)
                 for k in 0..=8 {
                     let a = sg.ray_from + sg.ray_span * k as f32 / 8.0; // fill lines across the doomed quadrant
                     gizmos.line_2d(c + Vec2::from_angle(a) * PHANTOM_RAY_INNER_R, c + Vec2::from_angle(a) * ray_len, dim(rc, flash * 0.5));
@@ -6488,7 +6494,7 @@ fn render_boss(
         let rc = cbt.translation.truncate();
         if !cb.launched {
             if let Some(sp) = slinger_pos {
-                let beam = 0.5 + 0.5 * (t * 22.0).sin();
+                let beam = 0.5 + 0.5 * (t * 15.0).sin(); // ~2.4 Hz (was 3.5) — no strobe on the tractor beam
                 let perp = (rc - sp).perp().normalize_or_zero() * 7.0;
                 gizmos.line_2d(sp, rc, dim(sc, 0.9 * beam)); // core beam
                 gizmos.line_2d(sp + perp, rc + perp * 2.2, dim(sc, 0.35 * beam)); // cone edges

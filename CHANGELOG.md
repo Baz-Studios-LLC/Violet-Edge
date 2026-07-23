@@ -39,6 +39,12 @@ Finale-fight fixes and polish (playtest feedback):
 - **Red rocks work in the all-red finale group.** A red now absorbs the nearest rock **including other reds**,
   so a mono-type red pack **consolidates into fewer, bigger threats** instead of drifting inert (a pair can't
   annihilate each other — one grows, one is eaten).
+- **Photosensitivity pass (accessibility).** Audited every light effect and kept all flashing/pulsing at
+  **≤3 flashes per second** (the seizure-safety guideline): the full-screen boss-warning tint now *breathes*
+  slowly (~0.7 Hz) instead of strobing on/off; the Devourer's "about to burst" white-hot flash (up to ~10 Hz
+  before), the Phantom's ray/aim telegraphs, the warp grid crackle, and the death-scene explosion stream are
+  all under the threshold; the ship / mine / HUD blinks are ≤3 Hz. Urgency still ramps — via how bright/white
+  a flash gets, not how fast it flickers.
 - **Launcher:** the VIOLET EDGE logo is now bundled as the launcher's card art (takes effect at the next
   launcher build).
 
