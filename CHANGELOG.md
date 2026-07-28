@@ -5,7 +5,12 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
-_Nothing yet — work in progress lands here, then gets renamed to the next version when a release is cut._
+- **Aim assist, turned up.** Small targets were still too hard to hit, so the assist is now much more
+  forgiving: the snap **cone roughly doubled** (~6° → ~11°), a shot also snaps if it would **pass within a
+  short distance of a target's centre** (so close/small things catch even when the cone is thin), and — the
+  big one — shots now **lead moving targets**, aiming where a mob will be when the bullet arrives instead of
+  where it was. Fast little mobs are hittable now, not just slow drift rocks. Still bounded: it only bends
+  onto things you're genuinely pointing at and within range.
 
 ## v0.4.1 — Aim assist (2026-07-23)
 
