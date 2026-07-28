@@ -5,7 +5,18 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
-_Nothing yet — work in progress lands here, then gets renamed to the next version when a release is cut._
+- **Optimized for any screen size.** The game now renders at a consistent apparent size on every monitor.
+  The camera scale-to-fits a fixed design height to the window, so a bigger screen *magnifies* the action
+  instead of revealing a vast, sparse empty arena (the cause of it "looking odd" on larger displays). The
+  arena fills the width at the screen's aspect (no letterbox, no stretch), the starfield fills the whole
+  screen (no dark margins on big / ultrawide monitors), and the HUD scales with the window so it's never tiny.
+- **Life (gold) rocks retuned.** No more useless wave-1 life rock — the first now arrives in wave 2 — and
+  they're **more frequent through the early-mid game** (waves 2–16, when a spare life matters most),
+  **tapering back to rare by the wave-30 finale**.
+- **Life rocks spark gold, not blue.** Shattering a gold rock now throws warm-gold debris; it was
+  incorrectly spraying the default blue rock color.
+- **Brighter grid shimmer.** The slow shimmer wave that sweeps across the grid now peaks much brighter, so
+  the lit crests read clearly against the faint backdrop (the ~0.2 Hz sweep rate is unchanged — photosafe).
 
 ## v0.4.2 — Bigger small targets (2026-07-28)
 

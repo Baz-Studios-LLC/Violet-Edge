@@ -276,11 +276,14 @@ those kill it only by destroying whatever rock it's on).
 recoverable, but only by earning them, via a rare gold asteroid. ✅ Implemented:
 
 - A gold rock **drifts in at a randomized time during play** (a countdown, not tied to wave starts) —
-  a distinct shimmering gold large rock that otherwise behaves normally (splits when shot). One hunt
-  at a time; a long random gap measured from when it *appears* (`GOLD_MIN_GAP`..`GOLD_MAX_GAP`, ~4-6
-  min) is armed on each spawn, so at most ~1 appears per (3-min) wave and never back-to-back.
-  `GOLD_INITIAL_DELAY` graces the run start. Any wave, boss waves included (the Devourer won't eat it;
-  a rock the Warden grabs is just shot off its shield).
+  a distinct shimmering gold large rock that otherwise behaves normally (splits when shot, spraying
+  **gold** debris). One hunt at a time; a random gap measured from when it *appears* is armed on each
+  spawn. The gap is **WAVE-TAPERED**: short/frequent through the early-mid game (`GOLD_GAP_EARLY_MIN`..
+  `GOLD_GAP_EARLY_MAX`, ~2-3 min, waves ≤ `GOLD_TAPER_START`=16 — a spare life matters most then), ramping
+  to rare (`GOLD_GAP_LATE_MIN`..`GOLD_GAP_LATE_MAX`, ~4.5-6 min) by wave `GOLD_TAPER_END`=30. **Gated out
+  of wave 1** (a life that early is wasted; first one arrives wave 2). `GOLD_INITIAL_DELAY` graces the run
+  start. Any wave 2+, boss waves included (the Devourer won't eat it; a rock the Warden grabs is just shot
+  off its shield).
 - You must **destroy the whole gold lineage** — the rock *and* every gold fragment (gold-ness is
   inherited through every break: bullet or chain) — to claim **+1 life**. `GoldRush` tracks it. The
   **warp counts too** (it's a player action): a hole that swallows the entire lineage grants the life.

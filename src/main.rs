@@ -18,6 +18,7 @@ use bevy::core_pipeline::bloom::Bloom;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::image::{CompressedImageFormats, ImageSampler, ImageType};
 use bevy::prelude::*;
+use bevy::render::camera::{OrthographicProjection, Projection, ScalingMode};
 use bevy::render::render_asset::RenderAssetUsages;
 use bevy::window::PrimaryWindow;
 use bevy::winit::WinitWindows;
@@ -77,6 +78,7 @@ const WARP_CONSUME_R: f32 = 120.0; // event horizon — anything whose EDGE cros
 // instantly destroyed (rocks/enemies/mines), like a real black hole. Big enough that pulled-in
 // rocks are eaten on contact instead of clumping + colliding around a tiny mouth.
 const WARP_GRID_RADIUS: f32 = 340.0; // the grid bends toward the hole within this
+const GRID_SHIMMER_AMP: f32 = 4.5; // brightness of the moving grid shimmer CREST (× base grid color, over a ~0.5 dim floor). Was 1.1 — too dim; this makes the lit shimmer waves read clearly. Tunable.
 const WARP_GRID_STRENGTH: f32 = 82.0; // max inward grid displacement (px) at the hole
 const WARP_SNAP_DUR: f32 = 0.7; // rubber-band snapback time after the hole closes
 
@@ -314,14 +316,24 @@ const SHOT_MODE_SHOW: f32 = 1.4; // s the "MASS/STANDARD SHOT" label lingers aft
 const SPAWN_INVULN: f32 = 2.0; // s of blink-invulnerability on (re)spawn
 const TRAIL_LEN: usize = 10; // bullet trail points kept
 const STAR_COUNT: usize = 90;
+// The game renders at a fixed DESIGN height, scale-to-fit to the window: on ANY monitor the camera
+// magnifies so DESIGN_H world-units fill the window height (a bigger screen magnifies — it does NOT reveal
+// more empty arena). The arena's half-WIDTH follows the window aspect so it fills the screen edge-to-edge.
+const DESIGN_H: f32 = 800.0;
+const DESIGN_HALF_H: f32 = DESIGN_H * 0.5;
 const START_LIVES: i32 = 3;
 const LIFE_CAP: i32 = START_LIVES; // gold restores a LOST life only — never above the starting count
 // The gold 1UP rock drifts in at a randomized time during play (a countdown), not at wave starts.
 const GOLD_INITIAL_DELAY: f32 = 45.0; // grace before the first gold rock can appear in a run
-// Gap measured from when a gold rock APPEARS to the earliest the next one may — long enough that you
-// get at most ~1 per (3-minute) wave. A fresh random value in this range is rolled on each spawn.
-const GOLD_MIN_GAP: f32 = 240.0; // ~4 minutes minimum between appearances
-const GOLD_MAX_GAP: f32 = 360.0; // ~6 minutes at the outside
+// Gap from when a gold rock APPEARS to the earliest the next one may. WAVE-DEPENDENT: short (frequent
+// life rocks) through the early game — a spare life is most useful then — tapering LONG (rare) by the
+// wave-30 finale. A fresh random value in the wave's [min..max] is rolled on each spawn.
+const GOLD_GAP_EARLY_MIN: f32 = 120.0; // waves ≤ GOLD_TAPER_START: ~one per (3-min) wave, sometimes two
+const GOLD_GAP_EARLY_MAX: f32 = 185.0;
+const GOLD_GAP_LATE_MIN: f32 = 265.0; // by wave 30: back to rare (~4-6 min, the old cadence)
+const GOLD_GAP_LATE_MAX: f32 = 360.0;
+const GOLD_TAPER_START: i32 = 16; // gap stays "early/frequent" through this wave…
+const GOLD_TAPER_END: i32 = 30; // …then ramps linearly to "late/rare" by this wave
 const WAVE_BANNER_SECS: f32 = 2.4; // how long the big "WAVE n" flash lingers
 const WAVE_BANNER_FADE: f32 = 1.2; // of that, the trailing fade-out duration
 
@@ -1513,12 +1525,21 @@ fn setup(mut commands: Commands) {
         Camera { hdr: true, ..default() },
         Tonemapping::TonyMcMapface,
         Bloom::default(),
+        // Scale-to-fit: DESIGN_H world-units of HEIGHT always fill the window height, so the game renders at
+        // a consistent apparent size on ANY monitor (magnify, don't reveal-more). Width follows the window
+        // aspect — `update_arena` sizes the arena to it, so it fills the screen with no letterbox/distortion.
+        Projection::Orthographic(OrthographicProjection {
+            scaling_mode: ScalingMode::FixedVertical { viewport_height: DESIGN_H },
+            ..OrthographicProjection::default_2d()
+        }),
     ));
 
     // starfield — fixed positions, each with its own twinkle phase
     let mut rng = rand::thread_rng();
     for _ in 0..STAR_COUNT {
-        let pos = Vec2::new(rng.gen_range(-720.0..720.0), rng.gen_range(-460.0..460.0));
+        // NORMALIZED [-1,1] — scaled to the live arena at draw time so the field always fills the screen,
+        // whatever its size or aspect (a fixed world box left dark starless margins on big/ultrawide monitors).
+        let pos = Vec2::new(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0));
         commands.spawn((
             Star { phase: rng.gen_range(0.0..TAU), bright: rng.gen_range(0.3..1.0) },
             Transform::from_xyz(pos.x, pos.y, 0.0),
@@ -1850,7 +1871,9 @@ fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score
         _ => 100,
     };
     score.0 += if dense { base * 2 } else { base }; // dense rocks are worth more
-    let splash = if pulser {
+    let splash = if gold {
+        gold_color() // gold lineage sprays warm-gold debris — was falling through to blue rock_color()
+    } else if pulser {
         Color::srgb(4.5, 4.8, 5.6)
     } else if red {
         red_color()
@@ -3032,14 +3055,20 @@ fn wave_timer(
 // is just a shoot-it-off-the-shield target).
 fn gold_spawn(time: Res<Time>, wave: Res<Wave>, arena: Res<Arena>, mut rush: ResMut<GoldRush>, mut commands: Commands) {
     rush.cooldown -= time.delta_secs(); // counts down from the last APPEARANCE (keeps ticking during a hunt)
-    if rush.active || rush.cooldown > 0.0 || wave.calm > 0.0 {
-        return; // a hunt's still running, the gap hasn't elapsed, or the post-boss field is kept clear
+    // No gold in wave 1 — a spare life that early is wasted (nothing threatening yet), so it felt
+    // pointless. The first life rock now arrives in wave 2.
+    if rush.active || rush.cooldown > 0.0 || wave.calm > 0.0 || wave.level < 2 {
+        return; // a hunt's running, the gap hasn't elapsed, the post-boss field is kept clear, or it's wave 1
     }
     let mut rng = rand::thread_rng();
     spawn_gold_rock(&mut commands, arena.half, &mut rng);
     rush.active = true;
     rush.forfeited = false;
-    rush.cooldown = rng.gen_range(GOLD_MIN_GAP..GOLD_MAX_GAP); // next one is at least ~4 min out
+    // Wave-tapered gap: frequent early (life matters most then), easing back to the old rare cadence by wave 30.
+    let taper = ((wave.level - GOLD_TAPER_START).max(0) as f32 / (GOLD_TAPER_END - GOLD_TAPER_START) as f32).clamp(0.0, 1.0);
+    let gmin = GOLD_GAP_EARLY_MIN + (GOLD_GAP_LATE_MIN - GOLD_GAP_EARLY_MIN) * taper;
+    let gmax = GOLD_GAP_EARLY_MAX + (GOLD_GAP_LATE_MAX - GOLD_GAP_EARLY_MAX) * taper;
+    rush.cooldown = rng.gen_range(gmin..gmax);
 }
 
 // Stream replacement rocks in gradually so the field stays populated as you clear
@@ -4634,7 +4663,19 @@ fn update_warp_field(time: Res<Time>, mut wf: ResMut<WarpField>, holes: Query<&T
 // ─────────────────────────────── always-on systems ────────────────────
 fn update_arena(mut arena: ResMut<Arena>, windows: Query<&Window>) {
     if let Some(w) = windows.iter().next() {
-        arena.half = Vec2::new(w.width() * 0.5, w.height() * 0.5);
+        // The camera scale-to-fits DESIGN_H world-units to the window HEIGHT (see `setup`), so the visible
+        // half-height is always DESIGN_HALF_H and the half-width follows the window's aspect. Sizing the arena
+        // to match makes the edge exactly the visible bound, at a consistent scale on every monitor.
+        let aspect = if w.height() > 0.0 { w.width() / w.height() } else { 1.6 };
+        arena.half = Vec2::new(DESIGN_HALF_H * aspect, DESIGN_HALF_H);
+    }
+}
+
+// Scale the UI (HUD + menus) with the window so text/pips track the world's scale-to-fit — a window
+// DESIGN_H tall = scale 1.0 (the laptop baseline), bigger monitors scale up so nothing looks tiny.
+fn update_ui_scale(mut ui: ResMut<UiScale>, windows: Query<&Window>) {
+    if let Some(w) = windows.iter().next() {
+        ui.0 = (w.height() / DESIGN_H).max(0.1);
     }
 }
 
@@ -4800,7 +4841,7 @@ fn render(
     let menu = !show_run;
     for (s, st) in &stars {
         let tw = 0.35 + 0.65 * (t * 1.6 + s.phase).sin().max(0.0);
-        let c = st.translation.truncate();
+        let c = st.translation.truncate() * h; // star pos is NORMALIZED [-1,1] → scale to the live arena so the field fills any screen
         let bright = s.bright * tw * if menu { 2.0 } else { 1.0 };
         let col = dim(star, bright);
         let arm = if menu { 2.3 } else { 1.3 };
@@ -4844,7 +4885,7 @@ fn render(
     let mut i = 0;
     let mut x = -(h.x / GRID_CELL).floor() * GRID_CELL;
     while x <= h.x {
-        let sh = 0.5 + 1.1 * (0.5 + 0.5 * (i as f32 * 0.7 + t * 1.2).sin());
+        let sh = 0.5 + GRID_SHIMMER_AMP * (0.5 + 0.5 * (i as f32 * 0.7 + t * 1.2).sin());
         let col = dim(grid, sh * warp_flick(i as f32));
         if warping {
             let pts: Vec<Vec2> = (0..=SUBDIV)
@@ -4860,7 +4901,7 @@ fn render(
     let mut j = 0;
     let mut y = -(h.y / GRID_CELL).floor() * GRID_CELL;
     while y <= h.y {
-        let sh = 0.5 + 1.1 * (0.5 + 0.5 * (j as f32 * 0.7 + t * 1.2 + 1.7).sin());
+        let sh = 0.5 + GRID_SHIMMER_AMP * (0.5 + 0.5 * (j as f32 * 0.7 + t * 1.2 + 1.7).sin());
         let col = dim(grid, sh * warp_flick(j as f32 + 5.0));
         if warping {
             let pts: Vec<Vec2> = (0..=SUBDIV)
@@ -7948,7 +7989,7 @@ fn main() {
         .init_state::<GameState>()
         .add_systems(Startup, (setup, spawn_hud, spawn_toast_root, load_progress, load_high_scores, start_music, start_sfx, set_window_icon))
         // always: keep the arena sized, handle pause input, refresh the HUD text
-        .add_systems(Update, (update_arena, pause_toggle, update_wave_text, update_score_text, wave_banner_update, calm_countdown_update, boss_warning_update).chain())
+        .add_systems(Update, (update_arena, update_ui_scale, pause_toggle, update_wave_text, update_score_text, wave_banner_update, calm_countdown_update, boss_warning_update).chain())
         // always: watch for achievement unlocks + age out toasts + hide the HUD off-run + menu buttons
         .add_systems(Update, (achievements, toast_update, hud_visibility, button_shimmer, button_click, hud_flash_tick, shot_mode_update))
         // the neon warm-up + frame pulse is a START-MENU flourish only (not the achievements screen)
@@ -8524,14 +8565,28 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
-        app.insert_resource(Wave { level: 1, timer: WAVE_SECS, calm: 0.0 });
+        app.insert_resource(Wave { level: 2, timer: WAVE_SECS, calm: 0.0 }); // wave 2+: gold is eligible (wave 1 is gated)
         app.insert_resource(GoldRush { active: false, forfeited: false, cooldown: 0.0 }); // due now
         app.add_systems(Update, gold_spawn);
         app.update();
         assert_eq!(app.world_mut().query_filtered::<(), With<Gold>>().iter(app.world()).count(), 1, "the countdown elapsing spawns exactly one gold rock");
         let rush = app.world().resource::<GoldRush>();
         assert!(rush.active, "spawning starts the hunt");
-        assert!(rush.cooldown >= GOLD_MIN_GAP, "a long gap to the next gold is armed at spawn (no back-to-back)");
+        assert!(rush.cooldown >= GOLD_GAP_EARLY_MIN, "a long gap to the next gold is armed at spawn (no back-to-back)");
+    }
+
+    #[test]
+    fn gold_never_spawns_in_wave_one() {
+        // A spare life in wave 1 was useless (nothing threatening yet), so gold is gated to wave 2+.
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
+        app.insert_resource(Wave { level: 1, timer: WAVE_SECS, calm: 0.0 });
+        app.insert_resource(GoldRush { active: false, forfeited: false, cooldown: 0.0 }); // "due", but wave 1 blocks it
+        app.add_systems(Update, gold_spawn);
+        app.update();
+        assert_eq!(app.world_mut().query_filtered::<(), With<Gold>>().iter(app.world()).count(), 0, "no gold rock in wave 1");
+        assert!(!app.world().resource::<GoldRush>().active, "and no hunt is started");
     }
 
     #[test]
