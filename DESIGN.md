@@ -77,7 +77,7 @@ Each boss drops a powerup that echoes its own mechanic.
 | Glutton (W10) | **Mass Shot** | ✅ | fat, slow rounds that **destroy any rock in one hit, no chunks** (the field-clearing tool; only a bit stronger than standard vs bosses, and its slow rate keeps standard the better boss DPS) — the red Glutton gains *mass* |
 | Slinger (W15) | **Drone** | ✅ | an ally craft that orbits the ship a short distance out and auto-fires the player's Bullet at the nearest asteroid in range — mops up rocks you left behind (one per run) |
 | Detonator (W20) | **Warhead rounds** | ✅ | permanent passive — every primary shot makes the rock it hits **detonate & chain** in a **violet, player-SAFE blast** (gold is spared; your own boom won't kill you) — echoes the primed bombs |
-| Pulsar (W25) | **Nova pulse** | 🔷 | a shockwave that shoves rocks away — echoes its pulse |
+| Pulsar (W25) | **Nova Shield** | ✅ | a regenerating **one-hit barrier**: while UP it eats one lethal hit and collapses; after `NOVA_REGEN` (~9s) it **flickers back on** (its ring blinks ≤3 Hz as it re-lights). A hit while it's DOWN costs the life as normal. The player inherits the Pulsar's lit-invulnerable ↔ dark-vulnerable identity. (Replaced the earlier "Nova pulse" shockwave sketch — playtest direction 2026-07-28.) |
 | Phantom (W30) | **Magnet** | 🔷 | pulls pickups/small rocks in — echoes the gravity pull the Phantom keeps (base Warp stays core kit) |
 | Hive (W35) | **Spread shot** | 🔷 | your shot *splits* into several — echoes mitosis |
 | Prism (W40) | **Ricochet rounds** | 🔷 | bullets *reflect* off walls/rocks — echoes the facets |
@@ -169,11 +169,12 @@ run is perfected**.
   **plain shot splits it into smaller reds** (they eat the field back up — whack-a-mole); **mass / warhead
   / chain / mine destroy it outright, no regrow** (the counters). Never eats gold / live bombs / boss-held
   rocks. Debuts w21; ~25–40% of the non-boss Act III field.
-- **§B — Pulsar boss (25) ✅** *(Nova drop pending)*: electric white-cyan; invulnerable while LIT / open
+- **§B — Pulsar boss (25) ✅ + Nova Shield drop ✅**: electric white-cyan; invulnerable while LIT / open
   while DARK (reuses `pulser_lit(phase, t)`); on a beat it emits a `Shockwave` that flings every rock +
   the ship outward (`PULSAR_SHOCK_*`). Counter: shoot it on the dark beat, don't get pinned to a wall.
-  Slow drift-chase so it can't be camped; contact kills. Still open: the **Nova-pulse** powerup drop and
-  the *W25 two-older-boss variant*.
+  Slow drift-chase so it can't be camped; contact kills. On death it drops the **Nova Shield** orb (see
+  the powerup table): a regenerating one-hit barrier, absorbed uniformly in `kill_ship` (every death path
+  funnels there), state in `Run.nova`. Still open: the *W25 two-older-boss variant*.
 - **§C — THE PHANTOM ("The Haunt"), boss 6 / wave 30 (the FINALE) + Victory finale**: a **spectral predator
   too arrogant to be touched** — its OWN mechanics per phase (the earlier channel-the-fallen-bosses design
   was cut: it played like a grab-bag). The fight's arc is stripping that arrogance away. The deliberate
@@ -238,9 +239,10 @@ run is perfected**.
   - **Dev F4 (`dev_face_phantom`, debug only)** — wipes the field (keeps the ship) + jumps to wave 30 (resets
     the group cycle) so the finale can be tested without clearing 29 waves. Dev F2 sets phase 3 + zero → the
     win path in one press. (Dev keys are gated to the Playing state.)
-  **The standard run is beatable end-to-end — six bosses, waves 1–30.** Still open: the **Nova** (§B) and
-  **Magnet** (§C) powerup drops; an **achievements pass for the 30-wave era** (the "beat the game" achievement
-  still triggers at the old wave-10 arc and the real wave-30 win records nothing); then balance tuning.
+  **The standard run is beatable end-to-end — six bosses, waves 1–30.** Still open: the **Magnet** (§C)
+  powerup drop (the Nova Shield ✅ shipped); an **achievements pass for the 30-wave era** (the "beat the
+  game" achievement still triggers at the old wave-10 arc and the real wave-30 win records nothing); then
+  balance tuning.
 
 The Slinger (§C, ✅): boss 3, wave 15 — a large **ice-blue gunship** (its nose/cannon tracks the
 player; unique boss colour, apart from the Warden's magenta + Devourer's red). Glides in, then hovers

@@ -281,6 +281,12 @@ const CHAIN_HALF: f32 = 58.0; // half the beam width (gap between the two chaine
 const CHAIN_R: f32 = 8.0; // beam hit half-thickness
 const CHAIN_LIFE: f32 = 1.5; // s
 const PICKUP_R: f32 = 30.0; // reward-orb radius
+
+// Nova Shield (the Pulsar's drop): a regenerating one-hit barrier — see `Nova`.
+const NOVA_REGEN: f32 = 9.0; // s the shield stays DOWN after eating a hit (long enough that it can't tank everything)
+const NOVA_GRACE: f32 = 1.0; // s of immunity as it pops — the overlap that broke it can't instantly re-kill
+const NOVA_RELIGHT: f32 = 0.8; // the regen's final stretch — the ring flickers as it comes back (≤3 Hz, photosafe)
+const NOVA_RING_R: f32 = SHIP_R + 11.0; // the bubble sits just off the hull
 const PICKUP_DRIFT: f32 = 32.0; // px/s slow drift
 const PICKUP_LIFE: f32 = 20.0; // the orb lingers this long (well past the 10s boss calm) before vanishing
 
@@ -428,6 +434,9 @@ fn warhead_color() -> Color {
 fn drone_color() -> Color {
     Color::srgb(2.6, 2.2, 5.6)
 } // lavender-violet — the ally Drone (player kit, so it reads as yours; distinct from the ship's core purple)
+fn nova_color() -> Color {
+    Color::srgb(3.4, 2.8, 6.0)
+} // glassy pale violet — the Nova Shield bubble (player kit → purple family; whiter/airier than drone or hull)
 fn well_color() -> Color {
     Color::srgb(5.0, 0.9, 2.4)
 } // hot rose-red — the gravity-well hazard (a "dark" swirl, clearly NOT the player's blue-purple warp)
@@ -695,6 +704,22 @@ fn kill_ship(
     pos: Vec2,
     rng: &mut impl Rng,
 ) {
+    // Nova Shield: every death path funnels through here, so the absorb covers them all uniformly.
+    // While UP it eats the hit instead of the ship — collapse it, start the regen, and open a brief
+    // grace (the overlap that broke it can't also kill before it resolves). While DOWN, the hit falls
+    // through and costs the life — exactly the shield's stated deal.
+    if run.nova.unlocked {
+        if run.nova.grace > 0.0 {
+            return; // still phasing through the hit the shield just ate
+        }
+        if run.nova.down <= 0.0 {
+            run.nova.down = NOVA_REGEN;
+            run.nova.grace = NOVA_GRACE;
+            burst(commands, pos, nova_color(), 26, 340.0, rng);
+            sfx.write(SoundFx::NovaPop);
+            return; // the ship lives
+        }
+    }
     burst(commands, pos, ship_color(), 30, 340.0, rng);
     burst(commands, pos, Color::srgb(4.0, 4.0, 5.0), 12, 220.0, rng);
     sfx.write(SoundFx::Death);
@@ -1128,6 +1153,7 @@ enum PickupKind {
     Mass,
     Drone,
     Warhead,
+    Nova, // the Pulsar's drop (boss 5): the regenerating one-hit Nova Shield
 }
 
 // An ally drone (boss-3 reward): orbits the ship a short distance out and auto-fires at the nearest
@@ -1255,10 +1281,22 @@ struct HighScores {
     just_placed: Option<usize>,
 }
 
-#[derive(Resource)]
+// The Nova Shield (the Pulsar's reward, boss 5 / wave 25): a regenerating one-hit barrier the player
+// inherits from the boss's lit↔dark identity. While UP it eats one lethal hit and collapses; after
+// NOVA_REGEN it flickers back on. A hit while it's DOWN costs a life as normal. Lives inside `Run`
+// (per-run vital state) so every `kill_ship` caller already has it — no signature churn.
+#[derive(Default, Clone, Copy)]
+struct Nova {
+    unlocked: bool,
+    down: f32,  // >0 → collapsed, counting down to the re-light; 0 while UP
+    grace: f32, // brief post-pop immunity so the hit that broke it can't also kill next frame
+}
+
+#[derive(Resource, Default)]
 struct Run {
     lives: i32,
     respawn: f32,
+    nova: Nova, // the Nova Shield's per-run state (see `Nova`)
 }
 
 #[derive(Resource)]
@@ -2521,6 +2559,24 @@ fn respawn(mut commands: Commands, time: Res<Time>, mut run: ResMut<Run>, mut ne
             next.set(GameState::GameOver); // a beat after the final death → then the screen
         } else if ships.is_empty() {
             spawn_player(&mut commands);
+        }
+    }
+}
+
+// Tick the Nova Shield's regen + pop-grace (Playing only, so it doesn't heal while paused). When the
+// regen elapses the shield flickers back ON with its own soft cue.
+fn nova_tick(time: Res<Time>, mut run: ResMut<Run>, mut sfx: EventWriter<SoundFx>) {
+    if !run.nova.unlocked {
+        return;
+    }
+    let dt = time.delta_secs();
+    if run.nova.grace > 0.0 {
+        run.nova.grace -= dt;
+    }
+    if run.nova.down > 0.0 {
+        run.nova.down -= dt;
+        if run.nova.down <= 0.0 {
+            sfx.write(SoundFx::NovaUp); // back online
         }
     }
 }
@@ -4428,6 +4484,7 @@ fn pickup_update(
     mut chain: ResMut<Chain>,
     mut mass: ResMut<MassShot>,
     mut warhead: Option<ResMut<Warhead>>, // Option so headless tests needn't insert it
+    mut run: Option<ResMut<Run>>,         // (same) — carries the Nova Shield state
     mut flags: ResMut<RunFlags>,
     ships: Query<&Transform, With<Ship>>,
     bullets: Query<(Entity, &Transform), With<Bullet>>,
@@ -4494,6 +4551,12 @@ fn pickup_update(
                     }
                     mass.active = false;
                     warhead_color()
+                }
+                PickupKind::Nova => {
+                    if let Some(r) = run.as_mut() {
+                        r.nova = Nova { unlocked: true, down: 0.0, grace: 0.0 }; // raised, and UP right away
+                    }
+                    nova_color()
                 }
             };
             burst(&mut commands, p, col, 30, 300.0, &mut rng);
@@ -4813,8 +4876,8 @@ fn render(
     arena: Res<Arena>,
     run: Res<Run>,
     dev: Res<Dev>,
-    // warp + chain + state + hud-flash grouped into one tuple param to stay within Bevy's 16-param limit
-    abilities: (Res<Warp>, Res<Chain>, Res<State<GameState>>, Res<HudFlash>),
+    // warp + chain + state + hud-flash + run (Nova Shield) grouped into one tuple param to stay within Bevy's 16-param limit
+    abilities: (Res<Warp>, Res<Chain>, Res<State<GameState>>, Res<HudFlash>, Res<Run>),
     wf: Res<WarpField>,
     stars: Query<(&Star, &Transform)>,
     ships: Query<(&Ship, &Transform)>,
@@ -4832,6 +4895,7 @@ fn render(
     let (warp_res, chain) = (&abilities.0, &abilities.1);
     let show_run = run_active(abilities.2.get()); // grid + HUD icons only while a run is on
     let hud_flash = &abilities.3;
+    let nova = &abilities.4.nova; // the Nova Shield's state (bubble drawn in the ship loop)
     // a rapid bright shimmer applied to pips/lives right after they refill / a life is gained
     let flick = |active: bool| if active { 1.1 + 0.8 * (t * 18.0).sin() } else { 1.0 }; // ~2.9 Hz (was ~6.4) — no strobe
 
@@ -4875,7 +4939,7 @@ fn render(
     // large-area element, so it must never strobe (photosensitivity).
     let warp_flick = |k: f32| {
         if warping {
-            let amp = 0.3 + 0.45 * wamt;
+            let amp = 0.6 + 0.7 * wamt; // a bolder crackle (bumped so the post-warp flicker really reads) — AMPLITUDE only; the ≤2.9 Hz rates below are untouched (photosensitivity)
             (1.0 + amp * (0.7 * (t * 14.0 + k * 2.1).sin() + 0.5 * (t * 18.0 + k * 3.7).sin())).max(0.1)
         } else {
             1.0
@@ -5135,6 +5199,20 @@ fn render(
         if dev.invincible {
             let pulse = 1.0 + 0.06 * (t * 4.0).sin();
             gizmos.circle_2d(Isometry2d::from_translation(c), SHIP_R * 2.2 * pulse, dim(sc, 0.6));
+        }
+        // Nova Shield bubble — a glassy slowly-turning hex ring just off the hull (echoes the reward
+        // orb's hexagon). UP: a gentle amplitude-only breathe. In the regen's final stretch it FLICKERS
+        // back on at ≤3 Hz (photosafe — same cadence as the spawn blink). Down otherwise: no ring.
+        if nova.unlocked {
+            let show = if nova.down <= 0.0 { true } else { nova.down < NOVA_RELIGHT && (nova.down * 6.0) as i32 % 2 == 0 };
+            if show {
+                let breathe = 1.0 + 0.05 * (t * 2.2).sin();
+                let ring: Vec<Vec2> = (0..=6)
+                    .map(|i| c + Vec2::from_angle(i as f32 / 6.0 * TAU + t * 0.6) * NOVA_RING_R * breathe)
+                    .collect();
+                let glow = if nova.down <= 0.0 { 0.8 + 0.2 * (t * 2.2).sin() } else { 0.55 };
+                gizmos.linestrip_2d(ring, dim(nova_color(), glow));
+            }
         }
         if s.invuln > 0.0 && (s.invuln * 6.0) as i32 % 2 == 0 {
             continue; // spawn-protection blink at ~3 Hz (was 6 — kept ≤3/sec so it doesn't strobe)
@@ -5922,8 +6000,8 @@ fn phantom_dissolve(
 
 // The Pulsar (boss 5): pulses lit (invulnerable) / dark (open); on a beat it shockwaves every rock and
 // the ship outward. Drifts slowly toward the ship so it can't be camped; contact kills. Gunfire lands
-// only during its DARK beat (see `collisions`). On death it advances the wave (its Nova drop is wired
-// with the powerup).
+// only during its DARK beat (see `collisions`). On death it drops the Nova Shield orb — the player
+// inherits its lit↔dark identity as a regenerating one-hit barrier (see `Nova`) — then advances the wave.
 fn pulsar_update(
     time: Res<Time>,
     mut commands: Commands,
@@ -5956,6 +6034,13 @@ fn pulsar_update(
             if pl.dying <= 0.0 {
                 burst(&mut commands, p, pulsar_color(), 50, 480.0, &mut rng);
                 commands.entity(pe).despawn();
+                // drop the Nova Shield orb (the boss-5 reward, content wave 25)
+                let pdir = Vec2::from_angle(rng.gen_range(0.0..TAU));
+                commands.spawn((
+                    Pickup { rot: 0.0, pulse: 0.0, life: PICKUP_LIFE, kind: PickupKind::Nova },
+                    Velocity(pdir * PICKUP_DRIFT),
+                    Transform::from_xyz(0.0, 0.0, 0.0),
+                ));
                 defeat_boss(&mut score, &mut wave, &mut banner);
             }
             continue;
@@ -6605,6 +6690,7 @@ fn render_extras(
             PickupKind::Mass => mass_color(),
             PickupKind::Drone => drone_color(),
             PickupKind::Warhead => orange_color(),
+            PickupKind::Nova => pulsar_color(), // the orb wears its boss's electric white-cyan (like Warhead wears the Detonator's orange); the granted shield itself is player-purple
         };
         let hex: Vec<Vec2> = (0..=6)
             .map(|i| c + Vec2::from_angle(i as f32 / 6.0 * TAU + pk.rot) * PICKUP_R * throb)
@@ -6866,6 +6952,7 @@ fn reset_run(
 ) {
     run.lives = START_LIVES;
     run.respawn = 0.0;
+    run.nova = Nova::default(); // the Nova Shield must be re-earned (like every other pickup)
     score.0 = 0;
     wave.level = 1;
     wave.timer = WAVE_SECS;
@@ -7759,6 +7846,8 @@ enum SoundFx {
     Warp,      // the warp/black-hole launch
     Toggle,    // switching standard ↔ mass shot
     Haunt,     // the Phantom's own spectral cue (ray, possession, death) — NOT the warp sound
+    NovaPop,   // the Nova Shield eating a hit (glassy shatter)
+    NovaUp,    // the Nova Shield flickering back online (soft rising shimmer)
 }
 
 // Pre-synthesized SFX clips (see `audio.rs`), built once at startup.
@@ -7772,6 +7861,8 @@ struct SfxBank {
     enemy_die: Handle<AudioSource>,
     warp: Handle<AudioSource>,
     haunt: Handle<AudioSource>, // the Phantom's spectral cue
+    nova_pop: Handle<AudioSource>, // the Nova Shield eating a hit
+    nova_up: Handle<AudioSource>,  // the Nova Shield re-lighting
     achievement: Handle<AudioSource>,
     life: Handle<AudioSource>, // gold-rock 1UP jingle
     toggle: Handle<AudioSource>, // standard ↔ mass shot switch
@@ -7787,6 +7878,8 @@ fn start_sfx(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
         enemy_die: sources.add(AudioSource { bytes: audio::enemy_die_wav().into() }),
         warp: sources.add(AudioSource { bytes: audio::warp_wav().into() }),
         haunt: sources.add(AudioSource { bytes: audio::haunt_sfx_wav().into() }),
+        nova_pop: sources.add(AudioSource { bytes: audio::nova_pop_sfx_wav().into() }),
+        nova_up: sources.add(AudioSource { bytes: audio::nova_up_sfx_wav().into() }),
         achievement: sources.add(AudioSource { bytes: audio::achievement_sfx_wav().into() }),
         life: sources.add(AudioSource { bytes: audio::life_sfx_wav().into() }),
         toggle: sources.add(AudioSource { bytes: audio::toggle_sfx_wav().into() }),
@@ -7810,8 +7903,8 @@ fn play_sfx(mut commands: Commands, bank: Option<Res<SfxBank>>, mut events: Even
         events.clear();
         return;
     };
-    let (mut fire, mut mine, mut death, mut eshot, mut edie, mut warp, mut toggle, mut haunt) =
-        (false, false, false, false, false, false, false, false);
+    let (mut fire, mut mine, mut death, mut eshot, mut edie, mut warp, mut toggle, mut haunt, mut npop, mut nup) =
+        (false, false, false, false, false, false, false, false, false, false);
     let mut brk: Option<u8> = None; // deepest (largest) rock that broke this frame
     for e in events.read() {
         match e {
@@ -7824,6 +7917,8 @@ fn play_sfx(mut commands: Commands, bank: Option<Res<SfxBank>>, mut events: Even
             SoundFx::Warp => warp = true,
             SoundFx::Toggle => toggle = true,
             SoundFx::Haunt => haunt = true,
+            SoundFx::NovaPop => npop = true,
+            SoundFx::NovaUp => nup = true,
         }
     }
     if fire {
@@ -7855,6 +7950,12 @@ fn play_sfx(mut commands: Commands, bank: Option<Res<SfxBank>>, mut events: Even
     }
     if toggle {
         one_shot(&mut commands, bank.toggle.clone(), 0.4); // weapon-switch click
+    }
+    if npop {
+        one_shot(&mut commands, bank.nova_pop.clone(), 0.6); // the shield eating a hit — a big save, heard clearly
+    }
+    if nup {
+        one_shot(&mut commands, bank.nova_up.clone(), 0.35); // back online — soft, informative
     }
 }
 
@@ -7952,7 +8053,7 @@ fn main() {
         }))
         .insert_resource(ClearColor(Color::srgb(0.02, 0.01, 0.06)))
         .insert_resource(Score(0))
-        .insert_resource(Run { lives: START_LIVES, respawn: 0.0 })
+        .insert_resource(Run { lives: START_LIVES, respawn: 0.0, ..default() })
         .insert_resource(Wave { level: 1, timer: WAVE_SECS, calm: 0.0 })
         .insert_resource(WaveBanner { timer: WAVE_BANNER_SECS }) // flash "WAVE 1" at start
         .insert_resource(SpawnClock::default())
@@ -8017,6 +8118,7 @@ fn main() {
                 )
                     .chain(),
                 (
+                    nova_tick, // ticks the shield's regen/grace BEFORE the frame's death checks
                     ship_death,
                     mine_update,
                     enemy_update,
@@ -8413,7 +8515,7 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.insert_resource(GoldRush { active: true, forfeited: false, cooldown: 0.0 });
         app.insert_resource(HudFlash::default());
-        app.insert_resource(Run { lives: 1, respawn: 0.0 }); // below the cap, so a life can be restored
+        app.insert_resource(Run { lives: 1, respawn: 0.0, ..default() }); // below the cap, so a life can be restored
         // no Gold entities remain → the player cleared the whole lineage
         app.add_systems(Update, gold_rush_update);
         app.update();
@@ -8429,7 +8531,7 @@ mod tests {
         app.insert_resource(Score(0));
         app.insert_resource(GoldRush { active: true, forfeited: false, cooldown: 0.0 });
         app.insert_resource(HudFlash::default());
-        app.insert_resource(Run { lives: LIFE_CAP - 1, respawn: 0.0 });
+        app.insert_resource(Run { lives: LIFE_CAP - 1, respawn: 0.0, ..default() });
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
         // a gold rock sitting on an open hole → the warp swallows it (a player action, so it should pay out)
         app.world_mut().spawn((BlackHole { life: 5.0, spin: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0)));
@@ -8452,7 +8554,7 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.insert_resource(GoldRush { active: true, forfeited: false, cooldown: 0.0 });
         app.insert_resource(HudFlash::default());
-        app.insert_resource(Run { lives: LIFE_CAP, respawn: 0.0 });
+        app.insert_resource(Run { lives: LIFE_CAP, respawn: 0.0, ..default() });
         app.add_systems(Update, gold_rush_update);
         app.update();
         assert_eq!(app.world().resource::<Run>().lives, LIFE_CAP, "lives never exceed LIFE_CAP");
@@ -8464,7 +8566,7 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.insert_resource(GoldRush { active: true, forfeited: true, cooldown: 0.0 }); // a piece was lost
         app.insert_resource(HudFlash::default());
-        app.insert_resource(Run { lives: 1, respawn: 0.0 }); // below the cap, so only the forfeit blocks it
+        app.insert_resource(Run { lives: 1, respawn: 0.0, ..default() }); // below the cap, so only the forfeit blocks it
         app.add_systems(Update, gold_rush_update);
         app.update();
         assert_eq!(app.world().resource::<Run>().lives, 1, "a forfeited hunt grants nothing");
@@ -8680,7 +8782,7 @@ mod tests {
         app.insert_resource(Dev::default());
         app.insert_resource(Score(0));
         app.insert_resource(Stats::default());
-        app.insert_resource(Run { lives: 3, respawn: 0.0 });
+        app.insert_resource(Run { lives: 3, respawn: 0.0, ..default() });
         app.insert_resource(NextState::<GameState>::default());
         // the lit orange at origin (fuse already elapsed → blows this update)
         app.world_mut().spawn((
@@ -8857,7 +8959,7 @@ mod tests {
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());
         app.insert_resource(NextState::<GameState>::default()); // ship_death needs this resource
-        app.insert_resource(Run { lives: 3, respawn: 0.0 });
+        app.insert_resource(Run { lives: 3, respawn: 0.0, ..default() });
         app.insert_resource(Dev::default());
         app.world_mut().spawn((
             Ship { angle: 0.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 },
@@ -8878,6 +8980,69 @@ mod tests {
     }
 
     #[test]
+    fn nova_shield_absorbs_one_hit_then_down_costs_a_life() {
+        // Same lethal overlap as ship_dies_on_asteroid_contact, but with the Nova Shield UP:
+        // the first hit is eaten (ship lives, no life lost, shield collapses into its regen);
+        // once the pop-grace has passed, the still-overlapping rock kills for real.
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_event::<SoundFx>();
+        app.insert_resource(Stats::default());
+        app.insert_resource(RunFlags::default());
+        app.insert_resource(NextState::<GameState>::default());
+        app.insert_resource(Run { lives: 3, respawn: 0.0, nova: Nova { unlocked: true, down: 0.0, grace: 0.0 } });
+        app.insert_resource(Dev::default());
+        app.world_mut().spawn((
+            Ship { angle: 0.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 },
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+        ));
+        app.world_mut().spawn((
+            Asteroid { size: 3, verts: vec![Vec2::X * 65.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+        ));
+        app.add_systems(Update, ship_death);
+        app.update();
+        assert_eq!(app.world_mut().query::<&Ship>().iter(app.world()).count(), 1, "the shield eats the hit — the ship lives");
+        assert_eq!(app.world().resource::<Run>().lives, 3, "no life is lost on an absorb");
+        assert!(app.world().resource::<Run>().nova.down > 0.0, "the shield collapses into its regen");
+        assert!(app.world().resource::<Run>().nova.grace > 0.0, "a brief pop-grace opens");
+        // grace over, shield still down, rock still overlapping → this one costs the life
+        app.world_mut().resource_mut::<Run>().nova.grace = 0.0;
+        app.update();
+        assert_eq!(app.world_mut().query::<&Ship>().iter(app.world()).count(), 0, "a hit while the shield is down kills");
+        assert_eq!(app.world().resource::<Run>().lives, 2, "and costs the life");
+    }
+
+    #[test]
+    fn nova_pickup_raises_the_shield() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
+        app.insert_resource(Chain::default());
+        app.insert_resource(MassShot::default());
+        app.insert_resource(RunFlags::default());
+        app.insert_resource(Run { lives: 3, respawn: 0.0, ..default() });
+        app.world_mut().spawn((
+            Ship { angle: 0.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 },
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+        ));
+        app.world_mut().spawn((
+            Pickup { rot: 0.0, pulse: 0.0, life: PICKUP_LIFE, kind: PickupKind::Nova },
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+        ));
+        app.add_systems(Update, pickup_update);
+        app.update();
+        let run = app.world().resource::<Run>();
+        assert!(run.nova.unlocked, "grabbing the Nova orb raises the shield");
+        assert!(run.nova.down <= 0.0, "and it comes up immediately");
+        assert!(app.world().resource::<RunFlags>().powerup_used, "it counts as a powerup (blocks Purist)");
+    }
+
+    #[test]
     fn rock_reeling_in_does_not_kill_the_ship() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
@@ -8885,7 +9050,7 @@ mod tests {
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());
         app.insert_resource(NextState::<GameState>::default());
-        app.insert_resource(Run { lives: 3, respawn: 0.0 });
+        app.insert_resource(Run { lives: 3, respawn: 0.0, ..default() });
         app.insert_resource(Dev::default());
         app.world_mut().spawn((
             Ship { angle: 0.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 },
@@ -8913,7 +9078,7 @@ mod tests {
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());
         app.insert_resource(NextState::<GameState>::default());
-        app.insert_resource(Run { lives: 3, respawn: 0.0 });
+        app.insert_resource(Run { lives: 3, respawn: 0.0, ..default() });
         app.insert_resource(Dev::default());
         app.world_mut().spawn((
             Ship { angle: 0.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 },
@@ -8941,7 +9106,7 @@ mod tests {
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());
         app.insert_resource(NextState::<GameState>::default());
-        app.insert_resource(Run { lives: 3, respawn: 0.0 });
+        app.insert_resource(Run { lives: 3, respawn: 0.0, ..default() });
         app.insert_resource(Dev::default());
         app.world_mut().spawn((
             Ship { angle: 0.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 },
@@ -8967,7 +9132,7 @@ mod tests {
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());
         app.insert_resource(NextState::<GameState>::default()); // ship_death needs this resource
-        app.insert_resource(Run { lives: 3, respawn: 0.0 });
+        app.insert_resource(Run { lives: 3, respawn: 0.0, ..default() });
         app.insert_resource(Dev::default());
         app.world_mut().spawn((
             Ship { angle: 0.0, cooldown: 0.0, invuln: 2.0, flame: 0.0 },
@@ -8993,7 +9158,7 @@ mod tests {
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());
         app.insert_resource(NextState::<GameState>::default());
-        app.insert_resource(Run { lives: 3, respawn: 0.0 });
+        app.insert_resource(Run { lives: 3, respawn: 0.0, ..default() });
         app.insert_resource(Dev { invincible: true }); // god-mode ON
         app.world_mut().spawn((
             Ship { angle: 0.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 },
@@ -9020,7 +9185,7 @@ mod tests {
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());
         app.insert_resource(NextState::<GameState>::default()); // ship_death needs this resource
-        app.insert_resource(Run { lives: 1, respawn: 0.0 });
+        app.insert_resource(Run { lives: 1, respawn: 0.0, ..default() });
         app.insert_resource(Dev::default());
         app.world_mut().spawn((
             Ship { angle: 0.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 },
@@ -9046,7 +9211,7 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.insert_resource(NextState::<GameState>::default());
         // a game-over countdown all but elapsed, with no lives left — any dt drives it <= 0
-        app.insert_resource(Run { lives: 0, respawn: f32::EPSILON });
+        app.insert_resource(Run { lives: 0, respawn: f32::EPSILON, ..default() });
         app.add_systems(Update, respawn);
         for _ in 0..5 {
             app.update();
@@ -9286,7 +9451,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.add_event::<SoundFx>();
-        app.insert_resource(Run { lives: 3, respawn: 1.0 });
+        app.insert_resource(Run { lives: 3, respawn: 1.0, ..default() });
         app.insert_resource(Dev::default());
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
         app.insert_resource(NextState::<GameState>::default());
@@ -9328,7 +9493,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.add_event::<SoundFx>();
-        app.insert_resource(Run { lives: 3, respawn: 1.0 });
+        app.insert_resource(Run { lives: 3, respawn: 1.0, ..default() });
         app.insert_resource(Dev::default());
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
         app.insert_resource(NextState::<GameState>::default());
@@ -9354,7 +9519,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.add_event::<SoundFx>();
-        app.insert_resource(Run { lives: 3, respawn: 1.0 });
+        app.insert_resource(Run { lives: 3, respawn: 1.0, ..default() });
         app.insert_resource(Dev::default());
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
         app.insert_resource(NextState::<GameState>::default());
@@ -9379,7 +9544,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.add_event::<SoundFx>();
-        app.insert_resource(Run { lives: 3, respawn: 1.0 });
+        app.insert_resource(Run { lives: 3, respawn: 1.0, ..default() });
         app.insert_resource(Score(0));
         app.insert_resource(Dev::default());
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
@@ -9500,7 +9665,7 @@ mod tests {
             let mut app = App::new();
             app.add_plugins(MinimalPlugins);
             app.add_event::<SoundFx>();
-            app.insert_resource(Run { lives: 3, respawn: 0.0 });
+            app.insert_resource(Run { lives: 3, respawn: 0.0, ..default() });
             app.insert_resource(Dev::default());
             app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
             app.insert_resource(NextState::<GameState>::default());
@@ -9832,7 +9997,7 @@ mod tests {
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());
         app.insert_resource(NextState::<GameState>::default());
-        app.insert_resource(Run { lives: 3, respawn: 0.0 });
+        app.insert_resource(Run { lives: 3, respawn: 0.0, ..default() });
         app.insert_resource(Score(0));
         app.insert_resource(Dev::default());
         app.insert_resource(Wave { level: 2, timer: WAVE_SECS, calm: 0.0 });
@@ -9864,7 +10029,7 @@ mod tests {
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());
         app.insert_resource(NextState::<GameState>::default());
-        app.insert_resource(Run { lives: 3, respawn: 0.0 });
+        app.insert_resource(Run { lives: 3, respawn: 0.0, ..default() });
         app.insert_resource(Score(0));
         app.insert_resource(Dev::default());
         app.insert_resource(Wave { level: 2, timer: WAVE_SECS, calm: 0.0 });
@@ -9897,7 +10062,7 @@ mod tests {
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());
         app.insert_resource(NextState::<GameState>::default());
-        app.insert_resource(Run { lives: 3, respawn: 0.0 });
+        app.insert_resource(Run { lives: 3, respawn: 0.0, ..default() });
         app.insert_resource(Score(0));
         app.insert_resource(Dev::default());
         app.insert_resource(Wave { level: 2, timer: WAVE_SECS, calm: 0.0 });
@@ -9930,7 +10095,7 @@ mod tests {
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());
         app.insert_resource(NextState::<GameState>::default());
-        app.insert_resource(Run { lives: 3, respawn: 0.0 });
+        app.insert_resource(Run { lives: 3, respawn: 0.0, ..default() });
         app.insert_resource(Score(0));
         app.insert_resource(Dev::default());
         app.insert_resource(Wave { level: 2, timer: WAVE_SECS, calm: 0.0 });
@@ -9967,7 +10132,7 @@ mod tests {
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());
         app.insert_resource(NextState::<GameState>::default());
-        app.insert_resource(Run { lives: 3, respawn: 0.0 });
+        app.insert_resource(Run { lives: 3, respawn: 0.0, ..default() });
         app.insert_resource(Score(0));
         app.insert_resource(Dev::default());
         app.insert_resource(Wave { level: 5, timer: WAVE_SECS, calm: 0.0 }); // boss wave
@@ -10127,7 +10292,7 @@ mod tests {
         app.insert_resource(Stats::default());
         app.insert_resource(Score(0));
         app.insert_resource(Dev::default());
-        app.insert_resource(Run { lives: 3, respawn: 0.0 });
+        app.insert_resource(Run { lives: 3, respawn: 0.0, ..default() });
         app.insert_resource(NextState::<GameState>::default());
         // a FRIENDLY (warhead) bomb blowing right on top of a non-invincible ship
         app.world_mut().spawn((
@@ -10150,7 +10315,7 @@ mod tests {
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
-        app.insert_resource(Run { lives: 3, respawn: 1.0 }); // respawning → skip ship-contact
+        app.insert_resource(Run { lives: 3, respawn: 1.0, ..default() }); // respawning → skip ship-contact
         app.insert_resource(NextState::<GameState>::default());
         app.insert_resource(Score(0));
         app.insert_resource(Wave { level: 10, timer: WAVE_SECS, calm: 0.0 });
@@ -10181,7 +10346,7 @@ mod tests {
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
-        app.insert_resource(Run { lives: 3, respawn: 0.0 });
+        app.insert_resource(Run { lives: 3, respawn: 0.0, ..default() });
         app.insert_resource(NextState::<GameState>::default());
         app.insert_resource(Score(0));
         app.insert_resource(Wave { level: 10, timer: WAVE_SECS, calm: 0.0 });
@@ -10317,7 +10482,7 @@ mod tests {
         app.add_event::<MenuClick>();
         app.insert_resource(NextState::<GameState>::default());
         // stale end-of-run state that Start must wipe
-        app.insert_resource(Run { lives: 0, respawn: 5.0 });
+        app.insert_resource(Run { lives: 0, respawn: 5.0, ..default() });
         app.insert_resource(Score(999));
         app.insert_resource(Wave { level: 7, timer: 1.0, calm: 3.0 });
         app.insert_resource(WaveBanner::default());
@@ -10404,7 +10569,7 @@ mod tests {
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());
         app.insert_resource(NextState::<GameState>::default());
-        app.insert_resource(Run { lives: 3, respawn: 0.0 });
+        app.insert_resource(Run { lives: 3, respawn: 0.0, ..default() });
         app.insert_resource(Dev::default());
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
         app.world_mut().spawn((
@@ -10531,7 +10696,7 @@ mod tests {
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());
         app.insert_resource(NextState::<GameState>::default());
-        app.insert_resource(Run { lives: 3, respawn: 0.0 });
+        app.insert_resource(Run { lives: 3, respawn: 0.0, ..default() });
         app.insert_resource(Score(0));
         app.insert_resource(Wave { level: 5, timer: 0.0, calm: 0.0 });
         app.insert_resource(WaveBanner::default());

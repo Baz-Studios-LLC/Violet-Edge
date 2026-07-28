@@ -560,6 +560,34 @@ pub fn toggle_sfx_wav() -> Vec<u8> {
     })
 }
 
+// Nova Shield POP — the shield eating a hit: a glassy crystal-shatter (bright detuned partials
+// snapping off, a sparkle of noise) over a low thump, so a big save reads instantly — and sounds
+// nothing like a rock break (noise boom) or the ship death.
+pub fn nova_pop_sfx_wav() -> Vec<u8> {
+    render_sfx(0.38, |t, i| {
+        // three high glass partials, slightly detuned, each dying at its own rate
+        let glass: f32 = [1960.0, 2420.0, 3140.0]
+            .iter()
+            .enumerate()
+            .map(|(k, &f)| (TAU * f * t).sin() * (-t * (16.0 + k as f32 * 6.0)).exp())
+            .sum();
+        let sparkle = (noise(i) - noise(i + 7)) * (-t * 22.0).exp(); // high-passed shatter dust
+        let thump = (TAU * (120.0 * (1.0 - 0.4 * t)) * t).sin() * (-t * 12.0).exp(); // the hit landing on the barrier
+        (glass * 0.22 + sparkle * 0.5 + thump * 0.55) * 0.8
+    })
+}
+
+// Nova Shield RE-LIGHT — back online: a soft exponential rise with a warm fifth above, blooming in
+// and settling (a quiet "power returns" cue — nothing like the weapon-toggle's crisp click).
+pub fn nova_up_sfx_wav() -> Vec<u8> {
+    render_sfx(0.45, |t, _| {
+        let k = (t / 0.45).min(1.0);
+        let f = 320.0 * (960.0f32 / 320.0).powf(k); // glide up 320 → 960 Hz
+        let env = (t / 0.09).min(1.0) * (-t * 6.5).exp(); // gentle attack, soft tail
+        ((TAU * f * t).sin() + 0.35 * (TAU * f * 1.5 * t).sin()) * env * 0.5
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -594,6 +622,8 @@ mod tests {
             achievement_sfx_wav(),
             life_sfx_wav(),
             toggle_sfx_wav(),
+            nova_pop_sfx_wav(),
+            nova_up_sfx_wav(),
         ] {
             assert_eq!(&wav[0..4], b"RIFF", "sfx starts with a RIFF header");
             assert_eq!(&wav[8..12], b"WAVE", "sfx is a WAVE file");

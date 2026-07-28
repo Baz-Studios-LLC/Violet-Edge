@@ -5,6 +5,13 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
+- **NEW POWERUP: the Nova Shield** — the Pulsar (wave 25) now drops its reward orb. A regenerating
+  **one-hit barrier**: while up it eats one lethal hit — any hit: rock, mine, boss, beam — and collapses;
+  after ~9 seconds it **flickers back online**. Get hit while it's down and that's a life, as normal. The
+  player inherits the Pulsar's own lit-invulnerable ↔ dark-vulnerable rhythm: a glassy violet ring shows
+  it's up, blinks as it re-lights, with its own shatter / re-light sounds.
+- **Bolder post-warp crackle.** The electric flicker the grid does around a warp is much more pronounced
+  (amplitude only — the crackle rate is unchanged and stays photosensitivity-safe).
 - **Optimized for any screen size.** The game now renders at a consistent apparent size on every monitor.
   The camera scale-to-fits a fixed design height to the window, so a bigger screen *magnifies* the action
   instead of revealing a vast, sparse empty arena (the cause of it "looking odd" on larger displays). The
