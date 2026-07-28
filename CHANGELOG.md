@@ -3,7 +3,7 @@
 Patch notes for the Rust + Bevy build. Newest first. (Releases are cut to GitHub and picked up by the
 Baz Studios launcher.) **Keep this current with every change** — it's the record testers read.
 
-## Unreleased
+## v0.4.2 — Stronger aim assist (2026-07-28)
 
 - **Aim assist, turned up.** Small targets were still too hard to hit, so the assist is now much more
   forgiving: the snap **cone roughly doubled** (~6° → ~11°), a shot also snaps if it would **pass within a
