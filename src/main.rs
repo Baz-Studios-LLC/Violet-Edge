@@ -373,6 +373,25 @@ fn bullet_boss_power(mass: bool) -> i32 {
         1
     }
 }
+// The player ship's hull — the VIOLET EDGE arrow, matching the logo: a long needle nose, slim
+// shoulders, wing barbs swept back-and-out with deep inner cuts, and a center tail spike (the comet
+// tail itself is the thrust flame, drawn behind). Local coords, nose = +X, closed loop (last == first).
+// `scale` ≈ SHIP_R for the real ship; the HUD lives icon passes a mini scale.
+fn ship_hull(scale: f32) -> [Vec2; 9] {
+    [
+        Vec2::new(1.55, 0.0),   // needle nose — the logo's long point (visual only; the hitbox stays SHIP_R)
+        Vec2::new(-0.10, 0.34), // slim upper shoulder
+        Vec2::new(-0.80, 0.95), // upper wing barb, swept back + out
+        Vec2::new(-0.45, 0.26), // the barb's deep inner return — the arrowhead cut
+        Vec2::new(-0.90, 0.0),  // center tail spike (comet-tail root)
+        Vec2::new(-0.45, -0.26),
+        Vec2::new(-0.80, -0.95),
+        Vec2::new(-0.10, -0.34),
+        Vec2::new(1.55, 0.0),
+    ]
+    .map(|v| v * scale)
+}
+
 fn rock_color() -> Color {
     Color::srgb(0.25, 1.9, 4.0)
 } // neon blue (peak dialled back ~20% to ease the bloom)
@@ -5267,22 +5286,16 @@ fn render(
         }
         let rot = Vec2::from_angle(s.angle);
         if s.flame > 0.02 {
+            // the comet tail — long and needle-thin off the tail spike, like the logo's trailing streak
             let f = s.flame * (0.6 + 0.4 * (t * 40.0).sin().abs());
             let flame = [
-                c + rot.rotate(Vec2::new(-SHIP_R * 0.5, -5.0)),
-                c + rot.rotate(Vec2::new(-SHIP_R * 0.5 - 17.0 * f, 0.0)),
-                c + rot.rotate(Vec2::new(-SHIP_R * 0.5, 5.0)),
+                c + rot.rotate(Vec2::new(-SHIP_R * 0.8, -4.0)),
+                c + rot.rotate(Vec2::new(-SHIP_R * 0.8 - 26.0 * f, 0.0)),
+                c + rot.rotate(Vec2::new(-SHIP_R * 0.8, 4.0)),
             ];
             gizmos.linestrip_2d(flame, dim(flame_color(), f));
         }
-        let hull = [
-            Vec2::new(SHIP_R, 0.0),
-            Vec2::new(-SHIP_R * 0.7, -SHIP_R * 0.7),
-            Vec2::new(-SHIP_R * 0.4, 0.0),
-            Vec2::new(-SHIP_R * 0.7, SHIP_R * 0.7),
-            Vec2::new(SHIP_R, 0.0),
-        ];
-        let pts: Vec<Vec2> = hull.iter().map(|v| c + rot.rotate(*v)).collect();
+        let pts: Vec<Vec2> = ship_hull(SHIP_R).iter().map(|v| c + rot.rotate(*v)).collect();
         gizmos.linestrip_2d(pts, sc);
     }
 
@@ -5291,13 +5304,8 @@ fn render(
         let life_col = dim(sc, flick(hud_flash.life > 0.0)); // flickers briefly on a new life
         for k in 0..run.lives.max(0) {
             let p = Vec2::new(h.x - 32.0 - k as f32 * 24.0, h.y - 48.0);
-            let icon = [
-                p + Vec2::new(0.0, 9.0),
-                p + Vec2::new(-7.0, -7.0),
-                p + Vec2::new(0.0, -3.0),
-                p + Vec2::new(7.0, -7.0),
-                p + Vec2::new(0.0, 9.0),
-            ];
+            // the same arrow hull as the ship, mini + rotated nose-up ((x,y) → (-y,x))
+            let icon: Vec<Vec2> = ship_hull(6.5).iter().map(|v| p + Vec2::new(-v.y, v.x)).collect();
             gizmos.linestrip_2d(icon, life_col);
         }
     }
@@ -6555,21 +6563,14 @@ fn render_boss(
     for (ds, dtf) in &departing {
         let c = dtf.translation.truncate();
         let sc = ship_color();
-        // thrust flame out the back (west), flickering
+        // comet-tail flame out the back (west), flickering — full-burn for the send-off
         let fl = 0.7 + 0.3 * ds.flame.sin();
         gizmos.linestrip_2d(
-            [c + Vec2::new(-SHIP_R * 0.5, -5.0), c + Vec2::new(-SHIP_R * 0.5 - 22.0 * fl, 0.0), c + Vec2::new(-SHIP_R * 0.5, 5.0)],
+            [c + Vec2::new(-SHIP_R * 0.8, -4.0), c + Vec2::new(-SHIP_R * 0.8 - 30.0 * fl, 0.0), c + Vec2::new(-SHIP_R * 0.8, 4.0)],
             dim(flame_color(), fl),
         );
-        // hull (nose = +X = east)
-        let hull = [
-            Vec2::new(SHIP_R, 0.0),
-            Vec2::new(-SHIP_R * 0.7, -SHIP_R * 0.7),
-            Vec2::new(-SHIP_R * 0.4, 0.0),
-            Vec2::new(-SHIP_R * 0.7, SHIP_R * 0.7),
-            Vec2::new(SHIP_R, 0.0),
-        ];
-        gizmos.linestrip_2d(hull.iter().map(|v| c + *v).collect::<Vec<_>>(), sc);
+        // hull (nose = +X = east) — the same arrow as in play
+        gizmos.linestrip_2d(ship_hull(SHIP_R).iter().map(|v| c + *v).collect::<Vec<_>>(), sc);
     }
 
     // cameo: the boss THAT'S ACTUALLY COMING drifts by in the background during the run-up — its own

@@ -18,6 +18,10 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
   Out** (bosses 3–5), **Minesweeper** (250 mines), and **Gold Rush** (25 extra lives earned). Lifetime
   grind targets raised across the board (1,000 blue / 500 green) — you'll die a lot; these are careers,
   not errands. Old save files carry over cleanly.
+- **The ship now matches the logo.** The hull is the VIOLET EDGE arrow itself — a long needle nose, slim
+  shoulders, wing barbs swept back with deep arrowhead cuts, and a tail spike trailing a longer comet-tail
+  thrust flame. Same everywhere it appears: in play, the lives icons, and the finale send-off. (The hitbox
+  is unchanged — the extra nose length is pure visual, so it plays as forgiving, never stricter.)
 - **Optimized for any screen size.** The game now renders at a consistent apparent size on every monitor.
   The camera scale-to-fits a fixed design height to the window, so a bigger screen *magnifies* the action
   instead of revealing a vast, sparse empty arena (the cause of it "looking odd" on larger displays). The
