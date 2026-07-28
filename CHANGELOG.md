@@ -26,11 +26,13 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
   Belt really is, what sent the Haunt, and why the story isn't over. The BRIEFING opens cold and urgent
   (a mass approaching fast; the prototype VIOLET CUTTER deployed — one pilot, possibly the only chance).
   The ending scene itself is unchanged — the core's escape was always the sequel.
-- **A Tron-style light ribbon replaces the exhaust sparks.** The spark particles that used to trail behind
-  the ship as broken dashes are gone. In their place: a **short, fading light ribbon** in the ship's own
-  violet — the light-cycle wall, minus the length and the lethality. Purely cosmetic, gone when you stop.
-  The thrust flame stays exactly as it was, and the hull is untouched (the classic dart). The finale
-  send-off ship streams the same ribbon at full burn.
+- **A Tron-style light ribbon replaces the exhaust sparks — and the ship is solid neon now.** The spark
+  particles that used to trail behind the ship as broken dashes are gone. In their place: a **fading light
+  ribbon** in the ship's own violet, streaming from the exhaust — the light-cycle wall, minus the
+  lethality (~half a second long, tapering to a point, purely cosmetic). The thrust flame stays exactly as
+  it was, the hull keeps its classic dart shape, and it's now **filled solid in the ship's neon purple** —
+  the one filled body in a wireframe world, so the player always pops. The finale send-off ship gets the
+  same filled hull + ribbon.
 - **Optimized for any screen size.** The game now renders at a consistent apparent size on every monitor.
   The camera scale-to-fits a fixed design height to the window, so a bigger screen *magnifies* the action
   instead of revealing a vast, sparse empty arena (the cause of it "looking odd" on larger displays). The

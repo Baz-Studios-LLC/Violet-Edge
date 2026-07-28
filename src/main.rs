@@ -321,7 +321,7 @@ const HUD_FLASH_TIME: f32 = 0.7; // s the warp pips / life icons flicker after r
 const SHOT_MODE_SHOW: f32 = 1.4; // s the "MASS/STANDARD SHOT" label lingers after a toggle
 const SPAWN_INVULN: f32 = 2.0; // s of blink-invulnerability on (re)spawn
 const TRAIL_LEN: usize = 10; // bullet trail points kept
-const SHIP_TRAIL_LEN: usize = 16; // ship light-trail points kept — SHORT (~a quarter second of motion)
+const SHIP_TRAIL_LEN: usize = 28; // ship light-ribbon points kept (~half a second of motion — Tron-short, extended per playtest)
 const STAR_COUNT: usize = 90;
 // The game renders at a fixed DESIGN height, scale-to-fit to the window: on ANY monitor the camera
 // magnifies so DESIGN_H world-units fill the window height (a bigger screen magnifies — it does NOT reveal
@@ -388,9 +388,16 @@ fn ship_hull() -> [Vec2; 5] {
 }
 
 // Draw the ship at `c`, facing `rot` (a unit vector), `scale` ≈ SHIP_R (the HUD icons pass a mini scale).
-fn draw_ship(gizmos: &mut Gizmos, c: Vec2, rot: Vec2, scale: f32, color: Color) {
-    let pts: Vec<Vec2> = ship_hull().iter().map(|v| c + rot.rotate(*v * scale)).collect();
-    gizmos.linestrip_2d(pts, color);
+// `fill` paints the hull SOLID in its neon color — the ship, and ONLY the ship, is filled (user call);
+// everything else in the game stays wireframe. The fill is ten nested inset copies of the outline
+// (~1.5px apart at ship scale) that bloom fuses into a solid body — no mesh pipeline needed.
+fn draw_ship(gizmos: &mut Gizmos, c: Vec2, rot: Vec2, scale: f32, color: Color, fill: bool) {
+    let rings = if fill { 10 } else { 1 };
+    for r in 0..rings {
+        let k = 1.0 - r as f32 / rings as f32;
+        let pts: Vec<Vec2> = ship_hull().iter().map(|v| c + rot.rotate(*v * k * scale)).collect();
+        gizmos.linestrip_2d(pts, color);
+    }
 }
 
 // The Tron light ribbon: a fading band along `pts` (oldest → newest) in `color`. A hot center line
@@ -5333,7 +5340,7 @@ fn render(
             ];
             gizmos.linestrip_2d(flame, dim(flame_color(), f));
         }
-        draw_ship(&mut gizmos, c, rot, SHIP_R, sc);
+        draw_ship(&mut gizmos, c, rot, SHIP_R, sc, true); // filled — the solid neon hull
     }
 
     // lives HUD icons (top-right, under the "LIVES" label) — only while a run is on
@@ -5341,8 +5348,9 @@ fn render(
         let life_col = dim(sc, flick(hud_flash.life > 0.0)); // flickers briefly on a new life
         for k in 0..run.lives.max(0) {
             let p = Vec2::new(h.x - 32.0 - k as f32 * 24.0, h.y - 48.0);
-            // the same dart as the ship, mini + nose-up (rot = +90°: Vec2::Y rotates (x,y) → (-y,x))
-            draw_ship(&mut gizmos, p, Vec2::Y, 9.0, life_col);
+            // the same dart as the ship, mini + nose-up (rot = +90°: Vec2::Y rotates (x,y) → (-y,x));
+            // outline only — the fill is the SHIP's, not the HUD symbols'
+            draw_ship(&mut gizmos, p, Vec2::Y, 9.0, life_col, false);
         }
     }
 
@@ -6609,8 +6617,8 @@ fn render_boss(
             [c + Vec2::new(-SHIP_R * 0.5, -5.0), c + Vec2::new(-SHIP_R * 0.5 - 22.0 * fl, 0.0), c + Vec2::new(-SHIP_R * 0.5, 5.0)],
             dim(flame_color(), fl),
         );
-        // hull (nose = +X = east) — the same dart as in play
-        draw_ship(&mut gizmos, c, Vec2::X, SHIP_R, sc);
+        // hull (nose = +X = east) — the same filled dart as in play
+        draw_ship(&mut gizmos, c, Vec2::X, SHIP_R, sc, true);
     }
 
     // cameo: the boss THAT'S ACTUALLY COMING drifts by in the background during the run-up — its own
