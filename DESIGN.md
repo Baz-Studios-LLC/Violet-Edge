@@ -240,9 +240,12 @@ run is perfected**.
     the group cycle) so the finale can be tested without clearing 29 waves. Dev F2 sets phase 3 + zero → the
     win path in one press. (Dev keys are gated to the Playing state.)
   **The standard run is beatable end-to-end — six bosses, waves 1–30.** Still open: the **Magnet** (§C)
-  powerup drop (the Nova Shield ✅ shipped); an **achievements pass for the 30-wave era** (the "beat the
-  game" achievement still triggers at the old wave-10 arc and the real wave-30 win records nothing); then
-  balance tuning.
+  powerup drop (the Nova Shield ✅ shipped); then balance tuning. The **achievements pass ✅ shipped
+  (2026-07-28)**: 12 achievements — every boss has one, *Edgelord*/"beat the game" now keys on the real
+  wave-30 Haunt kill (recorded at the erupt, with *Purist* riding the same moment), plus lifetime grinds
+  (`ACH_BLUE` 1000 / `ACH_GREEN` 500 / `ACH_MINES` 250 / `ACH_GOLDS` 25 — deliberately steep: players die
+  a lot and stats span every run). Save format extended 6 → 12 fields, old saves load with the new fields
+  defaulted (nothing lost, nothing wrongly granted).
 
 The Slinger (§C, ✅): boss 3, wave 15 — a large **ice-blue gunship** (its nose/cannon tracks the
 player; unique boss colour, apart from the Warden's magenta + Devourer's red). Glides in, then hovers

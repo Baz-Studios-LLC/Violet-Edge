@@ -12,6 +12,12 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
   it's up, blinks as it re-lights, with its own shatter / re-light sounds.
 - **Bolder post-warp crackle.** The electric flicker the grid does around a warp is much more pronounced
   (amplitude only — the crackle rate is unchanged and stays photosensitivity-safe).
+- **Achievements overhauled — 7 → 12, and "beat the game" is finally honest.** *Edgelord* used to unlock at
+  boss 2 (the old 10-wave arc); it now requires the real thing: **defeating the Haunt at wave 30** — and
+  *Purist* likewise now demands the full no-powerup run. New achievements: **Outgunned / Defused / Lights
+  Out** (bosses 3–5), **Minesweeper** (250 mines), and **Gold Rush** (25 extra lives earned). Lifetime
+  grind targets raised across the board (1,000 blue / 500 green) — you'll die a lot; these are careers,
+  not errands. Old save files carry over cleanly.
 - **Optimized for any screen size.** The game now renders at a consistent apparent size on every monitor.
   The camera scale-to-fits a fixed design height to the window, so a bigger screen *magnifies* the action
   instead of revealing a vast, sparse empty arena (the cause of it "looking odd" on larger displays). The
