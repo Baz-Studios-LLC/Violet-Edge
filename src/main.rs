@@ -7087,13 +7087,54 @@ fn text_f(font: &Handle<Font>, font_size: f32, color: Color, s: &str) -> (Text, 
     (Text::new(s), TextFont { font: font.clone(), font_size, ..default() }, TextColor(color))
 }
 
-fn spawn_pause_ui(mut commands: Commands, font: Res<MenuFont>) {
+fn spawn_pause_ui(
+    mut commands: Commands,
+    bindings: Res<Bindings>,
+    method: Res<InputMethod>,
+    pads: Query<(), With<Gamepad>>,
+    font: Res<MenuFont>,
+) {
     let root = overlay(&mut commands, PauseUi, 0.72);
     let f = &font.0;
+    // CONTROLS reference (read-only): the ACTIVE device's current binds, so nobody has to quit a run
+    // to remember a key. Snapshotted at pause time — rebinding only happens on the menu's Controls
+    // screen, so the binds can't change while this is up. Rebind hint at the bottom.
+    let active = method.active(!pads.is_empty());
+    let list = if active == InputMethod::Controller { &bindings.pad } else { &bindings.kbm };
+    let rows: [(&str, Action); 8] = [
+        ("THRUST", Action::Thrust),
+        ("TURN LEFT", Action::TurnLeft),
+        ("TURN RIGHT", Action::TurnRight),
+        ("FIRE", Action::Fire),
+        ("WARP", Action::Warp),
+        ("CHAIN BEAM", Action::Chain),
+        ("SHOT MODE", Action::ToggleShot),
+        ("MUTE", Action::Mute),
+    ];
+    let head = Color::srgb(0.72, 0.76, 0.9);
+    let key_col = Color::srgb(0.85, 0.88, 1.0);
     commands.entity(root).with_children(|p| {
         p.spawn(text_f(f, 54.0, title_color(), "PAUSED"));
         menu_button(p, f, MenuAction::Resume, "RESUME  (Esc)");
         menu_button(p, f, MenuAction::Quit, "QUIT TO MENU  (Q)");
+        p.spawn((text_f(f, 20.0, title_color(), "CONTROLS"), Node { margin: UiRect::top(Val::Px(18.0)), ..default() }));
+        p.spawn(text_f(f, 12.0, dim(head, 0.8), &format!("({})", active.label())));
+        for (name, action) in rows {
+            // compact two-column row (narrower than the menu screens' table — it's a reference card)
+            p.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(18.0),
+                width: Val::Px(340.0),
+                padding: UiRect::vertical(Val::Px(2.0)),
+                ..default()
+            })
+            .with_children(|row| {
+                row.spawn((text_f(f, 14.0, head, name), Node { width: Val::Px(150.0), ..default() }));
+                row.spawn(text_f(f, 14.0, key_col, &binds_label(list, action)));
+            });
+        }
+        p.spawn((text_f(f, 12.0, dim(head, 0.75), "Rebind from the main menu's CONTROLS screen."), Node { margin: UiRect::top(Val::Px(8.0)), ..default() }));
     });
 }
 

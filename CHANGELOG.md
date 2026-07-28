@@ -3,8 +3,11 @@
 Patch notes for the Rust + Bevy build. Newest first. (Releases are cut to GitHub and picked up by the
 Baz Studios launcher.) **Keep this current with every change** — it's the record testers read.
 
-## Unreleased
+## v0.4.3 — Nova Shield, achievements, the Pilot Log, and a real HUD (2026-07-28)
 
+- **Pause now shows your controls.** The pause menu carries a read-only controls card — every action with
+  its current binding, for whichever device you're actually using — so checking a key never costs a run.
+  (Rebinding stays on the main menu's CONTROLS screen.)
 - **NEW POWERUP: the Nova Shield** — the Pulsar (wave 25) now drops its reward orb. A regenerating
   **one-hit barrier**: while up it eats one lethal hit — any hit: rock, mine, boss, beam — and collapses;
   after ~9 seconds it **flickers back online**. Get hit while it's down and that's a life, as normal. The
