@@ -26,10 +26,13 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
   Belt really is, what sent the Haunt, and why the story isn't over. The BRIEFING opens cold and urgent
   (a mass approaching fast; the prototype VIOLET CUTTER deployed — one pilot, possibly the only chance).
   The ending scene itself is unchanged — the core's escape was always the sequel.
-- **The ship now matches the logo.** The hull is the VIOLET EDGE arrow itself — a long needle nose, slim
-  shoulders, wing barbs swept back with deep arrowhead cuts, and a tail spike trailing a longer comet-tail
-  thrust flame. Same everywhere it appears: in play, the lives icons, and the finale send-off. (The hitbox
-  is unchanged — the extra nose length is pure visual, so it plays as forgiving, never stricter.)
+- **The ship now matches the logo — comet tail included.** The hull is the VIOLET EDGE arrow itself: a
+  long needle nose, slim shoulders, wing barbs swept back with deep arrowhead cuts, and a tail spike. The
+  old triangular exhaust flame (which broke into "sparks" at speed) is **replaced by a short light trail
+  that fades** — bright under thrust, a faint ghost while coasting, gone when you're still. Same hull
+  everywhere it appears: in play, the lives icons, and the finale send-off (which now streams a full-burn
+  trail). The hitbox is unchanged — the extra nose length is pure visual, so it plays forgiving, never
+  stricter.
 - **Optimized for any screen size.** The game now renders at a consistent apparent size on every monitor.
   The camera scale-to-fits a fixed design height to the window, so a bigger screen *magnifies* the action
   instead of revealing a vast, sparse empty arena (the cause of it "looking odd" on larger displays). The

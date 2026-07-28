@@ -321,6 +321,7 @@ const HUD_FLASH_TIME: f32 = 0.7; // s the warp pips / life icons flicker after r
 const SHOT_MODE_SHOW: f32 = 1.4; // s the "MASS/STANDARD SHOT" label lingers after a toggle
 const SPAWN_INVULN: f32 = 2.0; // s of blink-invulnerability on (re)spawn
 const TRAIL_LEN: usize = 10; // bullet trail points kept
+const SHIP_TRAIL_LEN: usize = 16; // ship light-trail points kept — SHORT (~a quarter second of motion)
 const STAR_COUNT: usize = 90;
 // The game renders at a fixed DESIGN height, scale-to-fit to the window: on ANY monitor the camera
 // magnifies so DESIGN_H world-units fill the window height (a bigger screen magnifies — it does NOT reveal
@@ -380,13 +381,13 @@ fn bullet_boss_power(mass: bool) -> i32 {
 fn ship_hull(scale: f32) -> [Vec2; 9] {
     [
         Vec2::new(1.55, 0.0),   // needle nose — the logo's long point (visual only; the hitbox stays SHIP_R)
-        Vec2::new(-0.10, 0.34), // slim upper shoulder
-        Vec2::new(-0.80, 0.95), // upper wing barb, swept back + out
-        Vec2::new(-0.45, 0.26), // the barb's deep inner return — the arrowhead cut
-        Vec2::new(-0.90, 0.0),  // center tail spike (comet-tail root)
-        Vec2::new(-0.45, -0.26),
-        Vec2::new(-0.80, -0.95),
-        Vec2::new(-0.10, -0.34),
+        Vec2::new(-0.14, 0.28), // slim upper shoulder (kept narrow so the nose reads needle-sharp)
+        Vec2::new(-0.85, 0.88), // upper wing barb, swept back + out
+        Vec2::new(-0.48, 0.20), // the barb's deep inner return — the arrowhead cut
+        Vec2::new(-0.95, 0.0),  // center tail spike (comet-tail root)
+        Vec2::new(-0.48, -0.20),
+        Vec2::new(-0.85, -0.88),
+        Vec2::new(-0.14, -0.28),
         Vec2::new(1.55, 0.0),
     ]
     .map(|v| v * scale)
@@ -1041,6 +1042,15 @@ struct EscapeShard {
 struct DepartingShip {
     flame: f32, // thrust flicker
 }
+
+// A short LIGHT TRAIL behind the ship — recent world positions drawn as fading segments (the logo's
+// comet tail). Replaces the old triangular exhaust flame, which broke into "sparks" at speed (it was
+// redrawn somewhere new each frame). Its own component rather than a Ship field so the many test
+// `Ship { .. }` literals stay untouched; `spawn_player` (and the finale's DepartingShip) attach it,
+// and `ship_trail` records into any entity that carries it. Stationary, the points coincide and the
+// trail vanishes on its own.
+#[derive(Component, Default)]
+struct ShipTrail(Vec<Vec2>);
 
 impl Phantom {
     // Fresh finale core, phase 1 with a full phase pool. Ray starts Idle with the first-sweep grace.
@@ -1801,6 +1811,7 @@ fn spawn_hud(mut commands: Commands) {
 fn spawn_player(commands: &mut Commands) {
     commands.spawn((
         Ship { angle: TAU / 4.0, cooldown: 0.0, invuln: SPAWN_INVULN, flame: 0.0 },
+        ShipTrail::default(),
         Velocity(Vec2::ZERO),
         Transform::from_xyz(0.0, 0.0, 0.0),
     ));
@@ -2548,6 +2559,18 @@ fn bullet_trail(mut q: Query<(&Transform, &mut Bullet)>) {
         if b.trail.len() > TRAIL_LEN {
             let extra = b.trail.len() - TRAIL_LEN;
             b.trail.drain(0..extra);
+        }
+    }
+}
+
+// Lay down the ship's light trail (same recording pattern as bullet_trail). Component-driven, so it
+// also feeds the finale's DepartingShip.
+fn ship_trail(mut q: Query<(&Transform, &mut ShipTrail)>) {
+    for (t, mut tr) in &mut q {
+        tr.0.push(t.translation.truncate());
+        if tr.0.len() > SHIP_TRAIL_LEN {
+            let extra = tr.0.len() - SHIP_TRAIL_LEN;
+            tr.0.drain(0..extra);
         }
     }
 }
@@ -4951,7 +4974,7 @@ fn render(
     abilities: (Res<Warp>, Res<Chain>, Res<State<GameState>>, Res<HudFlash>, Res<Run>),
     wf: Res<WarpField>,
     stars: Query<(&Star, &Transform)>,
-    ships: Query<(&Ship, &Transform)>,
+    ships: Query<(&Ship, &Transform, Option<&ShipTrail>)>,
     asteroids: Query<(&Asteroid, &Transform, Option<&Gold>, Option<&Explosive>, Option<&Detonating>, Option<&Pulser>, Option<&Red>)>,
     bullets: Query<(&Bullet, &Transform)>,
     particles: Query<(&Particle, &Transform)>,
@@ -5261,9 +5284,9 @@ fn render(
         }
     }
 
-    // ship — flame + hull (blinks while invulnerable)
+    // ship — light trail + hull (blinks while invulnerable)
     let sc = ship_color();
-    for (s, st) in &ships {
+    for (s, st, trail) in &ships {
         let c = st.translation.truncate();
         // DEV invincibility: a steady shield ring so it's obvious god-mode is on.
         // Drawn before the blink skip so it stays visible through respawn flicker.
@@ -5289,15 +5312,16 @@ fn render(
             continue; // spawn-protection blink at ~3 Hz (was 6 — kept ≤3/sec so it doesn't strobe)
         }
         let rot = Vec2::from_angle(s.angle);
-        if s.flame > 0.02 {
-            // the comet tail — long and needle-thin off the tail spike, like the logo's trailing streak
-            let f = s.flame * (0.6 + 0.4 * (t * 40.0).sin().abs());
-            let flame = [
-                c + rot.rotate(Vec2::new(-SHIP_R * 0.8, -4.0)),
-                c + rot.rotate(Vec2::new(-SHIP_R * 0.8 - 26.0 * f, 0.0)),
-                c + rot.rotate(Vec2::new(-SHIP_R * 0.8, 4.0)),
-            ];
-            gizmos.linestrip_2d(flame, dim(flame_color(), f));
+        // the short LIGHT TRAIL — fading segments along the ship's recent motion (the logo's comet
+        // tail, replacing the old exhaust flame that broke into "sparks" at speed). Brightens under
+        // thrust; coasting leaves only a faint ghost. Stationary, it vanishes on its own.
+        if let Some(tr) = trail {
+            let n = tr.0.len();
+            let burn = 0.3 + 0.7 * s.flame.clamp(0.0, 1.0);
+            for i in 1..n {
+                let f = i as f32 / n as f32; // 0 = oldest → 1 = at the ship
+                gizmos.line_2d(tr.0[i - 1], tr.0[i], dim(flame_color(), (0.04 + 0.55 * f * f) * burn));
+            }
         }
         let pts: Vec<Vec2> = ship_hull(SHIP_R).iter().map(|v| c + rot.rotate(*v)).collect();
         gizmos.linestrip_2d(pts, sc);
@@ -5679,7 +5703,7 @@ fn phantom_update(
                 for (se, stf2, _) in &ships {
                     launched_ship = true;
                     let sp = stf2.translation.truncate();
-                    commands.spawn((DepartingShip { flame: 0.0 }, Transform::from_xyz(sp.x, sp.y, 0.0)));
+                    commands.spawn((DepartingShip { flame: 0.0 }, ShipTrail::default(), Transform::from_xyz(sp.x, sp.y, 0.0)));
                     burst(&mut commands, sp, ship_color(), 30, 320.0, &mut rng);
                     commands.entity(se).despawn();
                     sfx.write(SoundFx::Haunt);
@@ -6333,7 +6357,7 @@ fn render_boss(
     pulsars: Query<(&Pulsar, &Transform)>,
     phantoms: Query<(&Phantom, &Transform)>,
     // the Haunt's extra visuals bundled into one param (three separate queries would exceed Bevy's 16-param limit)
-    haunt: (Query<(&Possessed, &Transform)>, Query<(&SpectralTrail, &Transform)>, Query<(&EscapeShard, &Transform)>, Query<(&DepartingShip, &Transform)>),
+    haunt: (Query<(&Possessed, &Transform)>, Query<(&SpectralTrail, &Transform)>, Query<(&EscapeShard, &Transform)>, Query<(&DepartingShip, &Transform, Option<&ShipTrail>)>),
     prime_targets: Query<&Transform, With<Asteroid>>,
     cannonballs: Query<(&Cannonball, &Transform)>,
     players: Query<&Transform, (With<Ship>, Without<Slinger>)>,
@@ -6563,16 +6587,18 @@ fn render_boss(
     }
 
     // ── the hero's DEPARTING ship: warps off east after the shard — a ship silhouette (nose east) with a
-    //    hard thrust flame streaming behind it ──
-    for (ds, dtf) in &departing {
+    //    bright light trail streaming behind it (full-burn for the send-off) ──
+    for (ds, dtf, dtrail) in &departing {
         let c = dtf.translation.truncate();
         let sc = ship_color();
-        // comet-tail flame out the back (west), flickering — full-burn for the send-off
-        let fl = 0.7 + 0.3 * ds.flame.sin();
-        gizmos.linestrip_2d(
-            [c + Vec2::new(-SHIP_R * 0.8, -4.0), c + Vec2::new(-SHIP_R * 0.8 - 30.0 * fl, 0.0), c + Vec2::new(-SHIP_R * 0.8, 4.0)],
-            dim(flame_color(), fl),
-        );
+        let fl = 0.85 + 0.15 * ds.flame.sin(); // gentle shimmer on the full-burn trail
+        if let Some(tr) = dtrail {
+            let n = tr.0.len();
+            for i in 1..n {
+                let f = i as f32 / n as f32;
+                gizmos.line_2d(tr.0[i - 1], tr.0[i], dim(flame_color(), (0.05 + 0.7 * f * f) * fl));
+            }
+        }
         // hull (nose = +X = east) — the same arrow as in play
         gizmos.linestrip_2d(ship_hull(SHIP_R).iter().map(|v| c + *v).collect::<Vec<_>>(), sc);
     }
@@ -8346,6 +8372,7 @@ fn main() {
                     warp_fire,
                     integrate,
                     bullet_trail,
+                    ship_trail,
                     warp_missile_update,
                     black_hole_update,
                     update_warp_field,
