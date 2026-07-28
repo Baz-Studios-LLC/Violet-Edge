@@ -275,6 +275,36 @@ lobber stays off 11–15 via `enemy_target`. **Warp kills it**
 bosses, and boss-held rocks). **Pass-2 TODO:** direct hits from the orange blast + chain beam (today
 those kill it only by destroying whatever rock it's on).
 
+## Lore (CANON — user-set 2026-07-28) ✅ implemented
+
+**THE ARCHITECT** is the true antagonist: an entity that **destroys planets and shelves the pieces**
+— the Belt is its *collection*, and **every asteroid is a chunk of a murdered world**. The Haunt
+(the Phantom, boss 6) is its **steersman** — the Architect's hand, sent ahead to take the player's
+world; each earlier boss is one of its instruments (Warden = the collection's keeper, Glutton =
+renders the dead worlds down, Slinger = fires planet-shards as ammunition, Detonator = arms the
+wreckage, Pulsar = the herdsman whose beat drives the Belt). The wave-30 death scene is canon: the
+Haunt's **core flees east — it was NOT destroyed** — and the ship gives chase. **That escape is the
+sequel hook**; the ending scene itself is final (user: "the ending is fine").
+
+**KEEP THE MYSTERY (user rule, 2026-07-28):** the destroyed-worlds truth is never stated up front — it
+is **paced**. The story is told as the **PILOT LOG**: field reports the Violet Cutter's pilot transmits
+home, one per contact, written in first person. The arc: anomaly (a field *holding formation*) → a
+keeper?? (Warden) → wrong minerals in the debris (Glutton — "rerunning the assay") → these things
+*operate* the field (Slinger) → **strata in the rock** — dread, unsaid (Detonator) → the heading is HOME,
+"this is a delivery" (Pulsar) → the steersman, "an acquisition", the core flees (Haunt) → only the FINAL
+entry says it plainly: the ARCHITECT breaks worlds for parts, "every rock I've shot was somebody's
+ground. I'm going after it." (the sequel).
+
+Surfaces: the **BRIEFING** stays mystery-clean (user's text: a large mass approaching fast, the VIOLET
+CUTTER deployed — a prototype ship, one pilot, possibly the only chance; closer kept: "Cut the field.
+Hold the edge."); the **PILOT LOG screen** (main menu, `GameState::Lore`, button `PILOT LOG n/8`) holds
+the 8 reports — THE BELT readable from the start, each boss's report **decrypting when that boss first
+falls** (gated on the lifetime `Stats` flags), the wave-30 win opening THE HAUNT + THE ARCHITECT
+(`lore_entries`); locked rows read "▮▮▮ NO SIGNAL / Awaiting transmission — survive wave N." The
+**victory screen** names the Architect once ("Far past the edge, the ARCHITECT is still building" — safe
+there: the mystery is already resolved by then). Deliberate UX call: **no lore prose on the mid-combat
+WARNING banners** (unreadable during a run-up; the log carries it).
+
 ## Life economy (implemented: gold 1UP rock)
 
 50 levels on 3 lives is likely impossible, especially a no-powerup **Purist** run — so lives are

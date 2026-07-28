@@ -18,6 +18,14 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
   Out** (bosses 3–5), **Minesweeper** (250 mines), and **Gold Rush** (25 extra lives earned). Lifetime
   grind targets raised across the board (1,000 blue / 500 green) — you'll die a lot; these are careers,
   not errands. Old save files carry over cleanly.
+- **Actual lore — the PILOT LOG.** The game has a story now, and it stays a mystery you assemble. A new
+  **PILOT LOG** screen on the main menu holds the field reports your pilot transmits home — one per
+  contact, **decrypting the first time each boss falls**. The early reports only observe (a field holding
+  formation… a thing *penning* rocks?); the truth accumulates in details — wrong minerals in the debris,
+  strata inside a cracked rock, a plotted heading — and only the **final entry** says it plainly: what the
+  Belt really is, what sent the Haunt, and why the story isn't over. The BRIEFING opens cold and urgent
+  (a mass approaching fast; the prototype VIOLET CUTTER deployed — one pilot, possibly the only chance).
+  The ending scene itself is unchanged — the core's escape was always the sequel.
 - **The ship now matches the logo.** The hull is the VIOLET EDGE arrow itself — a long needle nose, slim
   shoulders, wing barbs swept back with deep arrowhead cuts, and a tail spike trailing a longer comet-tail
   thrust flame. Same everywhere it appears: in play, the lives icons, and the finale send-off. (The hitbox

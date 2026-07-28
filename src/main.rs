@@ -773,6 +773,7 @@ enum GameState {
     #[default]
     Menu,
     Achievements, // the achievements screen, reached from the main menu
+    Lore,         // the lore archive — entries decrypt as bosses fall (reached from the main menu)
     Controls,     // input method + key/button rebinding, reached from the main menu
     Briefing,     // the lore + objectives screen, reached from the main menu
     Playing,
@@ -1223,6 +1224,8 @@ struct ControlsUi;
 #[derive(Component)]
 struct BriefingUi;
 #[derive(Component)]
+struct LoreUi;
+#[derive(Component)]
 struct Hud; // HUD roots — hidden on the menu screens
 
 // Clickable menu buttons (mouse), mirrored by the keyboard shortcuts.
@@ -1232,6 +1235,7 @@ enum MenuAction {
     Achievements,
     Controls, // main menu → the controls / input-rebinding screen
     Briefing,
+    Lore, // main menu → the lore archive
     Back,   // return to the main menu from a sub-screen
     Resume, // pause menu → back to the game
     Quit,   // pause menu → abandon the run to the main menu
@@ -6823,7 +6827,7 @@ fn pause_toggle(
                 next.set(GameState::Menu); // quit the run → OnEnter(Menu) wipes the field
             }
         }
-        GameState::Menu | GameState::Achievements | GameState::Controls | GameState::Briefing | GameState::GameOver | GameState::Victory => {}
+        GameState::Menu | GameState::Achievements | GameState::Lore | GameState::Controls | GameState::Briefing | GameState::GameOver | GameState::Victory => {}
     }
 }
 
@@ -6982,11 +6986,13 @@ fn spawn_victory_ui(mut commands: Commands, score: Res<Score>, font: Res<MenuFon
     // each line FADES IN on a stagger (see victory_reveal) — a slow, credits-style reveal, not a pop
     commands.entity(root).with_children(|p| {
         p.spawn((text_f(f, 54.0, title.with_alpha(0.0), "YOU SAVED THE PLANET"), VictoryLine { delay: 0.3, color: title }));
-        p.spawn((text_f(f, 19.0, body.with_alpha(0.0), "The belt is clear. The Phantom is gone. Home is safe."), VictoryLine { delay: 1.6, color: body }));
-        p.spawn((text_f(f, 24.0, body.with_alpha(0.0), &format!("FINAL SCORE   {}", score.0)), VictoryLine { delay: 2.8, color: body }, Node { margin: UiRect::top(Val::Px(8.0)), ..default() }));
-        p.spawn((text_f(f, 26.0, gold.with_alpha(0.0), "*  NEW GAME+ UNLOCKED  *"), VictoryLine { delay: 4.2, color: gold }, Node { margin: UiRect::top(Val::Px(16.0)), ..default() }));
-        p.spawn((text_f(f, 15.0, dim_c.with_alpha(0.0), "Replay waves 1-30 at higher difficulty - coming soon."), VictoryLine { delay: 5.2, color: dim_c }));
-        p.spawn((text_f(f, 20.0, prompt.with_alpha(0.0), "Main Menu  (Enter)"), VictoryLine { delay: 6.6, color: prompt }, Node { margin: UiRect::top(Val::Px(16.0)), ..default() }));
+        p.spawn((text_f(f, 19.0, body.with_alpha(0.0), "The Belt is still. The Haunt's core fled east. Home is safe - for now."), VictoryLine { delay: 1.6, color: body }));
+        // the canon's sequel hook, revealed last among the story beats: who the Haunt answered to
+        p.spawn((text_f(f, 16.0, dim_c.with_alpha(0.0), "Far past the edge, the ARCHITECT is still building."), VictoryLine { delay: 2.9, color: dim_c }));
+        p.spawn((text_f(f, 24.0, body.with_alpha(0.0), &format!("FINAL SCORE   {}", score.0)), VictoryLine { delay: 4.0, color: body }, Node { margin: UiRect::top(Val::Px(8.0)), ..default() }));
+        p.spawn((text_f(f, 26.0, gold.with_alpha(0.0), "*  NEW GAME+ UNLOCKED  *"), VictoryLine { delay: 5.4, color: gold }, Node { margin: UiRect::top(Val::Px(16.0)), ..default() }));
+        p.spawn((text_f(f, 15.0, dim_c.with_alpha(0.0), "Replay waves 1-30 at higher difficulty - coming soon."), VictoryLine { delay: 6.4, color: dim_c }));
+        p.spawn((text_f(f, 20.0, prompt.with_alpha(0.0), "Main Menu  (Enter)"), VictoryLine { delay: 7.8, color: prompt }, Node { margin: UiRect::top(Val::Px(16.0)), ..default() }));
     });
 }
 
@@ -7075,6 +7081,10 @@ fn menu_start(
         next.set(GameState::Briefing);
         return;
     }
+    if keys.just_pressed(KeyCode::KeyL) || actions.contains(&MenuAction::Lore) {
+        next.set(GameState::Lore);
+        return;
+    }
     // Play: Enter/Space or the button
     if !(keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) || actions.contains(&MenuAction::Play)) {
         return;
@@ -7136,10 +7146,11 @@ fn spawn_frame(commands: &mut Commands, marker: impl Component) {
     ));
 }
 
-fn spawn_menu_ui(mut commands: Commands, achieved: Res<Achievements>, intro: Res<TitleIntroPlayed>, hs: Res<HighScores>, logo: Res<LogoImage>, font: Res<MenuFont>) {
+fn spawn_menu_ui(mut commands: Commands, achieved: Res<Achievements>, stats: Res<Stats>, intro: Res<TitleIntroPlayed>, hs: Res<HighScores>, logo: Res<LogoImage>, font: Res<MenuFont>) {
     spawn_frame(&mut commands, MenuUi); // behind the content (spawned first)
     let root = overlay(&mut commands, MenuUi, 0.25); // light — let the starfield show through
     let done = achieved.unlocked.iter().filter(|u| **u).count();
+    let lore_n = lore_entries(&stats).iter().filter(|(_, _, u, _)| *u).count();
     let f = &font.0;
     // flicker the title on the FIRST show only; later returns start it already lit (past the warm-up)
     let title_age = if intro.0 { NEON_WARMUP } else { 0.0 };
@@ -7151,6 +7162,7 @@ fn spawn_menu_ui(mut commands: Commands, achieved: Res<Achievements>, intro: Res
         menu_button(p, f, MenuAction::Play, "PLAY");
         menu_button(p, f, MenuAction::Controls, "CONTROLS");
         menu_button(p, f, MenuAction::Briefing, "BRIEFING");
+        menu_button(p, f, MenuAction::Lore, &format!("PILOT LOG  ({lore_n} / 8)"));
         menu_button(p, f, MenuAction::Achievements, &format!("ACHIEVEMENTS  ({done} / {})", ACHIEVEMENTS.len()));
         if best > 0 {
             p.spawn((text_f(f, 18.0, Color::srgb(0.72, 0.76, 0.95), &format!("BEST   {best}")), Node { margin: UiRect::top(Val::Px(8.0)), ..default() }));
@@ -7238,9 +7250,10 @@ fn spawn_briefing_ui(mut commands: Commands, font: Res<MenuFont>) {
     let obj = Color::srgb(0.8, 0.85, 1.05);
     commands.entity(root).with_children(|p| {
         p.spawn(text_f(f, 48.0, title_color(), "BRIEFING"));
-        p.spawn(text_f(f, 17.0, flavor, "The Belt has turned hostile. The rocks choke the lanes,"));
-        p.spawn(text_f(f, 17.0, flavor, "and something in the dark is steering them."));
-        p.spawn(text_f(f, 17.0, flavor, "You hold the last violet-drive cutter. Cut the field. Hold the edge."));
+        p.spawn(text_f(f, 17.0, flavor, "Reports indicate a large mass approaching the planet — fast."));
+        p.spawn(text_f(f, 17.0, flavor, "There was no time to plan. The VIOLET CUTTER has been deployed:"));
+        p.spawn(text_f(f, 17.0, flavor, "a prototype ship, one pilot, and possibly the only chance."));
+        p.spawn(text_f(f, 17.0, flavor, "Cut the field. Hold the edge."));
         p.spawn((text_f(f, 22.0, title_color(), "OBJECTIVE"), Node { margin: UiRect::top(Val::Px(14.0)), ..default() }));
         for line in [
             "Survive each wave's timer to advance.",
@@ -7254,6 +7267,130 @@ fn spawn_briefing_ui(mut commands: Commands, font: Res<MenuFont>) {
 
 fn despawn_controls_ui(mut commands: Commands, mut rebinding: ResMut<Rebinding>, q: Query<Entity, With<ControlsUi>>) {
     rebinding.target = None; // don't leave a capture dangling when leaving the screen
+    for e in &q {
+        commands.entity(e).despawn();
+    }
+}
+
+// ─────────────────────────────── pilot log (lore archive) ─────────────
+// The story, told as the PILOT'S FIELD REPORTS — transmissions the Violet Cutter sends home, one
+// per contact. The mystery is PACED: the early entries only observe (a field holding formation, a
+// thing penning rocks); the dread accumulates through details (wrong minerals, strata in the rock,
+// a plotted heading) and only the FINAL entry says it plainly — THE ARCHITECT breaks worlds for
+// parts, the Belt is its collection, and every asteroid was somebody's ground. Entries decrypt as
+// their boss first falls (gated on the lifetime Stats flags), so the truth assembles across runs;
+// the wave-30 win opens the last two. The core fleeing east + "I'm going after it" = the sequel.
+// Returns (title, body, unlocked, accent) — accents are UI-safe (TextColor clamps channels ≤ 1).
+fn lore_entries(s: &Stats) -> [(&'static str, [&'static str; 2], bool, Color); 8] {
+    [
+        (
+            "THE BELT",
+            [
+                "It's not a mass — it's a field. Thousands of rocks, dense, holding formation.",
+                "Natural belts drift. This one is keeping station. Beginning my sweep.",
+            ],
+            true, // the first transmission, sent on approach
+            Color::srgb(0.35, 0.7, 1.0),
+        ),
+        (
+            "THE WARDEN",
+            [
+                "Contact. Something big was PENNING the rocks — caging them on its arms like stock.",
+                "It fought like it was protecting them. Since when does a belt need a keeper?",
+            ],
+            s.warden,
+            Color::srgb(1.0, 0.45, 0.9),
+        ),
+        (
+            "THE GLUTTON",
+            [
+                "It ate the field and wore the mass. I sampled the debris it shed afterward.",
+                "Composition's wrong for asteroids: core minerals, mantle iron. Rerunning the assay.",
+            ],
+            s.glutton,
+            Color::srgb(1.0, 0.35, 0.3),
+        ),
+        (
+            "THE SLINGER",
+            [
+                "It didn't throw rocks at me. It LOADED them. Aimed. Fired. Reloaded.",
+                "These things aren't guarding the field — they're operating it. Like instruments.",
+            ],
+            s.slinger,
+            Color::srgb(0.4, 0.65, 1.0),
+        ),
+        (
+            "THE DETONATOR",
+            [
+                "It was arming the rocks. I cracked one open after the fight and found strata —",
+                "layers, pressure lines. Rocks don't have strata. I don't want to write down what does.",
+            ],
+            s.detonator,
+            Color::srgb(0.75, 1.0, 0.3),
+        ),
+        (
+            "THE PULSAR",
+            [
+                "The whole field moves to its beat. Not drifting — DRIVEN. Herded, on a heading.",
+                "I plotted the heading. It's home. This isn't a belt; it's a delivery.",
+            ],
+            s.pulsar,
+            Color::srgb(0.6, 0.95, 1.0),
+        ),
+        (
+            "THE HAUNT",
+            [
+                "The steersman. It knew our world's name, and it called it an acquisition.",
+                "I broke its mask; its core fled east. It wasn't destroyed — and it wasn't in charge.",
+            ],
+            s.phantom,
+            Color::srgb(0.55, 1.0, 0.8),
+        ),
+        (
+            "THE ARCHITECT",
+            [
+                "Final entry. The thing the steersman answered to breaks worlds for parts and shelves them.",
+                "Every rock I've shot was somebody's ground. It's still building. I'm going after it.",
+            ],
+            s.phantom, // the win reveals who the Haunt answered to
+            Color::srgb(1.0, 0.9, 0.6),
+        ),
+    ]
+}
+
+fn spawn_lore_ui(mut commands: Commands, stats: Res<Stats>, font: Res<MenuFont>) {
+    spawn_frame(&mut commands, LoreUi);
+    let root = overlay(&mut commands, LoreUi, 0.6);
+    let f = &font.0;
+    let body_col = Color::srgb(0.74, 0.78, 0.95);
+    let locked_t = Color::srgb(0.42, 0.44, 0.55);
+    let locked_b = Color::srgb(0.32, 0.34, 0.44);
+    commands.entity(root).with_children(|p| {
+        p.spawn(text_f(f, 48.0, title_color(), "PILOT LOG"));
+        p.spawn(text_f(f, 14.0, locked_b, "Transmissions from the VIOLET CUTTER, relayed home."));
+        for (i, (title, body, unlocked, accent)) in lore_entries(&stats).into_iter().enumerate() {
+            // the boss ladder gates each report: waves 5,10,15,20,25 then the two wave-30 reveals
+            let gap = if i == 0 { 10.0 } else { 12.0 };
+            if unlocked {
+                p.spawn((text_f(f, 18.0, accent, title), Node { margin: UiRect::top(Val::Px(gap)), ..default() }));
+                for line in body {
+                    p.spawn(text_f(f, 14.0, body_col, line));
+                }
+            } else {
+                let hint = if i == 7 {
+                    "Awaiting the final transmission.".to_string()
+                } else {
+                    format!("Awaiting transmission — survive wave {}.", i * 5)
+                };
+                p.spawn((text_f(f, 18.0, locked_t, "▮▮▮▮▮▮▮▮  NO SIGNAL"), Node { margin: UiRect::top(Val::Px(gap)), ..default() }));
+                p.spawn(text_f(f, 14.0, locked_b, &hint));
+            }
+        }
+        menu_button(p, f, MenuAction::Back, "BACK");
+    });
+}
+
+fn despawn_lore_ui(mut commands: Commands, q: Query<Entity, With<LoreUi>>) {
     for e in &q {
         commands.entity(e).despawn();
     }
@@ -8268,7 +8405,7 @@ fn main() {
         .add_systems(Update, menu_start.run_if(in_state(GameState::Menu)))
         .add_systems(
             Update,
-            submenu_back.run_if(in_state(GameState::Achievements).or(in_state(GameState::Briefing))),
+            submenu_back.run_if(in_state(GameState::Achievements).or(in_state(GameState::Briefing)).or(in_state(GameState::Lore))),
         )
         .add_systems(Update, gameover_restart.run_if(in_state(GameState::GameOver)))
         .add_systems(Update, (victory_continue, victory_reveal).run_if(in_state(GameState::Victory)))
@@ -8282,6 +8419,8 @@ fn main() {
         .add_systems(Update, (controls_input, rebind_slot_click, rebind_capture, controls_display).run_if(in_state(GameState::Controls)))
         .add_systems(OnEnter(GameState::Briefing), spawn_briefing_ui)
         .add_systems(OnExit(GameState::Briefing), despawn_briefing_ui)
+        .add_systems(OnEnter(GameState::Lore), spawn_lore_ui)
+        .add_systems(OnExit(GameState::Lore), despawn_lore_ui)
         .add_systems(OnEnter(GameState::Paused), spawn_pause_ui)
         .add_systems(OnExit(GameState::Paused), despawn_pause_ui)
         .add_systems(OnEnter(GameState::GameOver), (record_high_score, spawn_gameover_ui).chain())
@@ -9592,6 +9731,21 @@ mod tests {
             "once everything's cleared, the run transitions to the Victory screen"
         );
         assert_eq!(app.world_mut().query::<&Phantom>().iter(app.world()).count(), 0, "and the boss is despawned");
+    }
+
+    #[test]
+    fn lore_entries_decrypt_with_their_boss_flags() {
+        // fresh player: only THE BELT is readable
+        let fresh = lore_entries(&Stats::default());
+        assert!(fresh[0].2, "THE BELT is known from the first flight");
+        assert_eq!(fresh.iter().filter(|e| e.2).count(), 1, "everything else starts encrypted");
+        // each boss flag decrypts exactly its record (spot-check the ladder)
+        let after_warden = lore_entries(&Stats { warden: true, ..default() });
+        assert!(after_warden[1].2, "the Warden's fall decrypts THE WARDEN");
+        assert!(!after_warden[7].2, "the ARCHITECT stays hidden until the game is beaten");
+        // the wave-30 win reveals both the Haunt's record AND who it answered to
+        let after_win = lore_entries(&Stats { phantom: true, ..default() });
+        assert!(after_win[6].2 && after_win[7].2, "beating the Haunt decrypts THE HAUNT and THE ARCHITECT");
     }
 
     #[test]
