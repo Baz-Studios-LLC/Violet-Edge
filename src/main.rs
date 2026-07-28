@@ -58,9 +58,19 @@ const POP_BASE: i32 = 5; // asteroids on screen = POP_BASE + wave...
 const POP_CAP: i32 = 18; // ...capped so the field never becomes an unavoidable wall
 const SLINGER_WAVE_ROCKS: i32 = 6; // sparse field on the Slinger wave — it spawns its own cannonballs and
                                    // doesn't use field rocks, so a full field is just clutter to dodge through
-const FINALE_GROUP_SIZE: usize = 10; // wave 30: rocks per mono-type group (each group clears before the next drifts in)
-const FINALE_TRICKLE: f32 = 0.45;    // wave 30: gap between rocks as a group trickles in — never a wall of ten drifting on at once
-const FINALE_GROUP_GAP: f32 = 0.8;   // wave 30: brief beat after a group clears before the next colour starts
+const FINALE_TRICKLE: f32 = 0.45; // wave 30: gap between trickled-in rocks — the RATE is what keeps the finale readable
+const FINALE_FIELD_CAP: i32 = 10; // wave 30: max non-gold rocks out at once (matches the old group density — never a wall)
+
+// Cluster (waves 26+): a fractured ice rock that SHATTERS — instead of splitting in two, it bursts
+// into a ring of tiny fast shards. The mass shot vaporizes it clean and the warp swallows it whole,
+// so tool choice finally matters against a rock. Point-blank shots become a bad habit.
+const CLUSTER_SHARDS: usize = 7;
+const CLUSTER_SHARD_SPEED: f32 = 210.0; // outward fling of the shard ring (× the caller's chunk_mult)
+
+// Beacon (waves 23+): a teal warden rock projecting an AURA — rocks inside it are immune to gunfire
+// and the chain until the beacon falls (blasts, the warp, and red-absorption all bypass it: the
+// counterplay). Spawns dense (hp = size), never splits — it dies clean when cracked.
+const BEACON_AURA_R: f32 = 200.0;
 const BIG_FLOOR: i32 = 4; // always keep at least this many LARGE (size-3) rocks around: keeps the
                           // field from silting up with small debris, and gives the boss big rocks to grab
 const SPAWN_INTERVAL: f32 = 1.6; // seconds between streamed-in replacement rocks (manageable rate)
@@ -505,6 +515,12 @@ fn pulser_lit(offset: f32, t: f32) -> bool {
 fn limpet_color() -> Color {
     Color::srgb(0.4, 3.6, 4.2)
 } // cold cyan — the Limpet parasite (balanced green+blue reads apart from the blue rocks it clings to)
+fn cluster_color() -> Color {
+    Color::srgb(2.0, 3.2, 4.4)
+} // pale fractured ICE — brighter than a dark pulser, colder/whiter than the blue rocks; waves 26+
+fn beacon_color() -> Color {
+    Color::srgb(0.5, 4.4, 2.2)
+} // deep teal-GREEN — the aura warden (green rocks have retired by its debut, so the hue is free); waves 23+
 
 fn mine_target(level: i32, asteroids: i32) -> i32 {
     // key on content_wave so the 16+ loop resets mine density like rocks/enemies do (raw `level` would
@@ -1143,6 +1159,16 @@ struct Gold;
 #[derive(Component)]
 struct Explosive;
 
+// A fractured ice rock (waves 26+): breaking it SHATTERS it into a ring of tiny fast shards instead
+// of the usual two chunks. Shards carry the marker too (for the tint) but are size 1, so they just die.
+#[derive(Component)]
+struct Cluster;
+
+// A teal warden rock (waves 23+): projects an aura (BEACON_AURA_R) — non-beacon rocks inside are
+// immune to gunfire + the chain until it falls. Spawns dense (chips like a green), never splits.
+#[derive(Component)]
+struct Beacon;
+
 // An orange rock that's been lit and is about to blow. The brief fuse gives a visible flash, then
 // `detonate` blasts a radius and chains any other oranges caught in it.
 #[derive(Component)]
@@ -1418,15 +1444,6 @@ struct WellClock(f32);
 #[derive(Resource, Default)]
 struct BossState {
     fought: i32,
-}
-
-// The FINALE field (wave 30) drips in one mono-type GROUP of ten, a few rocks per beat (never a wall);
-// the next colour only starts once the field is empty. `idx` cycles the kinds (blue → green → orange →
-// pulser → red → …); `remaining` counts down the current group as it trickles in.
-#[derive(Resource, Default)]
-struct FinaleGroup {
-    idx: usize,
-    remaining: usize,
 }
 
 // Chain-shot state (the secondary weapon). `unlocked` flips when the pickup is grabbed.
@@ -1892,18 +1909,40 @@ fn disarm_fire(mut armed: ResMut<FireArmed>) {
 // The three flavors of edge-spawned rock. A rock is exactly one — never both green and orange.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RockKind {
-    Blue,   // plain
-    Green,  // dense / tanky (takes `hp` hits)
-    Orange, // explosive (detonates instead of splitting)
-    Pulser, // pulses lit (invulnerable) ↔ dark (vulnerable) — hit it on the dark beat
-    Red,    // growing (Act III) — absorbs nearby rocks to swell; a plain shot splits it into more reds
+    Blue,    // plain
+    Green,   // dense / tanky (takes `hp` hits)
+    Orange,  // explosive (detonates instead of splitting)
+    Pulser,  // pulses lit (invulnerable) ↔ dark (vulnerable) — hit it on the dark beat
+    Red,     // growing (Act III) — absorbs nearby rocks to swell; a plain shot splits it into more reds
+    Cluster, // fractured ice (late Act III) — SHATTERS into a ring of tiny fast shards
+    Beacon,  // teal warden (late Act III) — aura-shields nearby rocks from gunfire until it falls
 }
 
 // Which flavor should a rock spawned for `level` be? One roll shared by every edge-spawn caller,
 // so a wave's whole rock mix is defined here. Fractions are the tuning knobs for wave feel.
 fn roll_rock_kind(level: i32, rng: &mut impl Rng) -> RockKind {
     let cw = content_wave(level);
-    // Red (growing) — Act III's new type. Debuts w21; a steady presence on the non-boss Act III waves.
+    // Beacon (aura warden) — RARE, rolled first so nothing eats its slice. Debuts w23 (target-order
+    // pressure right as green's tankiness retires), a fixture through the late act.
+    let beacon = match cw {
+        23 | 24 => 0.12,
+        26..=29 => 0.1,
+        _ => 0.0,
+    };
+    if rng.gen_bool(beacon) {
+        return RockKind::Beacon;
+    }
+    // Cluster (shatters into shards) — debuts w26, splitting Act III into two eras; heavy through the
+    // pre-finale gauntlet.
+    let cluster = match cw {
+        26 | 27 => 0.3,
+        28 | 29 => 0.28,
+        _ => 0.0,
+    };
+    if rng.gen_bool(cluster) {
+        return RockKind::Cluster;
+    }
+    // Red (growing) — Act III's opening act. Debuts w21; a steady presence on the non-boss Act III waves.
     let red = match cw {
         21 => 0.25,
         22 => 0.3,
@@ -1934,7 +1973,7 @@ fn roll_rock_kind(level: i32, rng: &mut impl Rng) -> RockKind {
         // only PRIMES non-explosive rocks now (an orange is already a bomb), so it must have prey on field
         17..=19 => 0.3,
         21..=24 | 26..=29 => 0.5, // Act III baseline
-        _ => 0.0,                 // wave 30 (the finale) builds its field from the FinaleGroup cycle, not this roll
+        _ => 0.0,                 // wave 30 (the finale) rolls its own all-types mix (`roll_finale_kind`), not this table
     };
     if rng.gen_bool(orange) {
         return RockKind::Orange;
@@ -1968,8 +2007,9 @@ fn roll_rock_kind(level: i32, rng: &mut impl Rng) -> RockKind {
 // Factored out so the kind→component tagging lives in one place; called by `spawn_edge_asteroid`.
 fn spawn_kind_rock(commands: &mut Commands, pos: Vec2, size: u8, vel: Vec2, rng: &mut impl Rng, kind: RockKind) -> Entity {
     // Pulsers spawn DENSE (a few dark-beat hits, fragments stay dense = no blue) with a random beat phase;
-    // they break into smaller pulsers (see `break_asteroid`).
-    let dense = matches!(kind, RockKind::Green | RockKind::Pulser);
+    // they break into smaller pulsers (see `break_asteroid`). Beacons are dense too: the aura's key should
+    // take deliberate focus to crack (they never split — see break_asteroid).
+    let dense = matches!(kind, RockKind::Green | RockKind::Pulser | RockKind::Beacon);
     let e = spawn_asteroid(commands, pos, size, vel, rng, dense);
     match kind {
         RockKind::Orange => {
@@ -1981,9 +2021,32 @@ fn spawn_kind_rock(commands: &mut Commands, pos: Vec2, size: u8, vel: Vec2, rng:
         RockKind::Red => {
             commands.entity(e).insert(Red { cool: RED_ABSORB_EVERY }); // grows by absorbing nearby rocks
         }
+        RockKind::Cluster => {
+            commands.entity(e).insert(Cluster); // shatters into a shard ring (see break_asteroid)
+        }
+        RockKind::Beacon => {
+            commands.entity(e).insert(Beacon); // aura-shields its neighbours (see collisions/chain)
+        }
         RockKind::Blue | RockKind::Green => {} // plain / dense — no extra tag
     }
     e
+}
+
+// The wave-30 finale field: every type the Belt has shown, rolled at RANDOM — the trickle rate (not a
+// mono-group cycle) is what keeps it readable. The beacon stays rare: an aura mid-boss-fight is spice,
+// not a wall.
+fn roll_finale_kind(rng: &mut impl Rng) -> RockKind {
+    if rng.gen_bool(0.06) {
+        return RockKind::Beacon;
+    }
+    match rng.gen_range(0..6) {
+        0 => RockKind::Blue,
+        1 => RockKind::Green,
+        2 => RockKind::Orange,
+        3 => RockKind::Pulser,
+        4 => RockKind::Red,
+        _ => RockKind::Cluster,
+    }
 }
 
 fn spawn_edge_asteroid(commands: &mut Commands, half: Vec2, rng: &mut impl Rng, kind: RockKind, force_big: bool) -> Entity {
@@ -2047,7 +2110,7 @@ fn spawn_asteroid(commands: &mut Commands, pos: Vec2, size: u8, vel: Vec2, rng: 
 #[allow(clippy::too_many_arguments)]
 // `chunks`: whether a size>1 rock spawns its two smaller fragments. True for every normal break; the
 // mass shot passes false to VAPORIZE a rock outright (its field-clearing identity — no rubble left).
-fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score, e: Entity, pos: Vec2, size: u8, chunk_mult: f32, dense: bool, gold: bool, pulser: bool, red: bool, chunks: bool) {
+fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score, e: Entity, pos: Vec2, size: u8, chunk_mult: f32, dense: bool, gold: bool, pulser: bool, red: bool, cluster: bool, beacon: bool, chunks: bool) {
     commands.entity(e).despawn();
     let base = match size {
         3 => 20,
@@ -2061,12 +2124,31 @@ fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score
         Color::srgb(4.5, 4.8, 5.6)
     } else if red {
         red_color()
+    } else if cluster {
+        cluster_color()
+    } else if beacon {
+        beacon_color()
     } else if dense {
         dense_color()
     } else {
         rock_color()
     };
     burst(commands, pos, splash, 10 + size as usize * 5, 260.0, rng);
+    // A BEACON never splits: cracking it kills the aura clean (children would re-shield the field).
+    let chunks = chunks && !beacon;
+    // A CLUSTER above the smallest size SHATTERS: a ring of tiny fast shards instead of two chunks.
+    // (Shards are size-1 clusters — the tint carries, and smallest rocks just die, so no re-shatter.)
+    if cluster && chunks && size > 1 {
+        let base_a = rng.gen_range(0.0..TAU);
+        for i in 0..CLUSTER_SHARDS {
+            let a = base_a + i as f32 / CLUSTER_SHARDS as f32 * TAU + rng.gen_range(-0.18..0.18);
+            let out = Vec2::from_angle(a);
+            let spd = rng.gen_range(0.8..1.2) * CLUSTER_SHARD_SPEED * chunk_mult;
+            let child = spawn_asteroid(commands, pos + out * (asteroid_radius(1) + 4.0), 1, out * spd, rng, false);
+            commands.entity(child).insert((Cluster, Fresh(FRAGMENT_GRACE)));
+        }
+        return;
+    }
     if chunks && size > 1 {
         // Split into two chunks that fly APART along a random axis. Each is spawned
         // already clear of the other (offset past their combined radii) so the pair
@@ -2108,13 +2190,13 @@ fn blast_asteroids(
     commands: &mut Commands,
     rng: &mut impl Rng,
     score: &mut Score,
-    asteroids: &Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>), (Without<Mine>, Without<Shielded>)>,
+    asteroids: &Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>), (Without<Mine>, Without<Shielded>)>,
     broken: &mut HashSet<Entity>,
     center: Vec2,
     t: f32,
 ) {
     // shared &Query → iterates read-only, so we just read size/dense/gold/explosive here
-    for (ae, at, a, gold, explosive, pulser, red) in asteroids {
+    for (ae, at, a, gold, explosive, pulser, red, cluster, beacon) in asteroids {
         if broken.contains(&ae) {
             continue;
         }
@@ -2131,7 +2213,9 @@ fn blast_asteroids(
             if explosive.is_some() {
                 commands.entity(ae).insert(Detonating { fuse: ORANGE_FUSE, friendly: false }); // a mine lights the orange → it chain-detonates (hostile)
             } else {
-                break_asteroid(commands, rng, score, ae, ap, a.size, MINE_CHUNK_MULT, a.dense, false, pulser.is_some(), red.is_some(), true); // mine flings chunks (ignores hp); never gold; a mined red splits into reds (they stay red + regrow)
+                // mine flings chunks (ignores hp + the beacon aura — blasts are the counterplay); never gold;
+                // a mined red splits into reds; a mined CLUSTER shatters spectacularly (fast shard ring)
+                break_asteroid(commands, rng, score, ae, ap, a.size, MINE_CHUNK_MULT, a.dense, false, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), true);
             }
         }
     }
@@ -2896,7 +2980,7 @@ fn collisions(
     mut commands: Commands,
     time: Res<Time>,
     bullets: Query<(Entity, &Transform, &Bullet, Has<WarheadShot>)>,
-    mut asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>), (Without<Mine>, Without<Shielded>)>,
+    mut asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>), (Without<Mine>, Without<Shielded>)>,
     mines: Query<(Entity, &Transform), With<Mine>>,
     enemies: Query<(Entity, &Transform), With<Enemy>>,
     mut limpets: Query<(Entity, &Transform, &mut Limpet)>,
@@ -2924,6 +3008,15 @@ fn collisions(
     let mut dead_l: HashSet<Entity> = HashSet::new();
     let mut dead_s: HashSet<Entity> = HashSet::new();
     let mut dead_v: HashSet<Entity> = HashSet::new(); // p2 vessels broken this pass
+    // BEACON auras: any non-beacon rock inside a beacon's aura is immune to gunfire until the beacon
+    // falls. Zones are collected in a read-only pass so the mutable bullet loop below can test them.
+    let beacon_zones: Vec<Vec2> = asteroids
+        .iter()
+        .filter(|(.., beacon)| beacon.is_some())
+        .map(|(_, at, ..)| at.translation.truncate())
+        .collect();
+    let beacon_shielded =
+        |p: Vec2, is_beacon: bool| !is_beacon && beacon_zones.iter().any(|z| z.distance_squared(p) < BEACON_AURA_R * BEACON_AURA_R);
     for (be, bt, b, is_warhead) in &bullets {
         if dead_b.contains(&be) {
             continue;
@@ -2931,7 +3024,7 @@ fn collisions(
         let bp = bt.translation.truncate();
         let br = bullet_radius(b.mass); // mass shots are fatter…
         let power = bullet_boss_power(b.mass); // …and (vs a boss/mob) hit a bit harder; vs free rocks, see below
-        for (ae, at, mut a, gold, explosive, pulser, red) in &mut asteroids {
+        for (ae, at, mut a, gold, explosive, pulser, red, cluster, beacon) in &mut asteroids {
             if dead_a.contains(&ae) {
                 continue;
             }
@@ -2948,11 +3041,19 @@ fn collisions(
                     commands.entity(be).despawn();
                     break;
                 }
+                // inside a beacon's aura → EVERY round fizzles, warhead included. Kill the beacon —
+                // or answer with a blast or the warp, which bypass the aura.
+                if beacon_shielded(ap, beacon.is_some()) {
+                    burst(&mut commands, bp, dim(beacon_color(), 0.9), 4, 130.0, &mut rng); // teal fizzle
+                    dead_b.insert(be);
+                    commands.entity(be).despawn();
+                    break;
+                }
                 if is_warhead {
                     // WARHEAD: DESTROY the rock outright (no chunks, no chain) + a violet blast RING, and PASS
                     // THROUGH — the round keeps flying to delete the next rock in its path (never consumed here).
                     dead_a.insert(ae);
-                    break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, a.dense, gold.is_some(), pulser.is_some(), red.is_some(), false);
+                    break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, a.dense, gold.is_some(), pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), false);
                     commands.spawn((
                         Shockwave { age: 0.0, ttl: 0.28, max_r: WARHEAD_BLAST_R, color: warhead_color() },
                         Transform::from_xyz(ap.x, ap.y, 0.0),
@@ -2974,7 +3075,7 @@ fn collisions(
                     if explosive.is_some() {
                         commands.entity(ae).insert(Detonating { fuse: ORANGE_FUSE, friendly: false }); // orange detonates + chains
                     } else {
-                        break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, a.dense, gold.is_some(), pulser.is_some(), red.is_some(), true);
+                        break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, a.dense, gold.is_some(), pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), true);
                         sfx.write(SoundFx::Break(a.size));
                         if a.dense {
                             stats.green += 1;
@@ -3282,9 +3383,8 @@ fn top_up_asteroids(
     wave: Res<Wave>,
     arena: Res<Arena>,
     mut commands: Commands,
-    mut finale: ResMut<FinaleGroup>,
-    asteroids: Query<&Asteroid, Without<Gold>>, // EXCLUDE the gold 1UP — a lingering gold must not count as
-) {                                             // "field not clear", or it stalls the finale's next group
+    asteroids: Query<&Asteroid, Without<Gold>>, // EXCLUDE the gold 1UP — a lingering gold must not eat
+) {                                             // into the finale's field cap (or stall the trickle)
     if wave.calm > 0.0 {
         return;
     }
@@ -3294,25 +3394,17 @@ fn top_up_asteroids(
     }
     let count = asteroids.iter().count() as i32; // non-gold rocks on the field
 
-    // ── FINALE (wave 30): one mono-type GROUP of ten, TRICKLED in a rock at a time — never a wall drifting
-    //    on together. The next colour only starts once the field is completely clear, so the arena never
-    //    crowds. Cycles blue → green → orange → pulser → red. ──
+    // ── FINALE (wave 30): fully RANDOM across every rock type the Belt has shown (see
+    //    `roll_finale_kind`), TRICKLED in one at a time at the same gentle rate as before, against a
+    //    modest field cap — variety without ever becoming a wall of rocks. ──
     if content_wave(wave.level) == 30 {
-        const KINDS: [RockKind; 5] = [RockKind::Blue, RockKind::Green, RockKind::Orange, RockKind::Pulser, RockKind::Red];
-        if finale.remaining > 0 {
-            // still delivering the current group — one rock, then a short beat before the next
-            let kind = KINDS[finale.idx % KINDS.len()];
+        if count < FINALE_FIELD_CAP {
             let mut rng = rand::thread_rng();
+            let kind = roll_finale_kind(&mut rng);
             spawn_edge_asteroid(&mut commands, arena.half, &mut rng, kind, false);
-            finale.remaining -= 1;
             clock.0 = FINALE_TRICKLE;
-        } else if count == 0 {
-            // group delivered AND cleared → queue the next colour (it starts trickling on the next beat)
-            finale.idx += 1;
-            finale.remaining = FINALE_GROUP_SIZE;
-            clock.0 = FINALE_GROUP_GAP;
         } else {
-            clock.0 = 0.5; // group's all spawned but still being cleared — re-check shortly
+            clock.0 = 0.5; // field's at its cap — re-check shortly
         }
         return;
     }
@@ -3400,7 +3492,7 @@ fn mine_update(
     ships: Query<(Entity, &Transform, &Ship), Without<Mine>>,
     mut mines: Query<(Entity, &mut Transform, &mut Velocity, &mut Mine)>,
     // &mut to match blast_asteroids' type; only read here (iter + shared borrow)
-    asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>), (Without<Mine>, Without<Shielded>)>,
+    asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>), (Without<Mine>, Without<Shielded>)>,
 ) {
     let dt = time.delta_secs();
     let h = arena.half;
@@ -3428,7 +3520,7 @@ fn mine_update(
 
         // Gold 1UP rocks are immune to mines: a drifting mine bounces off them instead of
         // detonating, so a mine can never clear the gold lineage for you (only your shots may).
-        for (_, at, a, gold, _, _, _) in &asteroids {
+        for (_, at, a, gold, ..) in &asteroids {
             if gold.is_none() {
                 continue;
             }
@@ -3453,7 +3545,7 @@ fn mine_update(
         // Gold rocks are excluded (handled above) so a mine never detonates on one.
         let inside = p.x.abs() < h.x && p.y.abs() < h.y;
         if inside
-            && asteroids.iter().any(|(_, at, a, gold, _, _, _)| {
+            && asteroids.iter().any(|(_, at, a, gold, ..)| {
                 gold.is_none() && {
                     let rr = MINE_R + asteroid_radius(a.size);
                     p.distance_squared(at.translation.truncate()) < rr * rr
@@ -4039,7 +4131,6 @@ fn boss_director(
     wave: Res<Wave>,
     arena: Res<Arena>,
     mut state: ResMut<BossState>,
-    mut finale: ResMut<FinaleGroup>,
     mut enemies: Query<&mut Enemy>,
     field: Query<(Entity, &Transform), (With<Asteroid>, Without<Cannonball>, Without<Gold>)>, // slate-wipe spares the gold 1UP (else its lineage vanishing reads as "cleared" → a free life)
 ) {
@@ -4088,8 +4179,6 @@ fn boss_director(
             burst(&mut commands, at.translation.truncate(), Color::srgb(2.2, 2.8, 4.2), 9, 175.0, &mut rng);
             commands.entity(a).despawn();
         }
-        finale.idx = 0;
-        finale.remaining = FINALE_GROUP_SIZE;
         commands.spawn((
             Phantom::new(PHANTOM_PHASE_HP, false, PHANTOM_INTRO),
             Transform::from_xyz(0.0, arena.half.y + PHANTOM_R, 0.0),
@@ -4543,7 +4632,7 @@ fn chain_update(
     mut sfx: EventWriter<SoundFx>,
     mut stats: ResMut<Stats>,
     mut chains: Query<(Entity, &Transform, &mut ChainShot)>,
-    asteroids: Query<(Entity, &Transform, &Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>), (Without<Mine>, Without<Shielded>)>,
+    asteroids: Query<(Entity, &Transform, &Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>), (Without<Mine>, Without<Shielded>)>,
     enemies: Query<(Entity, &Transform), With<Enemy>>,
     mines: Query<(Entity, &Transform), With<Mine>>,
 ) {
@@ -4560,7 +4649,13 @@ fn chain_update(
         }
         let a = c + cs.perp * CHAIN_HALF;
         let b = c - cs.perp * CHAIN_HALF;
-        for (ae, at, ast, gold, explosive, pulser, red) in &asteroids {
+        // beacon auras block the beam too — collect the zones once per beam sweep
+        let beacon_zones: Vec<Vec2> = asteroids
+            .iter()
+            .filter(|(.., beacon)| beacon.is_some())
+            .map(|(_, at, ..)| at.translation.truncate())
+            .collect();
+        for (ae, at, ast, gold, explosive, pulser, red, cluster, beacon) in &asteroids {
             if dead.contains(&ae) {
                 continue;
             }
@@ -4571,13 +4666,18 @@ fn chain_update(
                 if pulser.is_some_and(|pl| pulser_lit(pl.offset, time.elapsed_secs())) {
                     continue;
                 }
+                // aura-shielded (and not itself a beacon) → the beam washes over it
+                if beacon.is_none() && beacon_zones.iter().any(|z| z.distance_squared(ap) < BEACON_AURA_R * BEACON_AURA_R) {
+                    continue;
+                }
                 dead.insert(ae);
                 if explosive.is_some() {
                     commands.entity(ae).insert(Detonating { fuse: ORANGE_FUSE, friendly: false }); // the beam lights the orange (hostile blast)
                     continue;
                 }
-                // chain beam shears dense rocks outright — the beam ignores hp, like a mine
-                break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, ast.size, 1.0, ast.dense, gold.is_some(), pulser.is_some(), red.is_some(), true); // chain shears rocks; a red splits into reds (they stay red + regrow)
+                // chain beam shears dense rocks outright — the beam ignores hp, like a mine (a BEACON dies
+                // in one sweep: the beam is a clean answer to an aura)
+                break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, ast.size, 1.0, ast.dense, gold.is_some(), pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), true); // chain shears rocks; a red splits into reds (they stay red + regrow)
                 sfx.write(SoundFx::Break(ast.size));
                 if ast.dense {
                     stats.green += 1;
@@ -5057,7 +5157,7 @@ fn render(
     wf: Res<WarpField>,
     stars: Query<(&Star, &Transform)>,
     ships: Query<(&Ship, &Transform, Option<&ShipTrail>)>,
-    asteroids: Query<(&Asteroid, &Transform, Option<&Gold>, Option<&Explosive>, Option<&Detonating>, Option<&Pulser>, Option<&Red>)>,
+    asteroids: Query<(&Asteroid, &Transform, Option<&Gold>, Option<&Explosive>, Option<&Detonating>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>)>,
     bullets: Query<(&Bullet, &Transform)>,
     particles: Query<(&Particle, &Transform)>,
     holes: Query<(&BlackHole, &Transform)>,
@@ -5161,11 +5261,12 @@ fn render(
     // they're chipped, so their tanky state reads at a glance.
     let rock = rock_color();
     let dense = dense_color();
-    for (a, at, gold, explosive, det, pulser, red) in &asteroids {
+    for (a, at, gold, explosive, det, pulser, red, cluster, beacon) in &asteroids {
         let c = at.translation.truncate();
         let rot = Vec2::from_angle(a.rot);
         // colour by type: a lit orange flashes white-hot as its fuse burns; a live orange pulses; gold
-        // shimmers; a pulser is bright-white when LIT (invulnerable) / dim when DARK; green=dense; blue=standard.
+        // shimmers; a pulser is bright-white when LIT (invulnerable) / dim when DARK; a beacon is teal
+        // (aura warden); a cluster is fractured ice; green=dense; blue=standard.
         let lit = pulser.map(|pl| pulser_lit(pl.offset, t));
         let col = if let Some(d) = det {
             let f = 1.0 - (d.fuse / ORANGE_FUSE).clamp(0.0, 1.0); // ramps up as it's about to blow
@@ -5179,6 +5280,10 @@ fn render(
             if lit { Color::srgb(6.0, 6.2, 7.0) } else { Color::srgb(0.9, 1.1, 1.7) }
         } else if red.is_some() {
             dim(red_color(), 0.7 + 0.3 * (t * 4.0).sin()) // a slow, menacing throb — it's alive and hungry
+        } else if beacon.is_some() {
+            dim(beacon_color(), 0.8 + 0.2 * (t * 2.0).sin()) // steady teal breathe — the aura's living key
+        } else if cluster.is_some() {
+            cluster_color()
         } else if a.dense {
             dense
         } else {
@@ -5192,9 +5297,21 @@ fn render(
             pts
         };
         gizmos.linestrip_2d(ring(1.0), col);
-        if let Some(lit) = lit {
+        if beacon.is_some() {
+            // the AURA: a faint reach circle (what it's protecting) + the dense hp core ring
+            gizmos.circle_2d(Isometry2d::from_translation(c), BEACON_AURA_R, dim(col, 0.16 + 0.05 * (t * 2.0).sin()));
+            let frac = a.hp.max(1) as f32 / a.size.max(1) as f32;
+            gizmos.linestrip_2d(ring(0.35 + 0.3 * frac), col);
+        } else if let Some(lit) = lit {
             // a Pulser: an inner ring that snaps bright when the shield is up (a clear "don't shoot" tell)
             gizmos.linestrip_2d(ring(0.55), if lit { col } else { dim(col, 0.6) });
+        } else if cluster.is_some() {
+            // a Cluster: FRACTURE LINES across the face — it's visibly ready to shatter
+            let n = a.verts.len();
+            for k in [0usize, 2, 4] {
+                let (v1, v2) = (a.verts[k % n], a.verts[(k + n / 2) % n]);
+                gizmos.line_2d(c + rot.rotate(v1 * 0.85), c + rot.rotate(v2 * 0.85), dim(col, 0.55));
+            }
         } else if a.dense {
             let frac = a.hp.max(1) as f32 / a.size.max(1) as f32; // full shell → shrinks to a small core
             gizmos.linestrip_2d(ring(0.35 + 0.3 * frac), col);
@@ -8481,7 +8598,6 @@ fn dev_face_phantom(
     mut commands: Commands,
     mut wave: ResMut<Wave>,
     mut state: ResMut<BossState>,
-    mut finale: ResMut<FinaleGroup>,
     field: Query<Entity, (GameplayEntity, Without<Ship>)>,
 ) {
     if keys.just_pressed(KeyCode::F4) {
@@ -8492,7 +8608,6 @@ fn dev_face_phantom(
         wave.timer = WAVE_SECS;
         wave.calm = 0.0;
         state.fought = 0; // ≠ 30 → boss_director spawns the Phantom this frame
-        finale.idx = 0; // finale field opens on blue
         info!("DEV: face the Phantom (wave 30)");
     }
 }
@@ -8522,7 +8637,6 @@ fn main() {
         .insert_resource(Arena { half: Vec2::new(640.0, 400.0) })
         .insert_resource(Dev::default())
         .insert_resource(BossState::default())
-        .insert_resource(FinaleGroup::default())
         .insert_resource(Chain::default())
         .insert_resource(MassShot::default())
         .insert_resource(Warhead::default())
@@ -9830,6 +9944,69 @@ mod tests {
         assert_eq!(reds, 2, "a plain shot splits a red into two smaller reds — the whack-a-mole");
     }
 
+    #[test]
+    fn a_cluster_shatters_into_a_shard_ring() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_event::<SoundFx>();
+        app.insert_resource(Stats::default());
+        app.insert_resource(RunFlags::default());
+        app.insert_resource(Score(0));
+        // a large cluster + a plain bullet on it → it SHATTERS into the shard ring, not two chunks
+        app.world_mut().spawn((
+            Asteroid { size: 3, verts: vec![Vec2::X * 65.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+            Cluster,
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+        ));
+        app.world_mut().spawn((Bullet { life: 1.0, trail: Vec::new(), mass: false }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0)));
+        app.add_systems(Update, collisions);
+        app.update();
+        let shards: Vec<u8> = app.world_mut().query_filtered::<&Asteroid, With<Cluster>>().iter(app.world()).map(|a| a.size).collect();
+        assert_eq!(shards.len(), CLUSTER_SHARDS, "the cluster shatters into its full shard ring");
+        assert!(shards.iter().all(|&s| s == 1), "every shard is the smallest size (no re-shatter chain)");
+    }
+
+    #[test]
+    fn a_beacon_aura_blocks_gunfire_until_it_falls() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_event::<SoundFx>();
+        app.insert_resource(Stats::default());
+        app.insert_resource(RunFlags::default());
+        app.insert_resource(Score(0));
+        // a beacon, a plain rock INSIDE its aura, and a bullet on that rock
+        let beacon = app
+            .world_mut()
+            .spawn((
+                Asteroid { size: 3, verts: vec![Vec2::X * 65.0], rot: 0.0, spin: 0.0, dense: true, hp: 3 },
+                Beacon,
+                Velocity(Vec2::ZERO),
+                Transform::from_xyz(120.0, 0.0, 0.0), // 120 < BEACON_AURA_R from the target rock
+            ))
+            .id();
+        app.world_mut().spawn((
+            Asteroid { size: 2, verts: vec![Vec2::X * 40.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+        ));
+        app.world_mut().spawn((Bullet { life: 1.0, trail: Vec::new(), mass: false }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0)));
+        app.add_systems(Update, collisions);
+        app.update();
+        assert_eq!(
+            app.world_mut().query_filtered::<(), (With<Asteroid>, Without<Beacon>)>().iter(app.world()).count(),
+            1,
+            "the aura-shielded rock survives the shot"
+        );
+        assert_eq!(app.world_mut().query::<&Bullet>().iter(app.world()).count(), 0, "the round fizzled on the aura");
+        // the beacon falls → the same rock is shootable again
+        app.world_mut().entity_mut(beacon).despawn();
+        app.world_mut().spawn((Bullet { life: 1.0, trail: Vec::new(), mass: false }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0)));
+        app.update();
+        let plain_left = app.world_mut().query_filtered::<&Asteroid, Without<Beacon>>().iter(app.world()).filter(|a| a.size == 2).count();
+        assert_eq!(plain_left, 0, "with the beacon down, the rock breaks normally");
+    }
+
 
     #[test]
     fn pulsar_wave_spawns_the_fifth_boss() {
@@ -9838,7 +10015,6 @@ mod tests {
         app.insert_resource(Wave { level: 25, timer: WAVE_SECS, calm: 0.0 });
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
         app.insert_resource(BossState::default());
-        app.insert_resource(FinaleGroup::default());
         app.add_systems(Update, boss_director);
         app.update();
         assert_eq!(app.world_mut().query::<&Pulsar>().iter(app.world()).count(), 1, "wave 25 spawns the Pulsar");
@@ -9877,7 +10053,6 @@ mod tests {
         app.insert_resource(Wave { level: 30, timer: WAVE_SECS, calm: 0.0 });
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
         app.insert_resource(BossState::default());
-        app.insert_resource(FinaleGroup::default());
         app.add_systems(Update, boss_director);
         app.update();
         assert_eq!(app.world_mut().query::<&Phantom>().iter(app.world()).count(), 1, "wave 30 spawns the Phantom");
@@ -10323,7 +10498,6 @@ mod tests {
         app.insert_resource(Wave { level: 1, timer: WAVE_SECS, calm: 0.0 });
         app.insert_resource(SpawnClock(0.0));
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
-        app.insert_resource(FinaleGroup::default());
         app.add_systems(Update, top_up_asteroids);
         app.update();
         let n = app.world_mut().query::<&Asteroid>().iter(app.world()).count();
@@ -10340,7 +10514,6 @@ mod tests {
         app.insert_resource(Wave { level: 1, timer: WAVE_SECS, calm: 5.0 }); // in the post-boss calm
         app.insert_resource(SpawnClock(0.0));
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
-        app.insert_resource(FinaleGroup::default());
         app.add_systems(Update, top_up_asteroids);
         app.update();
         let n = app.world_mut().query::<&Asteroid>().iter(app.world()).count();
@@ -10349,41 +10522,38 @@ mod tests {
 
     #[test]
     fn finale_field_trickles_in_not_all_at_once() {
-        // wave 30 streams its mono-type GROUP in a rock at a time — never a wall of ten drifting on together
+        // wave 30 streams RANDOM-type rocks in one at a time, up to its field cap — never a wall
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.insert_resource(Wave { level: 30, timer: WAVE_SECS, calm: 0.0 });
         app.insert_resource(SpawnClock(0.0));
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
-        app.insert_resource(FinaleGroup { idx: 0, remaining: FINALE_GROUP_SIZE }); // a fresh group queued, as boss_director sets it
         app.add_systems(Update, top_up_asteroids);
 
-        // the first beat drops ONE rock, not the whole group
+        // the first beat drops ONE rock, not a wall
         app.update();
         let n1 = app.world_mut().query::<&Asteroid>().iter(app.world()).count();
-        assert_eq!(n1, 1, "the finale group trickles in — one rock on the first beat, not all ten (got {n1})");
+        assert_eq!(n1, 1, "the finale trickles in — one rock on the first beat (got {n1})");
 
-        // stepping the spawn clock keeps feeding the SAME group up to its full size
-        for _ in 0..FINALE_GROUP_SIZE {
+        // stepping the spawn clock feeds the field up to (and never past) the cap
+        for _ in 0..(FINALE_FIELD_CAP + 4) {
             app.world_mut().resource_mut::<SpawnClock>().0 = 0.0; // the trickle interval elapsed
             app.update();
         }
-        let n = app.world_mut().query::<&Asteroid>().iter(app.world()).count();
-        assert_eq!(n, FINALE_GROUP_SIZE, "the full group is ten rocks, delivered gradually (got {n})");
-        assert_eq!(app.world().resource::<FinaleGroup>().remaining, 0, "the group's spawn quota is spent");
+        let n = app.world_mut().query::<&Asteroid>().iter(app.world()).count() as i32;
+        assert_eq!(n, FINALE_FIELD_CAP, "the finale field fills to its cap and holds (got {n})");
     }
 
     #[test]
     fn a_lingering_gold_does_not_stall_the_finale() {
-        // a gold 1UP rock is an Asteroid too; it must NOT count as "field not clear", or the next finale
-        // group never starts (regression: no asteroids spawned while a gold lingered)
+        // a gold 1UP rock is an Asteroid too; it must NOT count against the finale's field cap
+        // (regression: no asteroids spawned while a gold lingered)
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.insert_resource(Wave { level: 30, timer: WAVE_SECS, calm: 0.0 });
         app.insert_resource(SpawnClock(0.0));
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
-        app.insert_resource(FinaleGroup { idx: 0, remaining: 0 }); // the current group's been delivered
-        // ONLY a gold rock remains on the field (Asteroid + Gold)
+        // ONLY a gold rock on the field (Asteroid + Gold)
         app.world_mut().spawn((
             Asteroid { size: 3, verts: vec![Vec2::X * 60.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
             Gold,
@@ -10392,8 +10562,42 @@ mod tests {
         ));
         app.add_systems(Update, top_up_asteroids);
         app.update();
-        assert_eq!(app.world().resource::<FinaleGroup>().remaining, FINALE_GROUP_SIZE, "the next group is queued despite the lingering gold");
-        assert_eq!(app.world().resource::<FinaleGroup>().idx, 1, "…and the colour cycle advanced");
+        let non_gold = app.world_mut().query_filtered::<(), (With<Asteroid>, Without<Gold>)>().iter(app.world()).count();
+        assert_eq!(non_gold, 1, "the finale keeps trickling despite the lingering gold");
+    }
+
+    #[test]
+    fn act_iii_late_waves_roll_the_new_types() {
+        let mut rng = rand::thread_rng();
+        let n = 600;
+        let beacons23 = (0..n).filter(|_| matches!(roll_rock_kind(23, &mut rng), RockKind::Beacon)).count();
+        assert!(beacons23 > 0, "wave 23 debuts the beacon");
+        let clusters26 = (0..n).filter(|_| matches!(roll_rock_kind(26, &mut rng), RockKind::Cluster)).count();
+        assert!(clusters26 > 0, "wave 26 debuts the cluster");
+        let early = (0..n).filter(|_| matches!(roll_rock_kind(21, &mut rng), RockKind::Cluster | RockKind::Beacon)).count();
+        assert_eq!(early, 0, "waves before 23 roll neither new type");
+    }
+
+    #[test]
+    fn finale_roll_covers_every_rock_type() {
+        // the wave-30 field is fully random across ALL types — over a big sample every kind shows up
+        let mut rng = rand::thread_rng();
+        let (mut blue, mut green, mut orange, mut pulser, mut red, mut cluster, mut beacon) = (0, 0, 0, 0, 0, 0, 0);
+        for _ in 0..4000 {
+            match roll_finale_kind(&mut rng) {
+                RockKind::Blue => blue += 1,
+                RockKind::Green => green += 1,
+                RockKind::Orange => orange += 1,
+                RockKind::Pulser => pulser += 1,
+                RockKind::Red => red += 1,
+                RockKind::Cluster => cluster += 1,
+                RockKind::Beacon => beacon += 1,
+            }
+        }
+        for (name, n) in [("blue", blue), ("green", green), ("orange", orange), ("pulser", pulser), ("red", red), ("cluster", cluster), ("beacon", beacon)] {
+            assert!(n > 0, "the finale mix must include {name} rocks");
+        }
+        assert!(beacon < blue, "the beacon stays the RARE spice of the finale mix");
     }
 
     #[test]
@@ -10407,7 +10611,8 @@ mod tests {
                     RockKind::Green => green += 1,
                     RockKind::Orange => orange += 1,
                     RockKind::Pulser => pulser += 1,
-                    RockKind::Red => {} // Act III-only; covered by `act_iii_introduces_red_asteroids`
+                    // Act III-only kinds; covered by their own tests below
+                    RockKind::Red | RockKind::Cluster | RockKind::Beacon => {}
                 }
             }
             (blue, green, orange, pulser)
@@ -10696,7 +10901,6 @@ mod tests {
         app.insert_resource(Wave { level: 10, timer: WAVE_SECS, calm: 0.0 });
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
         app.insert_resource(BossState::default());
-        app.insert_resource(FinaleGroup::default());
         app.add_systems(Update, boss_director);
         app.update();
         assert_eq!(app.world_mut().query::<&Devourer>().iter(app.world()).count(), 1, "wave 10 spawns the devourer");
@@ -10710,7 +10914,6 @@ mod tests {
         app.insert_resource(Wave { level: 15, timer: WAVE_SECS, calm: 0.0 });
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
         app.insert_resource(BossState::default());
-        app.insert_resource(FinaleGroup::default());
         app.add_systems(Update, boss_director);
         app.update();
         assert_eq!(app.world_mut().query::<&Slinger>().iter(app.world()).count(), 1, "wave 15 spawns the Slinger");
@@ -10744,7 +10947,6 @@ mod tests {
         app.insert_resource(Wave { level: 20, timer: WAVE_SECS, calm: 0.0 });
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
         app.insert_resource(BossState::default());
-        app.insert_resource(FinaleGroup::default());
         app.add_systems(Update, boss_director);
         app.update();
         assert_eq!(app.world_mut().query::<&Detonator>().iter(app.world()).count(), 1, "wave 20 spawns the Detonator");
@@ -11185,7 +11387,6 @@ mod tests {
         app.insert_resource(Wave { level: 5, timer: WAVE_SECS, calm: 0.0 });
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
         app.insert_resource(BossState::default());
-        app.insert_resource(FinaleGroup::default());
         let mine = app
             .world_mut()
             .spawn((Mine { armed: false, fuse: MINE_FUSE }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0)))

@@ -5,6 +5,17 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
+- **TWO NEW ASTEROID TYPES fill out Act III** (waves 21–29 ran the same three-rock recipe for 8 waves):
+  - **The BEACON (wave 23+)** — a teal aura warden. Every rock inside its aura is **immune to your guns
+    and the chain until the beacon falls**: the field becomes a question of what you shoot *first*.
+    Blasts, the warp, and hungry reds ignore the aura — those are your answers. Rare, dense, never splits.
+  - **The CLUSTER (wave 26+)** — fractured pale ice, visibly cracked. Breaking it **shatters it into a
+    ring of fast shards** instead of splitting in two — stop shooting things at point-blank. The mass
+    shot vaporizes it clean and the warp swallows it whole: the first rock where your tool choice
+    really matters.
+- **The wave-30 finale field is fully random now.** Instead of mono-color groups, the Phantom's arena
+  trickles in **every rock type the Belt has shown, rolled at random** — same gentle rate, small field
+  cap, so it's variety, never a wall.
 - **The finale boss is THE PHANTOM, everywhere.** Every remaining player-facing "Haunt" (achievement text,
   the Pilot Log records) now says the Phantom, matching its boss-warning name.
 - **Each Phantom phase ends like a real boss kill.** Depleting a phase now fires the same big double blast
