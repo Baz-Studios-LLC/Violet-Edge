@@ -26,13 +26,13 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
   Belt really is, what sent the Haunt, and why the story isn't over. The BRIEFING opens cold and urgent
   (a mass approaching fast; the prototype VIOLET CUTTER deployed — one pilot, possibly the only chance).
   The ending scene itself is unchanged — the core's escape was always the sequel.
-- **The ship now matches the logo — comet tail included.** The hull is the VIOLET EDGE arrow itself: a
-  long needle nose, slim shoulders, wing barbs swept back with deep arrowhead cuts, and a tail spike. The
-  old triangular exhaust flame (which broke into "sparks" at speed) is **replaced by a short light trail
-  that fades** — bright under thrust, a faint ghost while coasting, gone when you're still. Same hull
-  everywhere it appears: in play, the lives icons, and the finale send-off (which now streams a full-burn
-  trail). The hitbox is unchanged — the extra nose length is pure visual, so it plays forgiving, never
-  stricter.
+- **The ship is now the logo's arrow — solid, with its two notches.** The hull is a single **solid purple
+  arrowhead** (no extended wings): edges flaring straight from the nose to two moderate barbs, a shallow
+  tail spike, and the logo's **two small notches** bitten into the leading edges. The exhaust is gone
+  entirely — both the flame *and* the spark particles that trailed as broken dashes — replaced by a **short
+  light trail that fades**: bright under thrust, a faint ghost while coasting, nothing when still. Same
+  solid ship everywhere: in play, the lives icons, and the finale send-off. Hitbox unchanged (the visual
+  nose is longer than the collision circle, so it plays forgiving, never stricter).
 - **Optimized for any screen size.** The game now renders at a consistent apparent size on every monitor.
   The camera scale-to-fits a fixed design height to the window, so a bigger screen *magnifies* the action
   instead of revealing a vast, sparse empty arena (the cause of it "looking odd" on larger displays). The

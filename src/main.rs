@@ -374,23 +374,46 @@ fn bullet_boss_power(mass: bool) -> i32 {
         1
     }
 }
-// The player ship's hull — the VIOLET EDGE arrow, matching the logo: a long needle nose, slim
-// shoulders, wing barbs swept back-and-out with deep inner cuts, and a center tail spike (the comet
-// tail itself is the thrust flame, drawn behind). Local coords, nose = +X, closed loop (last == first).
-// `scale` ≈ SHIP_R for the real ship; the HUD lives icon passes a mini scale.
-fn ship_hull(scale: f32) -> [Vec2; 9] {
+// The player ship's hull — the logo's arrow, taken literally (user direction): ONE solid arrowhead
+// flaring straight from the nose to two moderate barbs (no extended wings), a shallow center tail
+// spike, and TWO SMALL NOTCHES bitten into the leading edges at different stations (the logo's
+// asymmetric tech cuts — one near the nose above, one mid-edge below). UNIT coords, nose = +X,
+// closed loop (last == first); `draw_ship_solid` scales it and fakes the solid fill.
+fn ship_hull() -> [Vec2; 16] {
     [
-        Vec2::new(1.55, 0.0),   // needle nose — the logo's long point (visual only; the hitbox stays SHIP_R)
-        Vec2::new(-0.14, 0.28), // slim upper shoulder (kept narrow so the nose reads needle-sharp)
-        Vec2::new(-0.85, 0.88), // upper wing barb, swept back + out
-        Vec2::new(-0.48, 0.20), // the barb's deep inner return — the arrowhead cut
-        Vec2::new(-0.95, 0.0),  // center tail spike (comet-tail root)
-        Vec2::new(-0.48, -0.20),
-        Vec2::new(-0.85, -0.88),
-        Vec2::new(-0.14, -0.28),
-        Vec2::new(1.55, 0.0),
+        Vec2::new(1.30, 0.0), // nose (visual only; the hitbox stays SHIP_R)
+        // upper leading edge, notch #1 near the nose: bite in, across, back out
+        Vec2::new(0.72, 0.235),
+        Vec2::new(0.66, 0.10),
+        Vec2::new(0.52, 0.16),
+        Vec2::new(0.56, 0.30),
+        Vec2::new(-0.55, 0.75), // upper barb — moderate sweep, close to the body
+        Vec2::new(-0.28, 0.18), // inner return
+        Vec2::new(-0.72, 0.0),  // shallow tail spike (the light trail roots here)
+        Vec2::new(-0.28, -0.18),
+        Vec2::new(-0.55, -0.75), // lower barb
+        // lower leading edge, notch #2 mid-edge: bite in, across, back out (walking barb → nose)
+        Vec2::new(0.10, -0.49),
+        Vec2::new(0.06, -0.35),
+        Vec2::new(0.24, -0.32),
+        Vec2::new(0.20, -0.45),
+        Vec2::new(0.99, -0.13), // straight run home to the tip
+        Vec2::new(1.30, 0.0),
     ]
-    .map(|v| v * scale)
+}
+
+// Draw the ship SOLID — the logo is a filled purple arrow, but the game renders wireframe gizmos, so
+// the fill is faked: the outline plus concentric inset copies whose strokes the bloom fuses into a
+// solid body. The one place every ship is drawn (in play, the HUD lives icons, the finale send-off).
+fn draw_ship_solid(gizmos: &mut Gizmos, c: Vec2, rot: Vec2, scale: f32, color: Color) {
+    const FILL_CENTER: Vec2 = Vec2::new(0.25, 0.0); // insets shrink toward the body's visual middle
+    for (k, glow) in [(1.0, 1.0), (0.75, 0.9), (0.5, 0.85), (0.25, 0.85)] {
+        let pts: Vec<Vec2> = ship_hull()
+            .iter()
+            .map(|v| c + rot.rotate((FILL_CENTER + (*v - FILL_CENTER) * k) * scale))
+            .collect();
+        gizmos.linestrip_2d(pts, dim(color, glow));
+    }
 }
 
 fn rock_color() -> Color {
@@ -2448,32 +2471,17 @@ fn gather_input(
 fn ship_control(
     time: Res<Time>,
     input: Res<ActionState>,
-    mut commands: Commands,
-    mut q: Query<(&mut Ship, &mut Velocity, &Transform)>,
+    mut q: Query<(&mut Ship, &mut Velocity)>,
 ) {
     let dt = time.delta_secs();
-    let mut rng = rand::thread_rng();
-    for (mut ship, mut vel, t) in &mut q {
+    for (mut ship, mut vel) in &mut q {
         ship.angle += input.turn * TURN_RATE * dt;
         let thrusting = input.thrust > 0.05;
         if thrusting {
             vel.0 += Vec2::from_angle(ship.angle) * THRUST * input.thrust * dt;
             ship.flame = (ship.flame + dt * 5.0).min(1.0);
-            // exhaust sparks straight out the BACK (opposite the nose) — NOT blended with
-            // the ship's velocity, so it never sprays sideways when drifting. Sparse.
-            if rng.gen_bool(0.3) {
-                let back = ship.angle + TAU * 0.5 + rng.gen_range(-0.22..0.22);
-                let tail = t.translation.truncate() - Vec2::from_angle(ship.angle) * SHIP_R * 0.5;
-                commands.spawn((
-                    Particle {
-                        vel: Vec2::from_angle(back) * rng.gen_range(90.0..150.0),
-                        life: 0.26,
-                        ttl: 0.26,
-                        color: flame_color(),
-                    },
-                    Transform::from_xyz(tail.x, tail.y, 0.0),
-                ));
-            }
+            // (no exhaust particles — the persistent sparks read as broken dashes behind the ship.
+            // The engine visual is the fading LIGHT TRAIL, drawn in `render` off ShipTrail.)
         } else {
             ship.flame = (ship.flame - dt * 6.0).max(0.0);
         }
@@ -5320,11 +5328,11 @@ fn render(
             let burn = 0.3 + 0.7 * s.flame.clamp(0.0, 1.0);
             for i in 1..n {
                 let f = i as f32 / n as f32; // 0 = oldest → 1 = at the ship
-                gizmos.line_2d(tr.0[i - 1], tr.0[i], dim(flame_color(), (0.04 + 0.55 * f * f) * burn));
+                // bright enough to BE the engine light: at full thrust the head runs HDR and blooms
+                gizmos.line_2d(tr.0[i - 1], tr.0[i], dim(flame_color(), (0.08 + 0.92 * f * f) * burn));
             }
         }
-        let pts: Vec<Vec2> = ship_hull(SHIP_R).iter().map(|v| c + rot.rotate(*v)).collect();
-        gizmos.linestrip_2d(pts, sc);
+        draw_ship_solid(&mut gizmos, c, rot, SHIP_R, sc); // the solid purple arrow (fill faked via insets + bloom)
     }
 
     // lives HUD icons (top-right, under the "LIVES" label) — only while a run is on
@@ -5332,9 +5340,8 @@ fn render(
         let life_col = dim(sc, flick(hud_flash.life > 0.0)); // flickers briefly on a new life
         for k in 0..run.lives.max(0) {
             let p = Vec2::new(h.x - 32.0 - k as f32 * 24.0, h.y - 48.0);
-            // the same arrow hull as the ship, mini + rotated nose-up ((x,y) → (-y,x))
-            let icon: Vec<Vec2> = ship_hull(6.5).iter().map(|v| p + Vec2::new(-v.y, v.x)).collect();
-            gizmos.linestrip_2d(icon, life_col);
+            // the same solid arrow as the ship, mini + nose-up (rot = +90°: Vec2::Y rotates (x,y) → (-y,x))
+            draw_ship_solid(&mut gizmos, p, Vec2::Y, 6.5, life_col);
         }
     }
 
@@ -6599,8 +6606,8 @@ fn render_boss(
                 gizmos.line_2d(tr.0[i - 1], tr.0[i], dim(flame_color(), (0.05 + 0.7 * f * f) * fl));
             }
         }
-        // hull (nose = +X = east) — the same arrow as in play
-        gizmos.linestrip_2d(ship_hull(SHIP_R).iter().map(|v| c + *v).collect::<Vec<_>>(), sc);
+        // hull (nose = +X = east) — the same solid arrow as in play
+        draw_ship_solid(&mut gizmos, c, Vec2::X, SHIP_R, sc);
     }
 
     // cameo: the boss THAT'S ACTUALLY COMING drifts by in the background during the run-up — its own
