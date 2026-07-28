@@ -33,12 +33,14 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
   it was, the hull keeps its classic dart shape, and it's now **filled in the ship's neon purple — a
   bright rim over a slightly darker core** — the one filled body in a wireframe world, so the player
   always pops. The finale send-off ship and the HUD lives icons get the same filled look.
-- **A proper HUD, all along the top.** The warp and chain charge pips move up from the bottom into an
-  **ability strip** under the score, and **each pickup adds itself to the strip** as you earn it: chain
-  pips with their recharge bar, a bracketed **shot-mode slot that always shows what Q has equipped**
-  (standard round / fat mass round / ticked Warhead), the **Nova Shield's state** (bright hex when up,
-  regen bar while it rebuilds), and the drone's little orbiting wingman icon. The Q-toggle name flash now
-  appears top-center under the wave text.
+- **A proper HUD, all along the top — and every light is named.** The warp and chain charge pips move up
+  from the bottom into a **labeled ability strip** under the score: each slot carries its name — **WARP ·
+  CHAIN · MODE · SHIELD · DRONE** — and **appears as you earn it** (a fresh run shows just WARP). CHAIN
+  keeps its pips + recharge bar; **MODE always shows what Q has equipped** (standard round / fat mass
+  round / ticked Warhead); **SHIELD** shows the Nova's state (bright hex up, regen bar while it rebuilds);
+  DRONE shows your wingman. The Q-toggle name flash now appears top-center under the wave text.
+- **The ship is slightly smaller** (radius 15 → 13.5) — visuals and hitbox together, so it's a touch more
+  forgiving in tight fields.
 - **Optimized for any screen size.** The game now renders at a consistent apparent size on every monitor.
   The camera scale-to-fits a fixed design height to the window, so a bigger screen *magnifies* the action
   instead of revealing a vast, sparse empty arena (the cause of it "looking odd" on larger displays). The

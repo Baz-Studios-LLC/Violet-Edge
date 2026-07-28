@@ -30,7 +30,7 @@ use std::collections::HashSet;
 // ─────────────────────────────── config ───────────────────────────────
 const TAU: f32 = std::f32::consts::TAU;
 
-const SHIP_R: f32 = 15.0;
+const SHIP_R: f32 = 13.5; // was 15 — trimmed slightly per playtest (hitbox + visuals shrink together, a touch forgiving)
 const TURN_RATE: f32 = 4.6; // rad/s — snappier aim for precision shooting
 const THRUST: f32 = 1000.0; // px/s^2 — raised to keep a usable top speed against the heavier drag below
 const FRICTION: f32 = 0.15; // velocity kept per second — much heavier drag than before, so the ship sheds momentum fast (~0.37s half-life) for precise, deliberate flying instead of a long glide
@@ -318,6 +318,17 @@ const PULSE_LIT_THRESHOLD: f32 = 0.15; // sin above this = LIT (≈45% lit / 55%
 const RESPAWN_DELAY: f32 = 1.3; // s the ship stays gone after dying
 const GAMEOVER_DELAY: f32 = 1.5; // s to let the final death play out before the Game Over screen
 const HUD_FLASH_TIME: f32 = 0.7; // s the warp pips / life icons flicker after refilling / gaining a life
+
+// HUD ability-strip slot layout — design px from the LEFT edge. The ui labels (`left: Val::Px(X)`)
+// and the gizmo glyphs (world `-h.x + X`) share these, so the two layers can't drift apart (the
+// camera scale-to-fits DESIGN_H and UiScale tracks the same factor, so ui px == design-world px).
+const HUD_SLOT_WARP: f32 = 32.0;
+const HUD_SLOT_CHAIN: f32 = 150.0;
+const HUD_SLOT_MODE: f32 = 296.0;
+const HUD_SLOT_SHIELD: f32 = 388.0;
+const HUD_SLOT_DRONE: f32 = 466.0;
+const HUD_STRIP_LABEL_TOP: f32 = 60.0; // the label row (ui `top` px)
+const HUD_STRIP_Y: f32 = 92.0; // the glyph row (world y = h.y - this), under its labels
 const SHOT_MODE_SHOW: f32 = 1.4; // s the "MASS/STANDARD SHOT" label lingers after a toggle
 const SPAWN_INVULN: f32 = 2.0; // s of blink-invulnerability on (re)spawn
 const TRAIL_LEN: usize = 10; // bullet trail points kept
@@ -1307,6 +1318,18 @@ struct CalmCountdownText; // "NEXT WAVE IN n" — the visual countdown during th
 #[derive(Component)]
 struct ShotModeText; // top-center "MASS/STANDARD SHOT" label (under the wave text), fades after a Q toggle
 
+// A named slot on the HUD ability strip. Each slot's LABEL (ui text) reveals when the ability is
+// earned — the strip is an actual HUD: every light on it is named. (Not `Hud`-marked: visibility is
+// state-driven by `hud_ability_labels`, which also handles the off-run hide.)
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+enum AbilitySlot {
+    Warp,
+    Chain,
+    Mode,   // the Q-cycled shot modes (mass / Warhead)
+    Shield, // the Nova Shield
+    Drone,
+}
+
 // Warp: a slow missile that tears open a black hole which drags in + consumes rocks.
 #[derive(Component)]
 struct WarpMissile {
@@ -1718,6 +1741,24 @@ fn spawn_hud(mut commands: Commands) {
         TextColor(label),
         Node { position_type: PositionType::Absolute, top: Val::Px(14.0), right: Val::Px(22.0), ..default() },
     ));
+    // the ability strip's slot labels (left edge, above the glyph row) — each names its light, and
+    // reveals only once that ability is earned (see `hud_ability_labels`)
+    for (slot, name, x) in [
+        (AbilitySlot::Warp, "WARP", HUD_SLOT_WARP),
+        (AbilitySlot::Chain, "CHAIN", HUD_SLOT_CHAIN),
+        (AbilitySlot::Mode, "MODE", HUD_SLOT_MODE),
+        (AbilitySlot::Shield, "SHIELD", HUD_SLOT_SHIELD),
+        (AbilitySlot::Drone, "DRONE", HUD_SLOT_DRONE),
+    ] {
+        commands.spawn((
+            slot,
+            Text::new(name),
+            TextFont { font_size: 14.0, ..default() },
+            TextColor(dim(label, 0.8)),
+            Node { position_type: PositionType::Absolute, top: Val::Px(HUD_STRIP_LABEL_TOP), left: Val::Px(x), ..default() },
+            Visibility::Hidden, // revealed by hud_ability_labels once earned (Warp: once a run is on)
+        ));
+    }
     commands.spawn((
         Hud,
         ScoreText,
@@ -4954,6 +4995,32 @@ fn hud_flash_tick(time: Res<Time>, mut flash: ResMut<HudFlash>) {
 }
 
 // The "MASS SHOT / STANDARD SHOT" label: shown on a toggle, held, then fades over its last stretch.
+// Reveal each ability-strip label as its ability is earned (and hide the lot off-run). The strip is
+// an ACTUAL HUD — every light on it is named — so a fresh run shows just WARP, and CHAIN / MODE /
+// SHIELD / DRONE announce themselves as their pickups land.
+fn hud_ability_labels(
+    state: Res<State<GameState>>,
+    chain: Res<Chain>,
+    mass: Res<MassShot>,
+    warhead: Res<Warhead>,
+    run: Res<Run>,
+    drones: Query<(), With<Drone>>,
+    mut labels: Query<(&mut Visibility, &AbilitySlot)>,
+) {
+    let on = run_active(state.get());
+    for (mut vis, slot) in &mut labels {
+        let show = on
+            && match slot {
+                AbilitySlot::Warp => true,
+                AbilitySlot::Chain => chain.unlocked,
+                AbilitySlot::Mode => mass.unlocked || warhead.unlocked,
+                AbilitySlot::Shield => run.nova.unlocked,
+                AbilitySlot::Drone => !drones.is_empty(),
+            };
+        *vis = if show { Visibility::Visible } else { Visibility::Hidden };
+    }
+}
+
 fn shot_mode_update(time: Res<Time>, mut flash: ResMut<ShotModeFlash>, mass: Res<MassShot>, warhead: Res<Warhead>, mut q: Query<(&mut Text, &mut TextColor), With<ShotModeText>>) {
     if flash.0 > 0.0 {
         flash.0 -= time.delta_secs();
@@ -5358,62 +5425,57 @@ fn render(
         }
     }
 
-    // ── the ABILITY STRIP (top-left, under the score): everything lives along the top now (user
-    // direction). The core warp charges always; then each ability APPENDS as it's picked up — chain
-    // pips, the Q-cycled shot-mode slot (showing whichever mode is ACTIVE), the Nova Shield state,
-    // the drone. One row, flowing right. ──
+    // ── the ABILITY STRIP (top-left, under the score): an ACTUAL HUD — fixed, NAMED slots (the ui
+    // labels above each, see spawn_hud/hud_ability_labels) that light up as abilities are earned.
+    // WARP always; CHAIN / MODE / SHIELD / DRONE appear with their pickups. The MODE slot always
+    // shows whichever shot Q has equipped. Slot x's are the shared HUD_SLOT_* constants. ──
     if show_run {
         let gap = 22.0;
-        let py = h.y - 84.0; // its own row: below the score text, clear of the boss bar + lives
-        let mut x = -h.x + 30.0;
+        let py = h.y - HUD_STRIP_Y; // the glyph row, just under its label row
+        let sx = |slot: f32, off: f32| Vec2::new(-h.x + slot + off, py);
 
         // WARP (core kit): pips + refill bar
         let pip_lit = dim(warp, flick(hud_flash.pips > 0.0)); // flickers briefly when charges refill
         for k in 0..WARP_MAX_CHARGES {
             let col = if k < warp_res.charges { pip_lit } else { dim(warp, 0.14) };
-            gizmos.circle_2d(Isometry2d::from_translation(Vec2::new(x + k as f32 * gap, py)), 5.0, col);
+            gizmos.circle_2d(Isometry2d::from_translation(sx(HUD_SLOT_WARP, 6.0 + k as f32 * gap)), 5.0, col);
         }
         if warp_res.cooldown > 0.0 {
             let prog = 1.0 - warp_res.cooldown / WARP_COOLDOWN;
             let w = gap * (WARP_MAX_CHARGES as f32 - 1.0);
-            gizmos.line_2d(Vec2::new(x, py - 11.0), Vec2::new(x + w * prog, py - 11.0), dim(warp, 0.7));
+            gizmos.line_2d(sx(HUD_SLOT_WARP, 6.0) - Vec2::Y * 11.0, sx(HUD_SLOT_WARP, 6.0 + w * prog) - Vec2::Y * 11.0, dim(warp, 0.7));
         }
-        x += gap * (WARP_MAX_CHARGES as f32 - 1.0) + 34.0;
 
         // CHAIN (the Warden's drop): bolt glyph + pips + refill bar
         if chain.unlocked {
             let cc = chain_color();
-            let bolt = [
-                Vec2::new(x + 2.0, py + 8.0),
-                Vec2::new(x - 3.0, py + 1.0),
-                Vec2::new(x + 1.0, py + 1.0),
-                Vec2::new(x - 2.0, py - 8.0),
-            ];
-            gizmos.linestrip_2d(bolt.to_vec(), cc);
-            let x0 = x + 22.0;
+            let b = sx(HUD_SLOT_CHAIN, 4.0);
+            gizmos.linestrip_2d(
+                vec![b + Vec2::new(2.0, 8.0), b + Vec2::new(-3.0, 1.0), b + Vec2::new(1.0, 1.0), b + Vec2::new(-2.0, -8.0)],
+                cc,
+            );
             for k in 0..CHAIN_MAX_CHARGES {
                 let col = if k < chain.charges { cc } else { dim(cc, 0.14) };
-                gizmos.circle_2d(Isometry2d::from_translation(Vec2::new(x0 + k as f32 * gap, py)), 5.0, col);
+                gizmos.circle_2d(Isometry2d::from_translation(sx(HUD_SLOT_CHAIN, 26.0 + k as f32 * gap)), 5.0, col);
             }
             if chain.charges < CHAIN_MAX_CHARGES {
                 let prog = 1.0 - chain.recharge / CHAIN_RECHARGE;
                 let w = gap * (CHAIN_MAX_CHARGES as f32 - 1.0);
-                gizmos.line_2d(Vec2::new(x0, py - 11.0), Vec2::new(x0 + w * prog, py - 11.0), dim(cc, 0.7));
+                gizmos.line_2d(sx(HUD_SLOT_CHAIN, 26.0) - Vec2::Y * 11.0, sx(HUD_SLOT_CHAIN, 26.0 + w * prog) - Vec2::Y * 11.0, dim(cc, 0.7));
             }
-            x = x0 + gap * (CHAIN_MAX_CHARGES as f32 - 1.0) + 34.0;
         }
 
-        // SHOT-MODE SLOT (appears once a second mode exists): a bracketed slot showing the ACTIVE
-        // Q-selection — standard round, fat mass round, or the ticked Warhead round.
+        // MODE (the Q-cycled shot slot — appears once a second mode exists): a bracketed slot always
+        // showing the ACTIVE selection — standard round, fat mass round, or the ticked Warhead round.
         if mass.unlocked || warhead.unlocked {
-            let cx = Vec2::new(x + 6.0, py);
+            let cx = sx(HUD_SLOT_MODE, 20.0);
             // slot bracket: four corner ticks, quietly framing whatever's equipped
             let bc = Color::srgb(0.45, 0.5, 0.68);
             let (bw, tick) = (13.0, 5.0);
-            for (sx, sy) in [(-1.0f32, 1.0f32), (1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)] {
-                let corner = cx + Vec2::new(sx * bw, sy * bw);
-                gizmos.line_2d(corner, corner - Vec2::new(sx * tick, 0.0), bc);
-                gizmos.line_2d(corner, corner - Vec2::new(0.0, sy * tick), bc);
+            for (kx, ky) in [(-1.0f32, 1.0f32), (1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)] {
+                let corner = cx + Vec2::new(kx * bw, ky * bw);
+                gizmos.line_2d(corner, corner - Vec2::new(kx * tick, 0.0), bc);
+                gizmos.line_2d(corner, corner - Vec2::new(0.0, ky * tick), bc);
             }
             if warhead.unlocked && warhead.active {
                 // Warhead round: a violet shell with detonation ticks
@@ -5430,13 +5492,12 @@ fn render(
                 // Standard round: the small clean shot
                 gizmos.circle_2d(Isometry2d::from_translation(cx), 3.5, bullet_color());
             }
-            x += 46.0;
         }
 
-        // NOVA SHIELD (the Pulsar's drop): a mini hex — bright while UP; while regenerating, dim
-        // with a progress underbar, flickering in the final stretch (≤3 Hz, same as the ship ring)
+        // SHIELD (the Nova — the Pulsar's drop): a mini hex — bright while UP; while regenerating,
+        // dim with a progress underbar, flickering in the final stretch (≤3 Hz, same as the ship ring)
         if nova.unlocked {
-            let cx = Vec2::new(x + 6.0, py);
+            let cx = sx(HUD_SLOT_SHIELD, 16.0);
             let hexa: Vec<Vec2> = (0..=6).map(|i| cx + Vec2::from_angle(i as f32 / 6.0 * TAU) * 8.0).collect();
             if nova.down <= 0.0 {
                 gizmos.linestrip_2d(hexa, dim(nova_color(), 0.85 + 0.15 * (t * 2.2).sin()));
@@ -5444,14 +5505,13 @@ fn render(
                 let relight = nova.down < NOVA_RELIGHT && (nova.down * 6.0) as i32 % 2 == 0;
                 gizmos.linestrip_2d(hexa, dim(nova_color(), if relight { 0.8 } else { 0.22 }));
                 let prog = 1.0 - nova.down / NOVA_REGEN;
-                gizmos.line_2d(Vec2::new(cx.x - 8.0, py - 13.0), Vec2::new(cx.x - 8.0 + 16.0 * prog, py - 13.0), dim(nova_color(), 0.7));
+                gizmos.line_2d(cx + Vec2::new(-8.0, -13.0), cx + Vec2::new(-8.0 + 16.0 * prog, -13.0), dim(nova_color(), 0.7));
             }
-            x += 40.0;
         }
 
         // DRONE (the Slinger's drop): a mini wingman — a core with its orbit dot slowly circling
         if has_drone {
-            let cx = Vec2::new(x + 6.0, py);
+            let cx = sx(HUD_SLOT_DRONE, 16.0);
             let dc = drone_color();
             gizmos.circle_2d(Isometry2d::from_translation(cx), 3.5, dc);
             gizmos.circle_2d(Isometry2d::from_translation(cx + Vec2::from_angle(t * 2.0) * 8.0), 1.6, dim(dc, 0.85));
@@ -8432,7 +8492,7 @@ fn main() {
         // always: keep the arena sized, handle pause input, refresh the HUD text
         .add_systems(Update, (update_arena, update_ui_scale, pause_toggle, update_wave_text, update_score_text, wave_banner_update, calm_countdown_update, boss_warning_update).chain())
         // always: watch for achievement unlocks + age out toasts + hide the HUD off-run + menu buttons
-        .add_systems(Update, (achievements, toast_update, hud_visibility, button_shimmer, button_click, hud_flash_tick, shot_mode_update))
+        .add_systems(Update, (achievements, toast_update, hud_visibility, hud_ability_labels, button_shimmer, button_click, hud_flash_tick, shot_mode_update))
         // the neon warm-up + frame pulse is a START-MENU flourish only (not the achievements screen)
         .add_systems(Update, menu_title_fx.run_if(in_state(GameState::Menu)))
         // render in PostUpdate so it ALWAYS runs after every Update system (incl.
