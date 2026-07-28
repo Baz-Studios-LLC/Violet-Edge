@@ -374,46 +374,23 @@ fn bullet_boss_power(mass: bool) -> i32 {
         1
     }
 }
-// The player ship's hull — the logo's arrow, taken literally (user direction): ONE solid arrowhead
-// flaring straight from the nose to two moderate barbs (no extended wings), a shallow center tail
-// spike, and TWO SMALL NOTCHES bitten into the leading edges at different stations (the logo's
-// asymmetric tech cuts — one near the nose above, one mid-edge below). UNIT coords, nose = +X,
-// closed loop (last == first); `draw_ship_solid` scales it and fakes the solid fill.
-fn ship_hull() -> [Vec2; 16] {
+// The player ship's hull — the ORIGINAL dart (two logo-styled redesigns were tried and rejected;
+// this classic shape stays, user call 2026-07-28). UNIT coords, nose = +X, closed loop; one shared
+// definition for every ship drawing (in play, the HUD lives icons, the finale send-off).
+fn ship_hull() -> [Vec2; 5] {
     [
-        Vec2::new(1.30, 0.0), // nose (visual only; the hitbox stays SHIP_R)
-        // upper leading edge, notch #1 near the nose: bite in, across, back out
-        Vec2::new(0.72, 0.235),
-        Vec2::new(0.66, 0.10),
-        Vec2::new(0.52, 0.16),
-        Vec2::new(0.56, 0.30),
-        Vec2::new(-0.55, 0.75), // upper barb — moderate sweep, close to the body
-        Vec2::new(-0.28, 0.18), // inner return
-        Vec2::new(-0.72, 0.0),  // shallow tail spike (the light trail roots here)
-        Vec2::new(-0.28, -0.18),
-        Vec2::new(-0.55, -0.75), // lower barb
-        // lower leading edge, notch #2 mid-edge: bite in, across, back out (walking barb → nose)
-        Vec2::new(0.10, -0.49),
-        Vec2::new(0.06, -0.35),
-        Vec2::new(0.24, -0.32),
-        Vec2::new(0.20, -0.45),
-        Vec2::new(0.99, -0.13), // straight run home to the tip
-        Vec2::new(1.30, 0.0),
+        Vec2::new(1.0, 0.0),
+        Vec2::new(-0.7, -0.7),
+        Vec2::new(-0.4, 0.0), // rear notch
+        Vec2::new(-0.7, 0.7),
+        Vec2::new(1.0, 0.0),
     ]
 }
 
-// Draw the ship SOLID — the logo is a filled purple arrow, but the game renders wireframe gizmos, so
-// the fill is faked: the outline plus concentric inset copies whose strokes the bloom fuses into a
-// solid body. The one place every ship is drawn (in play, the HUD lives icons, the finale send-off).
-fn draw_ship_solid(gizmos: &mut Gizmos, c: Vec2, rot: Vec2, scale: f32, color: Color) {
-    const FILL_CENTER: Vec2 = Vec2::new(0.25, 0.0); // insets shrink toward the body's visual middle
-    for (k, glow) in [(1.0, 1.0), (0.75, 0.9), (0.5, 0.85), (0.25, 0.85)] {
-        let pts: Vec<Vec2> = ship_hull()
-            .iter()
-            .map(|v| c + rot.rotate((FILL_CENTER + (*v - FILL_CENTER) * k) * scale))
-            .collect();
-        gizmos.linestrip_2d(pts, dim(color, glow));
-    }
+// Draw the ship at `c`, facing `rot` (a unit vector), `scale` ≈ SHIP_R (the HUD icons pass a mini scale).
+fn draw_ship(gizmos: &mut Gizmos, c: Vec2, rot: Vec2, scale: f32, color: Color) {
+    let pts: Vec<Vec2> = ship_hull().iter().map(|v| c + rot.rotate(*v * scale)).collect();
+    gizmos.linestrip_2d(pts, color);
 }
 
 fn rock_color() -> Color {
@@ -5320,19 +5297,28 @@ fn render(
             continue; // spawn-protection blink at ~3 Hz (was 6 — kept ≤3/sec so it doesn't strobe)
         }
         let rot = Vec2::from_angle(s.angle);
-        // the short LIGHT TRAIL — fading segments along the ship's recent motion (the logo's comet
-        // tail, replacing the old exhaust flame that broke into "sparks" at speed). Brightens under
-        // thrust; coasting leaves only a faint ghost. Stationary, it vanishes on its own.
+        // TRON-style light ribbon (user direction): the ship's recent path in its own violet, short
+        // and fading — the light-cycle wall, minus the length and the lethality. Purely cosmetic; it
+        // replaces the old exhaust SPARK particles (which persisted as broken dashes). Stationary,
+        // the points coincide and it vanishes on its own.
         if let Some(tr) = trail {
             let n = tr.0.len();
-            let burn = 0.3 + 0.7 * s.flame.clamp(0.0, 1.0);
             for i in 1..n {
                 let f = i as f32 / n as f32; // 0 = oldest → 1 = at the ship
-                // bright enough to BE the engine light: at full thrust the head runs HDR and blooms
-                gizmos.line_2d(tr.0[i - 1], tr.0[i], dim(flame_color(), (0.08 + 0.92 * f * f) * burn));
+                gizmos.line_2d(tr.0[i - 1], tr.0[i], dim(sc, 0.05 + 0.75 * f * f));
             }
         }
-        draw_ship_solid(&mut gizmos, c, rot, SHIP_R, sc); // the solid purple arrow (fill faked via insets + bloom)
+        // thrust flame — the original triangular exhaust, flickering off the tail while burning
+        if s.flame > 0.02 {
+            let f = s.flame * (0.6 + 0.4 * (t * 40.0).sin().abs());
+            let flame = [
+                c + rot.rotate(Vec2::new(-SHIP_R * 0.5, -5.0)),
+                c + rot.rotate(Vec2::new(-SHIP_R * 0.5 - 17.0 * f, 0.0)),
+                c + rot.rotate(Vec2::new(-SHIP_R * 0.5, 5.0)),
+            ];
+            gizmos.linestrip_2d(flame, dim(flame_color(), f));
+        }
+        draw_ship(&mut gizmos, c, rot, SHIP_R, sc);
     }
 
     // lives HUD icons (top-right, under the "LIVES" label) — only while a run is on
@@ -5340,8 +5326,8 @@ fn render(
         let life_col = dim(sc, flick(hud_flash.life > 0.0)); // flickers briefly on a new life
         for k in 0..run.lives.max(0) {
             let p = Vec2::new(h.x - 32.0 - k as f32 * 24.0, h.y - 48.0);
-            // the same solid arrow as the ship, mini + nose-up (rot = +90°: Vec2::Y rotates (x,y) → (-y,x))
-            draw_ship_solid(&mut gizmos, p, Vec2::Y, 6.5, life_col);
+            // the same dart as the ship, mini + nose-up (rot = +90°: Vec2::Y rotates (x,y) → (-y,x))
+            draw_ship(&mut gizmos, p, Vec2::Y, 9.0, life_col);
         }
     }
 
@@ -6598,16 +6584,22 @@ fn render_boss(
     for (ds, dtf, dtrail) in &departing {
         let c = dtf.translation.truncate();
         let sc = ship_color();
-        let fl = 0.85 + 0.15 * ds.flame.sin(); // gentle shimmer on the full-burn trail
+        // the same Tron light ribbon as in play, streaming behind the send-off
         if let Some(tr) = dtrail {
             let n = tr.0.len();
             for i in 1..n {
                 let f = i as f32 / n as f32;
-                gizmos.line_2d(tr.0[i - 1], tr.0[i], dim(flame_color(), (0.05 + 0.7 * f * f) * fl));
+                gizmos.line_2d(tr.0[i - 1], tr.0[i], dim(sc, 0.05 + 0.8 * f * f));
             }
         }
-        // hull (nose = +X = east) — the same solid arrow as in play
-        draw_ship_solid(&mut gizmos, c, Vec2::X, SHIP_R, sc);
+        // thrust flame out the back (west), flickering — full-burn for the send-off
+        let fl = 0.7 + 0.3 * ds.flame.sin();
+        gizmos.linestrip_2d(
+            [c + Vec2::new(-SHIP_R * 0.5, -5.0), c + Vec2::new(-SHIP_R * 0.5 - 22.0 * fl, 0.0), c + Vec2::new(-SHIP_R * 0.5, 5.0)],
+            dim(flame_color(), fl),
+        );
+        // hull (nose = +X = east) — the same dart as in play
+        draw_ship(&mut gizmos, c, Vec2::X, SHIP_R, sc);
     }
 
     // cameo: the boss THAT'S ACTUALLY COMING drifts by in the background during the run-up — its own
