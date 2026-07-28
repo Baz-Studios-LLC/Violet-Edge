@@ -37,8 +37,6 @@ const MAX_SPEED: f32 = 560.0; // px/s (a cap; sustained thrust settles a bit und
 const FIRE_COOLDOWN: f32 = 0.18; // s
 
 const BULLET_SPEED: f32 = 720.0; // px/s
-const AIM_ASSIST_ANGLE: f32 = 0.19;  // rad (~11°): a shot snaps onto a target within this cone of your aim…
-const AIM_ASSIST_RADIUS: f32 = 46.0; // px: …OR if the shot would pass within this of the target's centre (a floor so close/small targets still snap). Bigger = more forgiving.
 const BULLET_LIFE: f32 = 1.6; // s — MINIMUM range floor (small windows); real range scales with the arena
 const BULLET_RANGE_FRAC: f32 = 1.5; // bullet travels this × the arena half-width, so reach scales with the screen (fixes "too short on a big display")
 const BULLET_R: f32 = 3.0;
@@ -87,7 +85,7 @@ const MINE_FIRST_WAVE: i32 = 2;
 const MINE_PER_WAVE: i32 = 1; // target = (wave - first + 1) * per... (gentle ramp — was 2)
 const MINE_MAX_FRACTION: f32 = 0.3; // ...never more than this fraction of the asteroid count (was 0.5 — mines are a garnish, not half the field)
 const MINE_HARD_CAP: i32 = 6; // and never more than this many at once, so mines never become a wall
-const MINE_R: f32 = 13.0;
+const MINE_R: f32 = 18.0; // bumped from 13 — a bigger body to shoot (the lethal reach is MINE_BLAST_R, unchanged)
 const MINE_SPEED: f32 = 62.0; // px/s drift
 const MINE_TRIGGER_R: f32 = 92.0; // ship within → the mine arms (blinks)
 const MINE_BLAST_R: f32 = 52.0; // armed + ship within → detonate (kills the ship)
@@ -114,7 +112,7 @@ const _: () = assert!(WELL_PULL < THRUST);
 // Enemy ships (wave 3+): drift in, hover-and-strafe while firing at the ship, dodge
 // mines/rocks, get sucked into the warp, and bug out if they linger too long.
 const ENEMY_MAX_FRACTION: f32 = 0.3; // mob count is capped well below the rock count (a garnish)
-const ENEMY_R: f32 = 14.0;
+const ENEMY_R: f32 = 19.0; // bumped from 14 — a bigger mob to hit (mobs threaten with bullets, not contact)
 const ENEMY_MAX_SPEED: f32 = 125.0; // px/s
 const ENEMY_ACCEL: f32 = 640.0; // px/s² steering force
 const ENEMY_PREF_DIST: f32 = 260.0; // hovers around this range from the ship
@@ -445,7 +443,7 @@ fn asteroid_radius(size: u8) -> f32 {
     match size {
         3 => 88.0, // LARGE
         2 => 46.0, // MID
-        _ => 22.0, // SMALL
+        _ => 30.0, // SMALL — bumped from 22 so the smallest rocks are actually hittable (still a clear step below MID)
     }
 }
 fn body_mass(r: f32) -> f32 {
@@ -2349,32 +2347,6 @@ fn ship_control(
     }
 }
 
-// Aim assist. Given the raw aim (a unit vector), the ship position, candidate targets as (position,
-// velocity), and the bullet's reach, return the direction to fire. A target QUALIFIES if it's ahead + in
-// range and the shot would pass either within a cone of the aim (≤ AIM_ASSIST_ANGLE) OR within
-// AIM_ASSIST_RADIUS of its centre — whichever is more forgiving. Snap onto the one most in line with the
-// aim, and LEAD it (aim where it'll be when the bullet arrives) so moving mobs get intercepted, not trailed.
-// Pure (no ECS) so it's unit-tested.
-fn assisted_aim(aim: Vec2, ship_pos: Vec2, targets: impl Iterator<Item = (Vec2, Vec2)>, range: f32) -> Vec2 {
-    let mut dir = aim;
-    let tan = AIM_ASSIST_ANGLE.tan();
-    let mut best_perp = f32::INFINITY; // pick the target sitting most squarely in the line of fire
-    for (tp, tv) in targets {
-        let to = tp - ship_pos;
-        let along = to.dot(aim); // how far ahead along the aim the target sits
-        if along <= SHIP_R || along > range {
-            continue; // behind us, on top of us, or past the bullet's reach
-        }
-        let perp = (to - aim * along).length(); // how far off the aim line the target's centre sits
-        if (perp <= along * tan || perp <= AIM_ASSIST_RADIUS) && perp < best_perp {
-            best_perp = perp;
-            let lead = tp + tv * (along / BULLET_SPEED); // where it'll be when the bullet reaches it
-            dir = (lead - ship_pos).try_normalize().unwrap_or(aim);
-        }
-    }
-    dir
-}
-
 fn fire(
     mut commands: Commands,
     time: Res<Time>,
@@ -2386,7 +2358,6 @@ fn fire(
     arena: Res<Arena>,
     mut sfx: EventWriter<SoundFx>,
     mut q: Query<(&mut Ship, &Transform)>,
-    targets: Query<(&Transform, Option<&Velocity>), (Or<(With<Asteroid>, With<Enemy>, With<Possessed>)>, Without<Ship>)>, // aim-assist candidates (+ velocity for leading)
 ) {
     let dt = time.delta_secs();
     // bullet lifetime scales with the arena so its reach is a consistent fraction of the screen,
@@ -2419,13 +2390,7 @@ fn fire(
             ship.cooldown = if is_warhead { WARHEAD_COOLDOWN } else if is_mass { MASS_COOLDOWN } else { FIRE_COOLDOWN };
             let aim = Vec2::from_angle(ship.angle);
             let ship_pos = t.translation.truncate();
-            // AIM ASSIST: a slight snap onto the target the aim is most aligned with (see `assisted_aim`)
-            let dir = assisted_aim(
-                aim,
-                ship_pos,
-                targets.iter().map(|(tf, v)| (tf.translation.truncate(), v.map_or(Vec2::ZERO, |v| v.0))),
-                BULLET_SPEED * bullet_life,
-            );
+            let dir = aim; // fire exactly where the ship points — no assist (small targets are handled by size instead)
             let pos = ship_pos + dir * SHIP_R;
             let mut b = commands.spawn((
                 Bullet { life: bullet_life, trail: Vec::new(), mass: is_mass },
@@ -9186,39 +9151,6 @@ mod tests {
         assert_eq!(reds, 2, "a plain shot splits a red into two smaller reds — the whack-a-mole");
     }
 
-    #[test]
-    fn aim_assist_snaps_within_window_and_leads_movers() {
-        let ship = Vec2::ZERO;
-        let aim = Vec2::X; // aiming straight +X
-        let range = 2000.0;
-        let still = Vec2::ZERO; // stationary target (no lead) for the geometry checks
-        // a target INSIDE the cone (half the max angle) → the shot snaps onto it
-        let inside = Vec2::from_angle(AIM_ASSIST_ANGLE * 0.5) * 300.0;
-        let d1 = assisted_aim(aim, ship, [(inside, still)].into_iter(), range);
-        assert!((d1 - inside.normalize()).length() < 1e-3, "a target inside the cone snaps the shot onto it");
-        // a target well OUTSIDE both the cone and the radius → fires straight, no bend
-        let outside = Vec2::from_angle(AIM_ASSIST_ANGLE * 2.0) * 300.0;
-        let d2 = assisted_aim(aim, ship, [(outside, still)].into_iter(), range);
-        assert!((d2 - aim).length() < 1e-6, "a target outside the window does NOT bend the shot");
-        // inside the cone but BEYOND the bullet's reach → ignored
-        let d3 = assisted_aim(aim, ship, [(Vec2::from_angle(AIM_ASSIST_ANGLE * 0.5) * 1000.0, still)].into_iter(), 500.0);
-        assert!((d3 - aim).length() < 1e-6, "an out-of-range target is ignored");
-        // two candidates → the one most in line (smallest perpendicular offset) wins, order-independent
-        let looser = Vec2::from_angle(AIM_ASSIST_ANGLE * 0.8) * 300.0;
-        let tighter = Vec2::from_angle(AIM_ASSIST_ANGLE * 0.2) * 400.0;
-        let d4 = assisted_aim(aim, ship, [(looser, still), (tighter, still)].into_iter(), range);
-        assert!((d4 - tighter.normalize()).length() < 1e-3, "the most-in-line candidate wins");
-        // the RADIUS floor: a close target just off the aim line — outside the (thin, near-field) cone but
-        // within AIM_ASSIST_RADIUS — still snaps. perp 40 > cone(120·tan≈23) yet < radius(46).
-        let near_off = Vec2::new(120.0, 40.0);
-        let d_near = assisted_aim(aim, ship, [(near_off, still)].into_iter(), range);
-        assert!((d_near - near_off.normalize()).length() < 1e-3, "a close target within the radius snaps even where the cone is too thin");
-        // LEADING: a target dead ahead but strafing +Y → the shot aims AHEAD of its current spot (positive Y)
-        let mover_pos = Vec2::new(300.0, 0.0);
-        let mover_vel = Vec2::new(0.0, 220.0);
-        let d5 = assisted_aim(aim, ship, [(mover_pos, mover_vel)].into_iter(), range);
-        assert!(d5.y > 0.05, "the shot leads a moving target (aims ahead of its current position)");
-    }
 
     #[test]
     fn pulsar_wave_spawns_the_fifth_boss() {

@@ -3,14 +3,14 @@
 Patch notes for the Rust + Bevy build. Newest first. (Releases are cut to GitHub and picked up by the
 Baz Studios launcher.) **Keep this current with every change** — it's the record testers read.
 
-## v0.4.2 — Stronger aim assist (2026-07-28)
+## v0.4.2 — Bigger small targets (2026-07-28)
 
-- **Aim assist, turned up.** Small targets were still too hard to hit, so the assist is now much more
-  forgiving: the snap **cone roughly doubled** (~6° → ~11°), a shot also snaps if it would **pass within a
-  short distance of a target's centre** (so close/small things catch even when the cone is thin), and — the
-  big one — shots now **lead moving targets**, aiming where a mob will be when the bullet arrives instead of
-  where it was. Fast little mobs are hittable now, not just slow drift rocks. Still bounded: it only bends
-  onto things you're genuinely pointing at and within range.
+- **Small things are bigger now — and the aim assist is gone.** The v0.4.1 aim assist didn't feel good (it
+  played the game for you), so it's **removed**. Instead, the targets that were fiddly to hit simply grew
+  ~35–40%: **small asteroids** (radius 22 → 30), **mines** (13 → 18), and **mobs** (14 → 19). They read
+  clearer and take a shot without pixel-perfect aim — while aiming stays a pure skill (no snapping, no
+  auto-lead). Nothing got more dangerous: a mine's kill still comes from its blast radius, not its body, and
+  mobs still only threaten with their shots.
 
 ## v0.4.1 — Aim assist (2026-07-23)
 
