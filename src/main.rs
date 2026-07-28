@@ -1926,10 +1926,12 @@ fn roll_rock_kind(level: i32, rng: &mut impl Rng) -> RockKind {
     if rng.gen_bool(pulser) {
         return RockKind::Pulser;
     }
-    // Orange (explosive). Debuts w11; w14 all-orange; w20 Detonator; the Act III baseline (and fallback).
+    // Orange (explosive). Debuts w11; w14 all-orange; w20 Detonator-heavy; the Act III baseline (and fallback).
     let orange = match cw {
         11..=13 => 0.25,
-        14 | 20 => 1.0, // 14 = all-orange danger wave; 20 = the Detonator's wave (its bombs to prime)
+        14 => 1.0,  // the all-orange danger wave
+        20 => 0.55, // the Detonator's wave: heavy on live bombs, but with green fodder mixed in — the boss
+        // only PRIMES non-explosive rocks now (an orange is already a bomb), so it must have prey on field
         17..=19 => 0.3,
         21..=24 | 26..=29 => 0.5, // Act III baseline
         _ => 0.0,                 // wave 30 (the finale) builds its field from the FinaleGroup cycle, not this roll
@@ -10435,9 +10437,12 @@ mod tests {
         // wave 22 still shows a little green as it phases out
         let (_b, g22, _o, _p) = sample(22, 800, &mut rng);
         assert!(g22 > 0, "wave 22 still has some green (phasing out)");
-        // wave 20 (the Detonator) is all-ORANGE — those are the bombs it primes
-        let (b, g, o, p) = sample(20, 200, &mut rng);
-        assert_eq!((b, g, o, p), (0, 0, 200, 0), "wave 20 is nothing but orange (the Detonator's bombs)");
+        // wave 20 (the Detonator): orange-heavy, but with GREEN fodder mixed in — the boss only primes
+        // non-explosive rocks (an all-orange field would leave it nothing to prime = unkillable)
+        let (b, g, o, p) = sample(20, 400, &mut rng);
+        assert_eq!((b, p), (0, 0), "wave 20 has no blue and no pulsers");
+        assert!(o > 0, "wave 20 is heavy on live bombs");
+        assert!(g > 0, "wave 20 keeps green fodder for the Detonator to prime");
         // the devourer wave (10) stays plain blue food so it can be starved
         let (_b, g, o, p) = sample(10, 200, &mut rng);
         assert_eq!((g, o, p), (0, 0, 0), "the devourer wave is plain blue food");
