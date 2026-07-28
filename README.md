@@ -4,18 +4,19 @@ A native Rust + [Bevy 0.16](https://bevy.org) game: a neon-vector love letter to
 *Asteroids*. Ported and grown from an earlier JS/Canvas prototype (kept as the
 reference at `../neon-asteroids/`).
 
-> **Status: playable, in active development.** The full **waves 1–10 arc** with
-> **two bosses** loops, and menus, achievements, top-5 high scores, and fully
-> procedural audio are in. Next up is the wave 11–15 content arc (a new mob, a
-> third boss, and explosive asteroids into the rotation) — see the roadmap.
-> Compiles on stable Rust with Bevy 0.16; `cargo test` green.
+> **Status: content-complete and beatable, in balance/polish.** The full
+> **30-wave run** is in: **six bosses**, seven asteroid types, five earnable
+> powerups, a story told through a decrypting **Pilot Log**, achievements,
+> top-5 high scores, and fully procedural audio. A win rolls the real ending —
+> and a hook for what comes next. Compiles on stable Rust with Bevy 0.16;
+> `cargo test` green.
 
 ## Play (no build)
 
-Grab the latest Windows build from **[Releases](https://github.com/Baz-Studios-LLC/Violet-Edge/releases)**:
-download the `.zip`, unzip, and run **`violet-edge.exe`**. It's self-contained —
-no install, no Rust, no data files (Windows x64). On first launch SmartScreen may
-warn about an unsigned exe: *More info → Run anyway*.
+Grab the latest build from **[Releases](https://github.com/Baz-Studios-LLC/Violet-Edge/releases)**:
+Windows `.zip` (unzip, run **`violet-edge.exe`**), macOS `.dmg` (Apple Silicon), or Linux `.zip`.
+Self-contained — no install, no data files. On first launch Windows SmartScreen may warn about an
+unsigned exe: *More info → Run anyway*.
 
 ## Build from source
 
@@ -42,52 +43,66 @@ MB in `target/`. Rebuilds after that are fast.
 | Thrust | `↑` (or `W`) |
 | Fire | `Space` or left-click |
 | Warp (black hole) | `Shift` |
-| Chain shot | right-click *(once earned)* |
-| Standard ↔ mass shot | `Q` *(once earned)* |
+| Chain beam | right-click *(once earned)* |
+| Cycle shot mode (standard / mass / Warhead) | `Q` *(once earned)* |
 | Pause / resume | `Esc` |
 | Mute music | `M` |
 
-Menus (main / controls / briefing / achievements / pause) are mouse-clickable, or
-use `Enter`/`Space` to play and `Esc` to go back.
+Everything is **rebindable** (keyboard/mouse and controller) on the CONTROLS screen; a full
+controller works out of the box. The pause menu shows your current binds mid-run. Menus are
+mouse-clickable, or use `Enter`/`Space` to play and `Esc` to go back.
 
-## What's in
+## The run
 
-- **Ship** — momentum flight, lives, respawn invulnerability, tuned for precise aiming.
-- **Asteroids** — blue rocks split 3 → 2 → 1; dense **green** rocks (wave 6+) take
-  several hits; **orange** explosive rocks detonate in a blast that obliterates
-  everything nearby and chains other oranges *(mechanic done; not yet in the wave
-  rotation — try one with dev `F3`)*; rare **gold** rocks grant a life if you
-  destroy the whole lineage.
-- **Mines** (wave 2+) — drift in, chain-detonate, blast nearby rocks.
-- **Enemy mobs** (waves 3–4 and 8–9) — fly in, strafe the ship, lob shots, then flee.
-- **Warp** — fire a missile that flies to the wall you aim at and tears open a black
-  hole; it devours rocks, mines and enemies (never the player) and bends the grid.
-- **Chain shot** — a beam that shears everything along its length; earned from a
-  pickup after boss 1 (grab it by flying into it *or* shooting it).
-- **Mass shot** — a bigger, slower, harder-hitting primary; earned after boss 2.
-  Toggle it against the fast standard shot with `Q`.
-- **Boss 1 — the Warden** (wave 5): roams behind a shield of captured rocks and
-  hurls them; strip the shield and hit the exposed core.
-- **Boss 2 — the Glutton** (wave 10): a red seeker that eats rocks to grow bigger
-  and tankier. Starve it and shoot it down — gunfire chips *and* shrinks it. Let it
-  gorge and it overloads: swells huge, detonates a near screen-wide blast, then
-  shrinks and starts over. Both bosses show an HP bar.
-- **Progression & meta** — main menu, controls & briefing screens, an achievements
-  screen with unlock toasts, a pause menu, and a persisted **top-5 high-score** table.
-- **Procedural audio** — every sound is synthesized at runtime, no asset files:
-  fire / rock-break / mine / ship-death / enemy fire+death / warp / 1-up, plus a
-  full-length club-techno track and a distinct boss track.
-- **Presentation** — HDR + bloom neon (Bevy gizmos), on-screen HUD, timed waves.
+**Survive 30 timed waves.** Every 5th wave is a **boss**; each boss's defeat drops a **powerup**
+that echoes its mechanic. The belt escalates in three acts — new asteroid types keep debuting all
+the way to the finale — and the story assembles in the **PILOT LOG** as your field reports decrypt
+with each boss you fell.
+
+### Asteroids (the stars)
+
+| Rock | Debut | Behaviour |
+| --- | --- | --- |
+| **Blue** | 1 | The standard: splits large → mid → small. |
+| **Green** | 6 | Dense — takes hits equal to its size; chipped by bullets, sheared whole by chain/mine/mass. Retires in Act III. |
+| **Orange** | 11 | Explosive — detonates in a big AOE that obliterates and chains other oranges. |
+| **Pulser** | 16 | Pulses lit ↔ dark on a slow beat; **invulnerable while lit** — hit the dark beat. Splits into smaller pulsers. |
+| **Red** | 21 | Grows — absorbs nearby rocks to swell; a plain shot splits it into more reds (whack-a-mole). Blasts kill it clean. |
+| **Beacon** | 23 | Teal aura warden — rocks inside its aura are **immune to your guns until it falls**. Blasts and the warp ignore the aura. |
+| **Cluster** | 26 | Fractured ice — **shatters into a ring of fast shards**. Mass shot vaporizes it clean; the warp swallows it whole. |
+| **Gold** | any | The 1UP: destroy the whole lineage before a piece escapes for +1 life. More frequent early, rare late. |
+
+### Bosses & their drops
+
+| Wave | Boss | Drop |
+| --- | --- | --- |
+| 5 | **The Warden** — fights behind a shield of captured rocks | **Chain beam** |
+| 10 | **The Glutton** — eats rocks to grow; starve it or feed it into overload | **Mass shot** |
+| 15 | **The Slinger** — a gunship that loads and fires cannonball rocks | **Drone** wingman |
+| 20 | **The Detonator** — primes field rocks into live bombs; only vulnerable mid-channel | **Warhead rounds** |
+| 25 | **The Pulsar** — lit/dark like its rocks; shockwaves fling the field | **Nova Shield** (regenerating one-hit barrier) |
+| 30 | **THE PHANTOM** — the finale: a three-phase spectral steersman | *the ending* |
+
+Also in the field: **mines** (wave 2+), brief **enemy mob** windows (3–4, 8–9), rock-riding
+**limpets** (12–13), and **gravity wells** (18–19) — garnish only; the asteroids stay the show.
+
+## Meta
+
+- **Pilot Log** — the story, as transmissions home; each boss's record decrypts when it first falls.
+- **12 achievements** with unlock toasts (boss ladder, lifetime grinds, and the real wave-30 capstones).
+- **Top-5 high scores**, persisted. **HUD** with named ability slots that appear as you earn them.
+- **Any screen size** — the camera scale-to-fits, the field fills your aspect, the HUD scales.
+- **Photosensitivity-aware** — all flashing is kept at or under 3 flashes/sec by design.
+- **Procedural audio** — every sound synthesized at runtime, no asset files: a full-length
+  club-techno track, a distinct boss track, a pre-boss riser, and per-event SFX.
 
 ## Roadmap
 
-Waves 1–10 currently loop. Next is the **11–15 content arc** (see
-[`DESIGN.md`](DESIGN.md) for the full 50-level plan):
+The 30-wave run is done end-to-end (see [`DESIGN.md`](DESIGN.md) for the full design):
 
-- Wire the **explosive orange** rock into waves 11–14.
-- New mob: the **Darter** (fast interceptor that charges) — waves 12–13.
-- Boss 3: **the Slinger** (wave 15) — a ship that fires asteroids at you.
-- Beyond: red (growing) & pulser asteroids, more bosses/pickups, the full arc.
+- **Magnet** powerup (the Phantom's drop) — needs its re-theme first.
+- **New Game+** — replay waves 1–30 harder (the victory screen already teases it).
+- Balance passes from playtesting.
 
 ## Notes
 
@@ -95,6 +110,5 @@ Waves 1–10 currently loop. Next is the **11–15 content arc** (see
 - **Rendering** is immediate-mode gizmos with an HDR + `Bloom` camera for the glow.
 - **Motion is delta-time based** (framerate-independent).
 - **Pinned to Bevy 0.16** deliberately — don't bump the version without updating the code.
-- **Dev keys (debug builds only, compiled out of release):** `F1` toggles
-  invincibility, `F2` skips to the next wave (kills the boss on a boss wave), `F3`
-  drops an explosive orange rock mid-field.
+- **Dev keys (debug builds only, compiled out of release):** `F1` invincibility, `F2` skip
+  wave / kill boss, `F3` drop an orange rock, `F4` jump to the wave-30 finale.
