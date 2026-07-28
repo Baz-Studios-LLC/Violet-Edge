@@ -30,9 +30,15 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
   particles that used to trail behind the ship as broken dashes are gone. In their place: a **fading light
   ribbon** in the ship's own violet, streaming from the exhaust — the light-cycle wall, minus the
   lethality (~half a second long, tapering to a point, purely cosmetic). The thrust flame stays exactly as
-  it was, the hull keeps its classic dart shape, and it's now **filled solid in the ship's neon purple** —
-  the one filled body in a wireframe world, so the player always pops. The finale send-off ship gets the
-  same filled hull + ribbon.
+  it was, the hull keeps its classic dart shape, and it's now **filled in the ship's neon purple — a
+  bright rim over a slightly darker core** — the one filled body in a wireframe world, so the player
+  always pops. The finale send-off ship and the HUD lives icons get the same filled look.
+- **A proper HUD, all along the top.** The warp and chain charge pips move up from the bottom into an
+  **ability strip** under the score, and **each pickup adds itself to the strip** as you earn it: chain
+  pips with their recharge bar, a bracketed **shot-mode slot that always shows what Q has equipped**
+  (standard round / fat mass round / ticked Warhead), the **Nova Shield's state** (bright hex when up,
+  regen bar while it rebuilds), and the drone's little orbiting wingman icon. The Q-toggle name flash now
+  appears top-center under the wave text.
 - **Optimized for any screen size.** The game now renders at a consistent apparent size on every monitor.
   The camera scale-to-fits a fixed design height to the window, so a bigger screen *magnifies* the action
   instead of revealing a vast, sparse empty arena (the cause of it "looking odd" on larger displays). The

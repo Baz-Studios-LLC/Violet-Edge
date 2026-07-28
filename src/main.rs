@@ -390,13 +390,16 @@ fn ship_hull() -> [Vec2; 5] {
 // Draw the ship at `c`, facing `rot` (a unit vector), `scale` ≈ SHIP_R (the HUD icons pass a mini scale).
 // `fill` paints the hull SOLID in its neon color — the ship, and ONLY the ship, is filled (user call);
 // everything else in the game stays wireframe. The fill is ten nested inset copies of the outline
-// (~1.5px apart at ship scale) that bloom fuses into a solid body — no mesh pipeline needed.
+// (~1.5px apart at ship scale) that bloom fuses into a solid body — no mesh pipeline needed. The body
+// DARKENS toward the center while the outline stays full-bright (user call): a lit neon rim over a
+// deeper violet core.
 fn draw_ship(gizmos: &mut Gizmos, c: Vec2, rot: Vec2, scale: f32, color: Color, fill: bool) {
     let rings = if fill { 10 } else { 1 };
     for r in 0..rings {
         let k = 1.0 - r as f32 / rings as f32;
+        let shade = if rings > 1 { 1.0 - 0.5 * (r as f32 / (rings - 1) as f32) } else { 1.0 }; // rim 1.0 → center 0.5
         let pts: Vec<Vec2> = ship_hull().iter().map(|v| c + rot.rotate(*v * k * scale)).collect();
-        gizmos.linestrip_2d(pts, color);
+        gizmos.linestrip_2d(pts, dim(color, shade));
     }
 }
 
@@ -1302,7 +1305,7 @@ struct BossWarnFlash; // full-screen colour pulse behind the rest of the HUD
 #[derive(Component)]
 struct CalmCountdownText; // "NEXT WAVE IN n" — the visual countdown during the post-boss calm
 #[derive(Component)]
-struct ShotModeText; // bottom-center "MASS/STANDARD SHOT" label, fades after a Q toggle
+struct ShotModeText; // top-center "MASS/STANDARD SHOT" label (under the wave text), fades after a Q toggle
 
 // Warp: a slow missile that tears open a black hole which drags in + consumes rocks.
 #[derive(Component)]
@@ -1809,13 +1812,13 @@ fn spawn_hud(mut commands: Commands) {
                 TextColor(Color::srgba(1.0, 0.3, 0.3, 0.0)),
             ));
         });
-    // shot-mode label (bottom-center, above the warp pips) — fades in/out on a Q toggle
+    // shot-mode label (top-center, under the wave text — the HUD lives along the top) — fades in/out on a Q toggle
     commands
         .spawn((
             Hud,
             Node {
                 position_type: PositionType::Absolute,
-                bottom: Val::Px(56.0),
+                top: Val::Px(64.0),
                 left: Val::Px(0.0),
                 width: Val::Percent(100.0),
                 justify_content: JustifyContent::Center,
@@ -4981,8 +4984,8 @@ fn render(
     arena: Res<Arena>,
     run: Res<Run>,
     dev: Res<Dev>,
-    // warp + chain + state + hud-flash + run (Nova Shield) grouped into one tuple param to stay within Bevy's 16-param limit
-    abilities: (Res<Warp>, Res<Chain>, Res<State<GameState>>, Res<HudFlash>, Res<Run>),
+    // warp + chain + state + hud-flash + shot modes grouped into one tuple param to stay within Bevy's 16-param limit
+    abilities: (Res<Warp>, Res<Chain>, Res<State<GameState>>, Res<HudFlash>, Res<MassShot>, Res<Warhead>),
     wf: Res<WarpField>,
     stars: Query<(&Star, &Transform)>,
     ships: Query<(&Ship, &Transform, Option<&ShipTrail>)>,
@@ -4992,15 +4995,17 @@ fn render(
     holes: Query<(&BlackHole, &Transform)>,
     missiles: Query<&Transform, With<WarpMissile>>,
     mines_q: Query<(&Mine, &Transform)>,
-    // grouped into one tuple param to stay within Bevy's 16-param system limit
-    foes: (Query<(&Enemy, &Transform)>, Query<&Transform, With<EnemyBullet>>, Query<(&Limpet, &Transform)>),
+    // grouped into one tuple param to stay within Bevy's 16-param system limit (+ the drone, for its HUD icon)
+    foes: (Query<(&Enemy, &Transform)>, Query<&Transform, With<EnemyBullet>>, Query<(&Limpet, &Transform)>, Query<(), With<Drone>>),
 ) {
     let h = arena.half;
     let t = time.elapsed_secs();
     let (warp_res, chain) = (&abilities.0, &abilities.1);
     let show_run = run_active(abilities.2.get()); // grid + HUD icons only while a run is on
     let hud_flash = &abilities.3;
-    let nova = &abilities.4.nova; // the Nova Shield's state (bubble drawn in the ship loop)
+    let (mass, warhead) = (&abilities.4, &abilities.5); // shot modes — drive the HUD's Q-slot
+    let nova = &run.nova; // the Nova Shield's state (ship bubble + HUD icon)
+    let has_drone = !foes.3.is_empty();
     // a rapid bright shimmer applied to pips/lives right after they refill / a life is gained
     let flick = |active: bool| if active { 1.1 + 0.8 * (t * 18.0).sin() } else { 1.0 }; // ~2.9 Hz (was ~6.4) — no strobe
 
@@ -5348,52 +5353,108 @@ fn render(
         let life_col = dim(sc, flick(hud_flash.life > 0.0)); // flickers briefly on a new life
         for k in 0..run.lives.max(0) {
             let p = Vec2::new(h.x - 32.0 - k as f32 * 24.0, h.y - 48.0);
-            // the same dart as the ship, mini + nose-up (rot = +90°: Vec2::Y rotates (x,y) → (-y,x));
-            // outline only — the fill is the SHIP's, not the HUD symbols'
-            draw_ship(&mut gizmos, p, Vec2::Y, 9.0, life_col, false);
+            // the same solid dart as the ship, mini + nose-up (rot = +90°: Vec2::Y rotates (x,y) → (-y,x))
+            draw_ship(&mut gizmos, p, Vec2::Y, 9.0, life_col, true);
         }
     }
 
-    // warp charge pips (bottom-center): lit per available charge + a refill bar — run only.
-    // `gap`/`py` are shared with the chain pips below, so they live outside the run gate.
-    let gap = 22.0;
-    let py = -h.y + 28.0;
+    // ── the ABILITY STRIP (top-left, under the score): everything lives along the top now (user
+    // direction). The core warp charges always; then each ability APPENDS as it's picked up — chain
+    // pips, the Q-cycled shot-mode slot (showing whichever mode is ACTIVE), the Nova Shield state,
+    // the drone. One row, flowing right. ──
     if show_run {
+        let gap = 22.0;
+        let py = h.y - 84.0; // its own row: below the score text, clear of the boss bar + lives
+        let mut x = -h.x + 30.0;
+
+        // WARP (core kit): pips + refill bar
         let pip_lit = dim(warp, flick(hud_flash.pips > 0.0)); // flickers briefly when charges refill
         for k in 0..WARP_MAX_CHARGES {
-            let px = (k as f32 - (WARP_MAX_CHARGES as f32 - 1.0) * 0.5) * gap;
             let col = if k < warp_res.charges { pip_lit } else { dim(warp, 0.14) };
-            gizmos.circle_2d(Isometry2d::from_translation(Vec2::new(px, py)), 5.0, col);
+            gizmos.circle_2d(Isometry2d::from_translation(Vec2::new(x + k as f32 * gap, py)), 5.0, col);
         }
         if warp_res.cooldown > 0.0 {
             let prog = 1.0 - warp_res.cooldown / WARP_COOLDOWN;
             let w = gap * (WARP_MAX_CHARGES as f32 - 1.0);
-            gizmos.line_2d(Vec2::new(-w * 0.5, py - 11.0), Vec2::new(-w * 0.5 + w * prog, py - 11.0), dim(warp, 0.7));
+            gizmos.line_2d(Vec2::new(x, py - 11.0), Vec2::new(x + w * prog, py - 11.0), dim(warp, 0.7));
         }
-    }
+        x += gap * (WARP_MAX_CHARGES as f32 - 1.0) + 34.0;
 
-    // chain-shot charges (bottom-left) — shown only once the beam is unlocked. A little
-    // bolt glyph + electric-violet pips + a refill bar toward the next charge; mirrors warp.
-    if show_run && chain.unlocked {
-        let cc = chain_color();
-        let bx = -h.x + 30.0;
-        let bolt = [
-            Vec2::new(bx + 2.0, py + 8.0),
-            Vec2::new(bx - 3.0, py + 1.0),
-            Vec2::new(bx + 1.0, py + 1.0),
-            Vec2::new(bx - 2.0, py - 8.0),
-        ];
-        gizmos.linestrip_2d(bolt.to_vec(), cc);
-        let x0 = bx + 22.0;
-        for k in 0..CHAIN_MAX_CHARGES {
-            let px = x0 + k as f32 * gap;
-            let col = if k < chain.charges { cc } else { dim(cc, 0.14) };
-            gizmos.circle_2d(Isometry2d::from_translation(Vec2::new(px, py)), 5.0, col);
+        // CHAIN (the Warden's drop): bolt glyph + pips + refill bar
+        if chain.unlocked {
+            let cc = chain_color();
+            let bolt = [
+                Vec2::new(x + 2.0, py + 8.0),
+                Vec2::new(x - 3.0, py + 1.0),
+                Vec2::new(x + 1.0, py + 1.0),
+                Vec2::new(x - 2.0, py - 8.0),
+            ];
+            gizmos.linestrip_2d(bolt.to_vec(), cc);
+            let x0 = x + 22.0;
+            for k in 0..CHAIN_MAX_CHARGES {
+                let col = if k < chain.charges { cc } else { dim(cc, 0.14) };
+                gizmos.circle_2d(Isometry2d::from_translation(Vec2::new(x0 + k as f32 * gap, py)), 5.0, col);
+            }
+            if chain.charges < CHAIN_MAX_CHARGES {
+                let prog = 1.0 - chain.recharge / CHAIN_RECHARGE;
+                let w = gap * (CHAIN_MAX_CHARGES as f32 - 1.0);
+                gizmos.line_2d(Vec2::new(x0, py - 11.0), Vec2::new(x0 + w * prog, py - 11.0), dim(cc, 0.7));
+            }
+            x = x0 + gap * (CHAIN_MAX_CHARGES as f32 - 1.0) + 34.0;
         }
-        if chain.charges < CHAIN_MAX_CHARGES {
-            let prog = 1.0 - chain.recharge / CHAIN_RECHARGE;
-            let w = gap * (CHAIN_MAX_CHARGES as f32 - 1.0);
-            gizmos.line_2d(Vec2::new(x0, py - 11.0), Vec2::new(x0 + w * prog, py - 11.0), dim(cc, 0.7));
+
+        // SHOT-MODE SLOT (appears once a second mode exists): a bracketed slot showing the ACTIVE
+        // Q-selection — standard round, fat mass round, or the ticked Warhead round.
+        if mass.unlocked || warhead.unlocked {
+            let cx = Vec2::new(x + 6.0, py);
+            // slot bracket: four corner ticks, quietly framing whatever's equipped
+            let bc = Color::srgb(0.45, 0.5, 0.68);
+            let (bw, tick) = (13.0, 5.0);
+            for (sx, sy) in [(-1.0f32, 1.0f32), (1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)] {
+                let corner = cx + Vec2::new(sx * bw, sy * bw);
+                gizmos.line_2d(corner, corner - Vec2::new(sx * tick, 0.0), bc);
+                gizmos.line_2d(corner, corner - Vec2::new(0.0, sy * tick), bc);
+            }
+            if warhead.unlocked && warhead.active {
+                // Warhead round: a violet shell with detonation ticks
+                gizmos.circle_2d(Isometry2d::from_translation(cx), 4.5, warhead_color());
+                for k in 0..4 {
+                    let d = Vec2::from_angle(k as f32 / 4.0 * TAU + TAU / 8.0);
+                    gizmos.line_2d(cx + d * 6.5, cx + d * 9.5, dim(warhead_color(), 0.8));
+                }
+            } else if mass.unlocked && mass.active {
+                // Mass round: the fat shell
+                gizmos.circle_2d(Isometry2d::from_translation(cx), 7.0, mass_color());
+                gizmos.circle_2d(Isometry2d::from_translation(cx), 3.5, dim(mass_color(), 0.6));
+            } else {
+                // Standard round: the small clean shot
+                gizmos.circle_2d(Isometry2d::from_translation(cx), 3.5, bullet_color());
+            }
+            x += 46.0;
+        }
+
+        // NOVA SHIELD (the Pulsar's drop): a mini hex — bright while UP; while regenerating, dim
+        // with a progress underbar, flickering in the final stretch (≤3 Hz, same as the ship ring)
+        if nova.unlocked {
+            let cx = Vec2::new(x + 6.0, py);
+            let hexa: Vec<Vec2> = (0..=6).map(|i| cx + Vec2::from_angle(i as f32 / 6.0 * TAU) * 8.0).collect();
+            if nova.down <= 0.0 {
+                gizmos.linestrip_2d(hexa, dim(nova_color(), 0.85 + 0.15 * (t * 2.2).sin()));
+            } else {
+                let relight = nova.down < NOVA_RELIGHT && (nova.down * 6.0) as i32 % 2 == 0;
+                gizmos.linestrip_2d(hexa, dim(nova_color(), if relight { 0.8 } else { 0.22 }));
+                let prog = 1.0 - nova.down / NOVA_REGEN;
+                gizmos.line_2d(Vec2::new(cx.x - 8.0, py - 13.0), Vec2::new(cx.x - 8.0 + 16.0 * prog, py - 13.0), dim(nova_color(), 0.7));
+            }
+            x += 40.0;
+        }
+
+        // DRONE (the Slinger's drop): a mini wingman — a core with its orbit dot slowly circling
+        if has_drone {
+            let cx = Vec2::new(x + 6.0, py);
+            let dc = drone_color();
+            gizmos.circle_2d(Isometry2d::from_translation(cx), 3.5, dc);
+            gizmos.circle_2d(Isometry2d::from_translation(cx + Vec2::from_angle(t * 2.0) * 8.0), 1.6, dim(dc, 0.85));
         }
     }
 }
