@@ -254,7 +254,6 @@ const PHANTOM_TRAIL_TTL: f32 = 2.2;      // how long each spectral afterimage in
 const PHANTOM_TRAIL_R: f32 = 16.0;       // kill radius of one afterimage
 // ── the win: a death-throes beat + a spectral shard streaking off-screen (a seed for whatever comes next) ──
 const PHANTOM_VICTORY_SECS: f32 = 9.0;      // death-scene SAFETY cap — normally it ends when the shard + ship have flown off (event-driven)
-const PHANTOM_BOOM_EVERY: f32 = 0.5;        // death scene: gap between explosions in the stream — kept ≥0.5s (≤2 flashes/sec) so the pulsing never strobes (photosensitivity)
 const PHANTOM_SHARD_MIN_SPEED: f32 = 60.0;  // the escaping core tears loose slowly…
 const PHANTOM_SHARD_MAX_SPEED: f32 = 270.0; // …then accelerates east off-screen (ease-in over PHANTOM_SHARD_RAMP)
 const PHANTOM_SHARD_RAMP: f32 = 2.1;        // seconds for the fleeing core to reach full speed (slower → the send-off lingers)
@@ -285,8 +284,8 @@ const PICKUP_R: f32 = 30.0; // reward-orb radius
 // Nova Shield (the Pulsar's drop): a regenerating one-hit barrier — see `Nova`.
 const NOVA_REGEN: f32 = 9.0; // s the shield stays DOWN after eating a hit (long enough that it can't tank everything)
 const NOVA_GRACE: f32 = 1.0; // s of immunity as it pops — the overlap that broke it can't instantly re-kill
-const NOVA_RELIGHT: f32 = 0.8; // the regen's final stretch — the ring flickers as it comes back (≤3 Hz, photosafe)
-const NOVA_RING_R: f32 = SHIP_R + 11.0; // the bubble sits just off the hull
+const NOVA_RELIGHT: f32 = 0.8; // the regen's final stretch — the shell flickers as it comes back (≤3 Hz, photosafe)
+const NOVA_SHELL: f32 = 1.8; // the shield is the SHIP'S OWN silhouette scaled out — a second hull layer, not a separate polygon
 const PICKUP_DRIFT: f32 = 32.0; // px/s slow drift
 const PICKUP_LIFE: f32 = 20.0; // the orb lingers this long (well past the 10s boss calm) before vanishing
 
@@ -1507,7 +1506,7 @@ fn ach_meta(a: Ach) -> (&'static str, &'static str) {
         Ach::GreenThumb => ("Green Thumb", "Destroy 500 dense green asteroids"),
         Ach::Minesweeper => ("Minesweeper", "Destroy 250 mines"),
         Ach::GoldRush => ("Gold Rush", "Earn 25 extra lives from gold rocks"),
-        Ach::Edgelord => ("Edgelord", "Beat the game — defeat the Haunt at wave 30"),
+        Ach::Edgelord => ("Edgelord", "Beat the game — defeat the Phantom at wave 30"),
         Ach::Purist => ("Purist", "Beat the game without a single powerup"),
     }
 }
@@ -1853,16 +1852,15 @@ fn spawn_hud(mut commands: Commands) {
                 TextColor(Color::srgba(1.0, 0.3, 0.3, 0.0)),
             ));
         });
-    // shot-mode label (top-center, under the wave text — the HUD lives along the top) — fades in/out on a Q toggle
+    // shot-mode NAME — part of the MODE slot on the ability strip (sits right of its bracket glyph):
+    // names the equipped Q-selection, flaring bright on a toggle
     commands
         .spawn((
             Hud,
             Node {
                 position_type: PositionType::Absolute,
-                top: Val::Px(64.0),
-                left: Val::Px(0.0),
-                width: Val::Percent(100.0),
-                justify_content: JustifyContent::Center,
+                top: Val::Px(HUD_STRIP_LABEL_TOP + 24.0),
+                left: Val::Px(HUD_SLOT_MODE + 44.0),
                 ..default()
             },
         ))
@@ -1870,7 +1868,7 @@ fn spawn_hud(mut commands: Commands) {
             p.spawn((
                 ShotModeText,
                 Text::new(""),
-                TextFont { font_size: 20.0, ..default() },
+                TextFont { font_size: 16.0, ..default() },
                 TextColor(Color::srgba(0.72, 0.28, 1.0, 0.0)), // violet (player kit), starts hidden
             ));
         });
@@ -5030,12 +5028,13 @@ fn shot_mode_update(time: Res<Time>, mut flash: ResMut<ShotModeFlash>, mass: Res
     let unlocked = mass.unlocked || warhead.unlocked;
     let base: f32 = if unlocked { 0.5 } else { 0.0 };
     let alpha = base.max((flash.0 / 0.3).clamp(0.0, 1.0));
+    // short names — the strip's MODE label already says what the slot is
     let (label, rgb) = if warhead.unlocked && warhead.active {
         ("WARHEAD", Color::srgb(0.9, 0.45, 1.0)) // violet
     } else if mass.unlocked && mass.active {
-        ("MASS SHOT", Color::srgb(0.72, 0.28, 1.0)) // violet
+        ("MASS", Color::srgb(0.72, 0.28, 1.0)) // violet
     } else {
-        ("STANDARD SHOT", Color::srgb(0.58, 0.72, 0.9)) // cool steel
+        ("STANDARD", Color::srgb(0.58, 0.72, 0.9)) // cool steel
     };
     for (mut text, mut color) in &mut q {
         if unlocked {
@@ -5377,18 +5376,15 @@ fn render(
             let pulse = 1.0 + 0.06 * (t * 4.0).sin();
             gizmos.circle_2d(Isometry2d::from_translation(c), SHIP_R * 2.2 * pulse, dim(sc, 0.6));
         }
-        // Nova Shield bubble — a glassy slowly-turning hex ring just off the hull (echoes the reward
-        // orb's hexagon). UP: a gentle amplitude-only breathe. In the regen's final stretch it FLICKERS
-        // back on at ≤3 Hz (photosafe — same cadence as the spawn blink). Down otherwise: no ring.
+        // Nova Shield shell — the SHIP'S OWN silhouette scaled out (a second hull layer that turns with
+        // you), in glassy pale violet. UP: a gentle amplitude-only breathe. In the regen's final stretch
+        // it FLICKERS back on at ≤3 Hz (photosafe — same cadence as the spawn blink). Down: no shell.
         if nova.unlocked {
             let show = if nova.down <= 0.0 { true } else { nova.down < NOVA_RELIGHT && (nova.down * 6.0) as i32 % 2 == 0 };
             if show {
-                let breathe = 1.0 + 0.05 * (t * 2.2).sin();
-                let ring: Vec<Vec2> = (0..=6)
-                    .map(|i| c + Vec2::from_angle(i as f32 / 6.0 * TAU + t * 0.6) * NOVA_RING_R * breathe)
-                    .collect();
+                let breathe = 1.0 + 0.04 * (t * 2.2).sin();
                 let glow = if nova.down <= 0.0 { 0.8 + 0.2 * (t * 2.2).sin() } else { 0.55 };
-                gizmos.linestrip_2d(ring, dim(nova_color(), glow));
+                draw_ship(&mut gizmos, c, Vec2::from_angle(s.angle), SHIP_R * NOVA_SHELL * breathe, dim(nova_color(), glow), false);
             }
         }
         if s.invuln > 0.0 && (s.invuln * 6.0) as i32 % 2 == 0 {
@@ -5494,16 +5490,16 @@ fn render(
             }
         }
 
-        // SHIELD (the Nova — the Pulsar's drop): a mini hex — bright while UP; while regenerating,
-        // dim with a progress underbar, flickering in the final stretch (≤3 Hz, same as the ship ring)
+        // SHIELD (the Nova — the Pulsar's drop): a mini ghost-ship outline (the shell IS the ship's
+        // shape) — bright while UP; while regenerating, dim with a progress underbar, flickering in
+        // the final stretch (≤3 Hz, same as the shell itself)
         if nova.unlocked {
             let cx = sx(HUD_SLOT_SHIELD, 16.0);
-            let hexa: Vec<Vec2> = (0..=6).map(|i| cx + Vec2::from_angle(i as f32 / 6.0 * TAU) * 8.0).collect();
             if nova.down <= 0.0 {
-                gizmos.linestrip_2d(hexa, dim(nova_color(), 0.85 + 0.15 * (t * 2.2).sin()));
+                draw_ship(&mut gizmos, cx, Vec2::Y, 9.0, dim(nova_color(), 0.85 + 0.15 * (t * 2.2).sin()), false);
             } else {
                 let relight = nova.down < NOVA_RELIGHT && (nova.down * 6.0) as i32 % 2 == 0;
-                gizmos.linestrip_2d(hexa, dim(nova_color(), if relight { 0.8 } else { 0.22 }));
+                draw_ship(&mut gizmos, cx, Vec2::Y, 9.0, dim(nova_color(), if relight { 0.8 } else { 0.22 }), false);
                 let prog = 1.0 - nova.down / NOVA_REGEN;
                 gizmos.line_2d(cx + Vec2::new(-8.0, -13.0), cx + Vec2::new(-8.0 + 16.0 * prog, -13.0), dim(nova_color(), 0.7));
             }
@@ -5749,8 +5745,16 @@ fn phantom_update(
             p += (Vec2::ZERO - p) * (1.0 - (-dt * 2.4).exp());
             stf.translation.x = p.x;
             stf.translation.y = p.y;
-            if (sg.pulse * 6.0).sin() > 0.7 {
-                burst(&mut commands, p, phantom_color(), 3, 220.0, &mut rng); // reforming crackle
+            // the reset's two beats: first the spent form DIES like any boss (crackle-apart bursts at
+            // random offsets, same language as the Warden/Glutton/… deaths)…
+            if sg.transition > PHANTOM_RESET_SECS * 0.55 {
+                for _ in 0..3 {
+                    let off = Vec2::from_angle(rng.gen_range(0.0..TAU)) * rng.gen_range(0.0..PHANTOM_R);
+                    burst(&mut commands, p + off, phantom_color(), 3, 240.0, &mut rng);
+                }
+            } else if (sg.pulse * 6.0).sin() > 0.7 {
+                // …then what's left REFORMS into the new shape
+                burst(&mut commands, p, phantom_color(), 3, 220.0, &mut rng);
             }
             if sg.transition <= 0.0 {
                 sg.phase += 1; // the reset completes → the next phase begins with a fresh pool
@@ -5784,7 +5788,12 @@ fn phantom_update(
                 commands.entity(te).try_despawn(); // clear the p3 wake
             }
             if !sg.erupted {
-                // BEAT 1 — GATHER: the dying boss is drawn back to the MIDDLE, then it ERUPTS
+                // BEAT 1 — GATHER: the dying boss is drawn back to the MIDDLE, crackling apart like
+                // any other boss death on the way, then it ERUPTS
+                for _ in 0..3 {
+                    let off = Vec2::from_angle(rng.gen_range(0.0..TAU)) * rng.gen_range(0.0..PHANTOM_R);
+                    burst(&mut commands, p + off, phantom_color(), 3, 240.0, &mut rng);
+                }
                 p += (Vec2::ZERO - p) * (1.0 - (-dt * 6.0).exp());
                 stf.translation.x = p.x;
                 stf.translation.y = p.y;
@@ -5806,9 +5815,9 @@ fn phantom_update(
                         burst(&mut commands, rt.translation.truncate(), phantom_color(), 8, 260.0, &mut rng);
                         commands.entity(re).despawn();
                     }
-                    // the opening BANG — a big burst of light from the middle, carried all the way to the edge…
+                    // the final BANG — the one grand blast (a regular boss death, writ finale-sized):
+                    // a single burst of light from the middle, carried all the way to the edge
                     light_burst_to_edge(&mut commands, Vec2::ZERO, h, 220, Color::srgb(7.0, 7.6, 8.2), &mut rng);
-                    sg.dive = 0.0; // …then a CONSTANT stream of explosions starts (see beat 2), timed off `dive`
                     // the true-form CORE tears free and flees EAST — small + subtle, lost among the light
                     let verts: Vec<Vec2> = (0..5).map(|i| Vec2::from_angle(i as f32 / 5.0 * TAU + 0.3) * (5.0 + rng.gen_range(-1.5..3.0))).collect();
                     commands.spawn((
@@ -5826,12 +5835,11 @@ fn phantom_update(
             let (shards, departing) = &finale_fx;
             let shard_gone = shards.is_empty();
             if !shard_gone {
-                // a CONSTANT STREAM of explosions from around the middle while the core flees — keeps the
-                // screen full of light until it's off-screen (not a single split-second pop)
-                sg.dive -= dt;
-                if sg.dive <= 0.0 {
-                    sg.dive = PHANTOM_BOOM_EVERY;
-                    light_burst_to_edge(&mut commands, Vec2::ZERO, h, 24, Color::srgb(7.0, 7.6, 8.2), &mut rng); // reaches the edge; softer per-pulse so the slow rhythm doesn't strobe
+                // constant dying CRACKLE around the middle while the core flees — steady light in the
+                // same language as every other boss death (no rhythmic pulses: aperiodic, never a strobe)
+                for _ in 0..4 {
+                    let off = Vec2::from_angle(rng.gen_range(0.0..TAU)) * rng.gen_range(0.0..PHANTOM_R * 2.4);
+                    burst(&mut commands, off, phantom_color(), 3, 280.0, &mut rng);
                 }
             }
             let mut launched_ship = false;
@@ -5880,9 +5888,11 @@ fn phantom_update(
                 }
                 sfx.write(SoundFx::Haunt);
             } else {
-                sg.transition = PHANTOM_RESET_SECS; // fracture → reset → next phase
+                sg.transition = PHANTOM_RESET_SECS; // "death" throes → reform → next phase
                 sg.flash = 0.8;
-                burst(&mut commands, p, phantom_color(), 40, 360.0, &mut rng);
+                // each phase ENDS like a regular boss kill: the big double blast every other boss gets…
+                burst(&mut commands, p, phantom_color(), 50, 460.0, &mut rng);
+                burst(&mut commands, p, Color::srgb(5.0, 4.0, 5.0), 24, 300.0, &mut rng);
                 sfx.write(SoundFx::Haunt);
             }
             continue;
@@ -6367,7 +6377,9 @@ fn detonator_update(
     dev: Res<Dev>,
     ships: Query<(Entity, &Transform, &Ship), Without<Detonator>>,
     mut dets: Query<(Entity, &mut Transform, &mut Detonator)>,
-    rocks: Query<(Entity, &Transform), (With<Asteroid>, Without<Detonating>, Without<Shielded>, Without<Detonator>, Without<Gold>)>, // never primes the gold 1UP into a bomb
+    // never primes the gold 1UP — and never an ORANGE: those are already bombs, so charging one was
+    // redundant (its primed rocks are the boss's own red-white munitions, distinct from the orange type)
+    rocks: Query<(Entity, &Transform), (With<Asteroid>, Without<Detonating>, Without<Shielded>, Without<Detonator>, Without<Gold>, Without<Explosive>)>,
 ) {
     let dt = time.delta_secs();
     let (mut score, mut wave, mut banner, mut stats) = reward;
@@ -7192,7 +7204,8 @@ fn spawn_victory_ui(mut commands: Commands, score: Res<Score>, font: Res<MenuFon
     // each line FADES IN on a stagger (see victory_reveal) — a slow, credits-style reveal, not a pop
     commands.entity(root).with_children(|p| {
         p.spawn((text_f(f, 54.0, title.with_alpha(0.0), "YOU SAVED THE PLANET"), VictoryLine { delay: 0.3, color: title }));
-        p.spawn((text_f(f, 19.0, body.with_alpha(0.0), "The Belt is still. The Haunt's core fled east. Home is safe - for now."), VictoryLine { delay: 1.6, color: body }));
+        // (the fleeing core is never NAMED — it's the odd thing only players really watching will catch)
+        p.spawn((text_f(f, 19.0, body.with_alpha(0.0), "The Belt is still. The Phantom is gone. Home is safe - for now."), VictoryLine { delay: 1.6, color: body }));
         // the canon's sequel hook, revealed last among the story beats: who the Haunt answered to
         p.spawn((text_f(f, 16.0, dim_c.with_alpha(0.0), "Far past the edge, the ARCHITECT is still building."), VictoryLine { delay: 2.9, color: dim_c }));
         p.spawn((text_f(f, 24.0, body.with_alpha(0.0), &format!("FINAL SCORE   {}", score.0)), VictoryLine { delay: 4.0, color: body }, Node { margin: UiRect::top(Val::Px(8.0)), ..default() }));
@@ -7544,7 +7557,7 @@ fn lore_entries(s: &Stats) -> [(&'static str, [&'static str; 2], bool, Color); 8
             Color::srgb(0.6, 0.95, 1.0),
         ),
         (
-            "THE HAUNT",
+            "THE PHANTOM",
             [
                 "The steersman. It knew our world's name, and it called it an acquisition.",
                 "I broke its mask; its core fled east. It wasn't destroyed — and it wasn't in charge.",
@@ -7558,7 +7571,7 @@ fn lore_entries(s: &Stats) -> [(&'static str, [&'static str; 2], bool, Color); 8
                 "Final entry. The thing the steersman answered to breaks worlds for parts and shelves them.",
                 "Every rock I've shot was somebody's ground. It's still building. I'm going after it.",
             ],
-            s.phantom, // the win reveals who the Haunt answered to
+            s.phantom, // the win reveals who the Phantom answered to
             Color::srgb(1.0, 0.9, 0.6),
         ),
     ]
@@ -7584,7 +7597,7 @@ fn spawn_lore_ui(mut commands: Commands, stats: Res<Stats>, font: Res<MenuFont>)
                 }
             } else {
                 let hint = if i == 7 {
-                    "Awaiting the final transmission.".to_string()
+                    "Awaiting the final transmission.".to_string() // follows the Phantom's record
                 } else {
                     format!("Awaiting transmission — survive wave {}.", i * 5)
                 };

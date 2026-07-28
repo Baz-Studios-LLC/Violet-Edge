@@ -5,7 +5,21 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
-_Nothing yet — work in progress lands here, then gets renamed to the next version when a release is cut._
+- **The finale boss is THE PHANTOM, everywhere.** Every remaining player-facing "Haunt" (achievement text,
+  the Pilot Log records) now says the Phantom, matching its boss-warning name.
+- **Each Phantom phase ends like a real boss kill.** Depleting a phase now fires the same big double blast
+  every other boss dies with, and the spent form crackles apart before what's left reforms into the next
+  shape. The final death drops the pulsating light show: it crackles apart while being drawn to center,
+  erupts in ONE grand screen-filling blast, then keeps a steady (never rhythmic) dying crackle going while
+  the scene plays out. The ending text no longer mentions what flees east — that's for sharp eyes only.
+- **The Nova Shield is your own silhouette now.** The shield shell is the ship's shape scaled outward — a
+  second hull layer that turns with you — instead of a floating hexagon. The HUD SHIELD icon matches
+  (a little ghost-ship outline).
+- **The Detonator no longer primes orange rocks** — they're already bombs; charging one was redundant. Its
+  munitions are its own red-white primed rocks, cooked from plain asteroids only.
+- **MODE slot and mode name are one thing.** The equipped-shot name (STANDARD / MASS / WARHEAD) now sits
+  right beside the MODE slot's glyph on the ability strip, flaring on a Q toggle — no more separate
+  floating label.
 
 ## v0.4.3 — Nova Shield, achievements, the Pilot Log, and a real HUD (2026-07-28)
 
