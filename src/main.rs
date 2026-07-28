@@ -393,6 +393,23 @@ fn draw_ship(gizmos: &mut Gizmos, c: Vec2, rot: Vec2, scale: f32, color: Color) 
     gizmos.linestrip_2d(pts, color);
 }
 
+// The Tron light ribbon: a fading band along `pts` (oldest → newest) in `color`. A hot center line
+// plus two soft parallel edges give it real WIDTH (gizmo lines are 1px; bloom fuses the three into a
+// glowing band), tapering to a point at the tail like a ribbon should.
+fn draw_light_ribbon(gizmos: &mut Gizmos, pts: &[Vec2], color: Color) {
+    let n = pts.len();
+    for i in 1..n {
+        let f = i as f32 / n as f32; // 0 = oldest → 1 = at the ship
+        let (a, b) = (pts[i - 1], pts[i]);
+        let nrm = (b - a).perp().normalize_or_zero();
+        let w = 2.2 * f; // half-width: full body at the ship, a point at the tail
+        let col = dim(color, 0.05 + 0.75 * f * f);
+        gizmos.line_2d(a, b, col);
+        gizmos.line_2d(a + nrm * w, b + nrm * w, dim(col, 0.55));
+        gizmos.line_2d(a - nrm * w, b - nrm * w, dim(col, 0.55));
+    }
+}
+
 fn rock_color() -> Color {
     Color::srgb(0.25, 1.9, 4.0)
 } // neon blue (peak dialled back ~20% to ease the bloom)
@@ -2548,11 +2565,13 @@ fn bullet_trail(mut q: Query<(&Transform, &mut Bullet)>) {
     }
 }
 
-// Lay down the ship's light trail (same recording pattern as bullet_trail). Component-driven, so it
-// also feeds the finale's DepartingShip.
-fn ship_trail(mut q: Query<(&Transform, &mut ShipTrail)>) {
-    for (t, mut tr) in &mut q {
-        tr.0.push(t.translation.truncate());
+// Lay down the ship's light trail (same recording pattern as bullet_trail). Records the FLAME ROOT —
+// just behind the tail along the facing — so the ribbon streams from the exhaust, not out of the
+// hull's middle. Component-driven, so it also feeds the finale's DepartingShip (no Ship → faces +X).
+fn ship_trail(mut q: Query<(&Transform, Option<&Ship>, &mut ShipTrail)>) {
+    for (t, ship, mut tr) in &mut q {
+        let back = Vec2::from_angle(ship.map_or(0.0, |s| s.angle));
+        tr.0.push(t.translation.truncate() - back * SHIP_R * 0.55);
         if tr.0.len() > SHIP_TRAIL_LEN {
             let extra = tr.0.len() - SHIP_TRAIL_LEN;
             tr.0.drain(0..extra);
@@ -5298,15 +5317,11 @@ fn render(
         }
         let rot = Vec2::from_angle(s.angle);
         // TRON-style light ribbon (user direction): the ship's recent path in its own violet, short
-        // and fading — the light-cycle wall, minus the length and the lethality. Purely cosmetic; it
-        // replaces the old exhaust SPARK particles (which persisted as broken dashes). Stationary,
-        // the points coincide and it vanishes on its own.
+        // and fading — the light-cycle wall, minus the length and the lethality. Rooted at the flame
+        // (recorded there by `ship_trail`), with real width (see draw_light_ribbon). Purely cosmetic;
+        // it replaces the old exhaust SPARK particles. Stationary, it vanishes on its own.
         if let Some(tr) = trail {
-            let n = tr.0.len();
-            for i in 1..n {
-                let f = i as f32 / n as f32; // 0 = oldest → 1 = at the ship
-                gizmos.line_2d(tr.0[i - 1], tr.0[i], dim(sc, 0.05 + 0.75 * f * f));
-            }
+            draw_light_ribbon(&mut gizmos, &tr.0, sc);
         }
         // thrust flame — the original triangular exhaust, flickering off the tail while burning
         if s.flame > 0.02 {
@@ -6586,11 +6601,7 @@ fn render_boss(
         let sc = ship_color();
         // the same Tron light ribbon as in play, streaming behind the send-off
         if let Some(tr) = dtrail {
-            let n = tr.0.len();
-            for i in 1..n {
-                let f = i as f32 / n as f32;
-                gizmos.line_2d(tr.0[i - 1], tr.0[i], dim(sc, 0.05 + 0.8 * f * f));
-            }
+            draw_light_ribbon(&mut gizmos, &tr.0, sc);
         }
         // thrust flame out the back (west), flickering — full-burn for the send-off
         let fl = 0.7 + 0.3 * ds.flame.sin();
