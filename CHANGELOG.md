@@ -3,6 +3,10 @@
 Patch notes for the Rust + Bevy build. Newest first. (Releases are cut to GitHub and picked up by the
 Baz Studios launcher.) **Keep this current with every change** — it's the record testers read.
 
+## Unreleased
+
+_Nothing yet — work in progress lands here, then gets renamed to the next version when a release is cut._
+
 ## v0.4.2 — Bigger small targets (2026-07-28)
 
 - **Small things are bigger now — and the aim assist is gone.** The v0.4.1 aim assist didn't feel good (it
