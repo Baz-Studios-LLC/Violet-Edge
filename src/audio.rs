@@ -533,6 +533,23 @@ pub fn achievement_sfx_wav() -> Vec<u8> {
     })
 }
 
+// Two clipped data-blips — the TRANSMISSION RECEIVED cue for a Pilot Log decrypt. Deliberately
+// radio-flavored (soft-square, dry, just two notes) so it never reads as the achievement chime's
+// celebration: a log entry is information arriving, not a fanfare.
+pub fn log_sfx_wav() -> Vec<u8> {
+    render_sfx(0.5, |t, _| {
+        let blip = |f: f32, delay: f32| {
+            if t < delay {
+                return 0.0;
+            }
+            let nt = t - delay;
+            let s = (TAU * f * nt).sin();
+            (s.signum() * 0.55 + s * 0.45) * (1.0 - (-nt * 200.0).exp()) * (-nt * 16.0).exp()
+        };
+        (blip(880.0, 0.0) + blip(1174.7, 0.16)) * 0.2
+    })
+}
+
 // A bright, fast six-note ascending run — a classic "1UP" jingle for the gold rock. Deliberately
 // quicker, higher and sparklier than the achievement chime so an extra life reads as its own event.
 pub fn life_sfx_wav() -> Vec<u8> {
@@ -624,6 +641,7 @@ mod tests {
             toggle_sfx_wav(),
             nova_pop_sfx_wav(),
             nova_up_sfx_wav(),
+            log_sfx_wav(),
         ] {
             assert_eq!(&wav[0..4], b"RIFF", "sfx starts with a RIFF header");
             assert_eq!(&wav[8..12], b"WAVE", "sfx is a WAVE file");

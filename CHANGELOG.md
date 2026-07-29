@@ -3,6 +3,16 @@
 Patch notes for the Rust + Bevy build. Newest first. (Releases are cut to GitHub and picked up by the
 Baz Studios launcher.) **Keep this current with every change** — it's the record testers read.
 
+## Unreleased
+
+- **The Pilot Log starts sealed.** THE BELT no longer reads before you've ever flown — it decrypts
+  the moment your first run launches (the locked slot says "Awaiting deployment."). A brand-new
+  player now opens an all-static log: the story only exists once the pilot is out there.
+- **PILOT LOG UPDATED toasts.** When an entry decrypts — first launch, or a boss's record as it
+  falls — a toast pops in the top-center column (titled in that entry's accent color) with a dry
+  two-blip radio cue, distinct from the achievement chime. Old saves never re-toast on boot, and
+  the toast card itself is now one shared helper across achievements / extra-life / log events.
+
 ## v0.4.5 — 23 achievements, progress on every death, and a Detonator that fights (2026-07-29)
 
 - **Every death now shows your progress.** The Game Over screen gained two lines under the score:

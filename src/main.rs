@@ -1667,6 +1667,12 @@ struct RunFlags {
     powerup_used: bool, // grabbed any pickup this run (for the Purist achievement)
 }
 
+// Which Pilot Log entries have been SEEN decrypted (drives the "PILOT LOG UPDATED" toast).
+// Initialized from the loaded Stats at startup so a returning save never re-toasts old reports;
+// `lore_watch` flips a slot + pops a toast the first frame its gate opens.
+#[derive(Resource, Default)]
+struct LoreSeen([bool; 8]);
+
 #[derive(Component)]
 struct ToastRoot; // persistent top-center column that unlock toasts stack into
 #[derive(Component)]
@@ -7719,7 +7725,7 @@ fn lore_entries(s: &Stats) -> [(&'static str, [&'static str; 2], bool, Color); 8
                 "It's not a mass — it's a field. Thousands of rocks, dense, holding formation.",
                 "Natural belts drift. This one is keeping station. Beginning my sweep.",
             ],
-            true, // the first transmission, sent on approach
+            s.runs >= 1, // sent on the FIRST deployment — before you've flown, there's nothing to read
             Color::srgb(0.35, 0.7, 1.0),
         ),
         (
@@ -7810,10 +7816,10 @@ fn spawn_lore_ui(mut commands: Commands, stats: Res<Stats>, font: Res<MenuFont>)
                         log.spawn(text_f(f, 14.0, body_col, line));
                     }
                 } else {
-                    let hint = if i == 7 {
-                        "Awaiting the final transmission.".to_string() // follows the Phantom's record
-                    } else {
-                        format!("Awaiting transmission — survive wave {}.", i * 5)
+                    let hint = match i {
+                        0 => "Awaiting deployment.".to_string(), // decrypts the moment a first run launches
+                        7 => "Awaiting the final transmission.".to_string(), // follows the Phantom's record
+                        _ => format!("Awaiting transmission — survive wave {}.", i * 5),
                     };
                     log.spawn((text_f(f, 18.0, locked_t, "▮▮▮▮▮▮▮▮  NO SIGNAL"), Node { margin: UiRect::top(Val::Px(gap)), ..default() }));
                     log.spawn(text_f(f, 14.0, locked_b, &hint));
@@ -8128,6 +8134,29 @@ fn mark_title_intro_played(mut intro: ResMut<TitleIntroPlayed>) {
 }
 
 // ─────────────────────────────── achievement runtime ──────────────────
+// One toast card in the top-center column: a small header line over a big name line on a dark tint.
+// Shared by achievements, the gold 1UP, and Pilot Log decrypts — one card, three tints.
+fn spawn_toast(commands: &mut Commands, root: &Query<Entity, With<ToastRoot>>, bg: Color, header: &str, name: &str, name_col: Color) {
+    let Some(r) = root.iter().next() else { return };
+    commands.entity(r).with_children(|p| {
+        p.spawn((
+            Toast { life: TOAST_LIFE },
+            Node {
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                padding: UiRect::axes(Val::Px(16.0), Val::Px(8.0)),
+                margin: UiRect::top(Val::Px(6.0)),
+                ..default()
+            },
+            BackgroundColor(bg),
+        ))
+        .with_children(|t| {
+            t.spawn(text(15.0, Color::srgb(0.7, 0.85, 1.2), header));
+            t.spawn(text(22.0, name_col, name));
+        });
+    });
+}
+
 // The persistent top-center column that unlock toasts stack into.
 fn spawn_toast_root(mut commands: Commands) {
     commands.spawn((
@@ -8144,14 +8173,17 @@ fn spawn_toast_root(mut commands: Commands) {
     ));
 }
 
-// Load lifetime progress at startup and mark already-earned achievements as unlocked (so they
-// don't re-toast on boot).
-fn load_progress(mut stats: ResMut<Stats>, mut unlocked: ResMut<Achievements>) {
+// Load lifetime progress at startup and mark already-earned achievements + already-decrypted log
+// entries as seen (so neither re-toasts on boot).
+fn load_progress(mut stats: ResMut<Stats>, mut unlocked: ResMut<Achievements>, mut seen: ResMut<LoreSeen>) {
     if let Some(saved) = read_progress() {
         *stats = saved;
     }
     for (i, &a) in ACHIEVEMENTS.iter().enumerate() {
         unlocked.unlocked[i] = ach_met(a, &stats);
+    }
+    for (i, (.., open, _)) in lore_entries(&stats).into_iter().enumerate() {
+        seen.0[i] = open;
     }
 }
 
@@ -8170,29 +8202,33 @@ fn achievements(
         }
         unlocked.unlocked[i] = true;
         let (name, _) = ach_meta(a);
-        if let Some(r) = root.iter().next() {
-            commands.entity(r).with_children(|p| {
-                p.spawn((
-                    Toast { life: TOAST_LIFE },
-                    Node {
-                        flex_direction: FlexDirection::Column,
-                        align_items: AlignItems::Center,
-                        padding: UiRect::axes(Val::Px(16.0), Val::Px(8.0)),
-                        margin: UiRect::top(Val::Px(6.0)),
-                        ..default()
-                    },
-                    BackgroundColor(Color::srgba(0.10, 0.03, 0.18, 0.92)),
-                ))
-                .with_children(|t| {
-                    t.spawn(text(15.0, Color::srgb(0.7, 0.85, 1.2), "ACHIEVEMENT UNLOCKED"));
-                    t.spawn(text(22.0, mass_color(), name));
-                });
-            });
-        }
+        spawn_toast(&mut commands, &root, Color::srgba(0.10, 0.03, 0.18, 0.92), "ACHIEVEMENT UNLOCKED", name, mass_color());
         if let Some(b) = &bank {
             one_shot(&mut commands, b.achievement.clone(), 0.6);
         }
         save_progress(&stats);
+    }
+}
+
+// Poll the Pilot Log gates; the first frame an entry decrypts, pop a PILOT LOG UPDATED toast in the
+// entry's accent + a radio blip. The story advancing is a reward — say so in the moment it happens
+// (THE BELT lands during the first launch; boss records land as their boss dies).
+fn lore_watch(
+    mut commands: Commands,
+    stats: Res<Stats>,
+    mut seen: ResMut<LoreSeen>,
+    bank: Option<Res<SfxBank>>,
+    root: Query<Entity, With<ToastRoot>>,
+) {
+    for (i, (title, _, open, accent)) in lore_entries(&stats).into_iter().enumerate() {
+        if seen.0[i] || !open {
+            continue;
+        }
+        seen.0[i] = true;
+        spawn_toast(&mut commands, &root, Color::srgba(0.03, 0.10, 0.16, 0.92), "PILOT LOG UPDATED", title, accent);
+        if let Some(b) = &bank {
+            one_shot(&mut commands, b.log.clone(), 0.55);
+        }
     }
 }
 
@@ -8230,26 +8266,8 @@ fn gold_rush_update(
             s.golds += 1; // achievement progress: an extra life earned from a gold lineage
         }
         flash.life = HUD_FLASH_TIME; // flicker the life icons on the new life
-        if let Some(r) = root.iter().next() {
-            commands.entity(r).with_children(|p| {
-                p.spawn((
-                    Toast { life: TOAST_LIFE },
-                    Node {
-                        flex_direction: FlexDirection::Column,
-                        align_items: AlignItems::Center,
-                        padding: UiRect::axes(Val::Px(16.0), Val::Px(8.0)),
-                        margin: UiRect::top(Val::Px(6.0)),
-                        ..default()
-                    },
-                    BackgroundColor(Color::srgba(0.16, 0.11, 0.02, 0.92)),
-                ))
-                .with_children(|t| {
-                    // UI colours must stay <= 1 (TextColor clamps per-channel), so a plain gold here
-                    t.spawn(text(15.0, Color::srgb(0.7, 0.85, 1.2), "EXTRA LIFE"));
-                    t.spawn(text(22.0, Color::srgb(0.95, 0.8, 0.35), "GOLD ROCK CLEARED"));
-                });
-            });
-        }
+        // UI colours must stay <= 1 (TextColor clamps per-channel), so a plain gold here
+        spawn_toast(&mut commands, &root, Color::srgba(0.16, 0.11, 0.02, 0.92), "EXTRA LIFE", "GOLD ROCK CLEARED", Color::srgb(0.95, 0.8, 0.35));
         if let Some(b) = &bank {
             one_shot(&mut commands, b.life.clone(), 0.6);
         }
@@ -8565,6 +8583,7 @@ struct SfxBank {
     achievement: Handle<AudioSource>,
     life: Handle<AudioSource>, // gold-rock 1UP jingle
     toggle: Handle<AudioSource>, // standard ↔ mass shot switch
+    log: Handle<AudioSource>, // Pilot Log transmission-received blip
 }
 
 fn start_sfx(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
@@ -8582,6 +8601,7 @@ fn start_sfx(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
         achievement: sources.add(AudioSource { bytes: audio::achievement_sfx_wav().into() }),
         life: sources.add(AudioSource { bytes: audio::life_sfx_wav().into() }),
         toggle: sources.add(AudioSource { bytes: audio::toggle_sfx_wav().into() }),
+        log: sources.add(AudioSource { bytes: audio::log_sfx_wav().into() }),
     });
 }
 
@@ -8767,6 +8787,7 @@ fn main() {
         .insert_resource(Warhead::default())
         .insert_resource(Stats::default())
         .insert_resource(Achievements::default())
+        .insert_resource(LoreSeen::default())
         .insert_resource(RunFlags::default())
         .insert_resource(GoldRush::default())
         .insert_resource(FireArmed::default())
@@ -8787,7 +8808,7 @@ fn main() {
         // always: keep the arena sized, handle pause input, refresh the HUD text
         .add_systems(Update, (update_arena, update_ui_scale, pause_toggle, update_wave_text, update_score_text, wave_banner_update, calm_countdown_update, boss_warning_update).chain())
         // always: watch for achievement unlocks + age out toasts + hide the HUD off-run + menu buttons
-        .add_systems(Update, (achievements, toast_update, hud_visibility, hud_ability_labels, button_shimmer, button_click, hud_flash_tick, shot_mode_update))
+        .add_systems(Update, (achievements, lore_watch, toast_update, hud_visibility, hud_ability_labels, button_shimmer, button_click, hud_flash_tick, shot_mode_update))
         // the neon warm-up + frame pulse is a START-MENU flourish only (not the achievements screen)
         .add_systems(Update, menu_title_fx.run_if(in_state(GameState::Menu)))
         // render in PostUpdate so it ALWAYS runs after every Update system (incl.
@@ -10172,10 +10193,12 @@ mod tests {
 
     #[test]
     fn lore_entries_decrypt_with_their_boss_flags() {
-        // fresh player: only THE BELT is readable
+        // a save that has never LAUNCHED shows nothing — the log only begins once the pilot flies
         let fresh = lore_entries(&Stats::default());
-        assert!(fresh[0].2, "THE BELT is known from the first flight");
-        assert_eq!(fresh.iter().filter(|e| e.2).count(), 1, "everything else starts encrypted");
+        assert_eq!(fresh.iter().filter(|e| e.2).count(), 0, "no entry decrypts before the first launch");
+        let first_flight = lore_entries(&Stats { runs: 1, ..default() });
+        assert!(first_flight[0].2, "THE BELT decrypts on the first deployment");
+        assert_eq!(first_flight.iter().filter(|e| e.2).count(), 1, "and only THE BELT");
         // each boss flag decrypts exactly its record (spot-check the ladder)
         let after_warden = lore_entries(&Stats { warden: true, ..default() });
         assert!(after_warden[1].2, "the Warden's fall decrypts THE WARDEN");
@@ -10183,6 +10206,25 @@ mod tests {
         // the wave-30 win reveals both the Haunt's record AND who it answered to
         let after_win = lore_entries(&Stats { phantom: true, ..default() });
         assert!(after_win[6].2 && after_win[7].2, "beating the Haunt decrypts THE HAUNT and THE ARCHITECT");
+    }
+
+    #[test]
+    fn a_log_decrypt_pops_one_toast_and_only_once() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        let stats = Stats { runs: 1, ..default() };
+        // LoreSeen seeded from the loaded save, exactly as load_progress does at startup
+        app.insert_resource(LoreSeen(lore_entries(&stats).map(|(.., open, _)| open)));
+        app.insert_resource(stats);
+        app.world_mut().spawn((ToastRoot, Node::default()));
+        app.add_systems(Update, lore_watch);
+        app.update();
+        assert_eq!(app.world_mut().query::<&Toast>().iter(app.world()).count(), 0, "already-decrypted entries never re-toast on boot");
+        app.world_mut().resource_mut::<Stats>().warden = true;
+        app.update();
+        assert_eq!(app.world_mut().query::<&Toast>().iter(app.world()).count(), 1, "the Warden's record decrypting pops exactly one toast");
+        app.update();
+        assert_eq!(app.world_mut().query::<&Toast>().iter(app.world()).count(), 1, "and never a second one for the same entry");
     }
 
     #[test]

@@ -320,11 +320,17 @@ entry says it plainly: the ARCHITECT breaks worlds for parts, "every rock I've s
 ground. I'm going after it." (the sequel).
 
 Surfaces: the **BRIEFING** stays mystery-clean (user's text: a large mass approaching fast, the VIOLET
-CUTTER deployed — a prototype ship, one pilot, possibly the only chance; closer kept: "Cut the field.
-Hold the edge."); the **PILOT LOG screen** (main menu, `GameState::Lore`, button `PILOT LOG n/8`) holds
-the 8 reports — THE BELT readable from the start, each boss's report **decrypting when that boss first
-falls** (gated on the lifetime `Stats` flags), the wave-30 win opening THE HAUNT + THE ARCHITECT
-(`lore_entries`); locked rows read "▮▮▮ NO SIGNAL / Awaiting transmission — survive wave N." The
+CUTTER deployed — a prototype ship, one pilot, possibly the only chance; objective: "Investigate and
+hold back the approaching mass" — the old "Cut the field, hold the edge" closer was CUT as cheesy);
+the **PILOT LOG screen** (main menu, `GameState::Lore`, button `PILOT LOG n/8`) holds the 8 reports —
+**nothing readable on a virgin save**: THE BELT decrypts on the FIRST LAUNCH (`runs >= 1`; its locked
+row reads "Awaiting deployment." — user call 2026-07-29: the log shouldn't show before the game is
+even started), each boss's report **decrypting when that boss first falls** (gated on the lifetime
+`Stats` flags), the wave-30 win opening THE HAUNT + THE ARCHITECT (`lore_entries`); other locked rows
+read "▮▮▮ NO SIGNAL / Awaiting transmission — survive wave N." Every decrypt pops a **PILOT LOG
+UPDATED toast** in-game (`lore_watch` + `LoreSeen`, seeded from the save at boot so nothing re-toasts;
+title in the entry's accent; its own dry two-blip radio sfx `log_sfx_wav`, deliberately not the
+achievement fanfare) — the story advancing is a reward, so it's announced the moment it happens. The
 **victory screen** names the Architect once ("Far past the edge, the ARCHITECT is still building" — safe
 there: the mystery is already resolved by then). Deliberate UX call: **no lore prose on the mid-combat
 WARNING banners** (unreadable during a run-up; the log carries it).
