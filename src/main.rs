@@ -1594,6 +1594,38 @@ fn ach_met(a: Ach, s: &Stats) -> bool {
     }
 }
 
+// Counter achievements only: (current, target). Boss flags and the capstones are binary — they have
+// no meaningful "progress" — so they return None and never appear in the nearest-grind ticker.
+fn ach_progress(a: Ach, s: &Stats) -> Option<(u32, u32)> {
+    match a {
+        Ach::TrueBlue => Some((s.blue, ACH_BLUE)),
+        Ach::GreenThumb => Some((s.green, ACH_GREEN)),
+        Ach::Demolition => Some((s.orange, ACH_ORANGE)),
+        Ach::BeatIt => Some((s.pulser, ACH_PULSER)),
+        Ach::SeeingRed => Some((s.red, ACH_RED)),
+        Ach::IceBreaker => Some((s.cluster, ACH_CLUSTER)),
+        Ach::Keymaster => Some((s.beacon, ACH_BEACON)),
+        Ach::Minesweeper => Some((s.mines, ACH_MINES)),
+        Ach::GoldRush => Some((s.golds, ACH_GOLDS)),
+        Ach::WaveGoodbye => Some((s.waves, ACH_WAVES)),
+        Ach::EventHorizon => Some((s.warps, ACH_WARPS)),
+        Ach::Runs10 => Some((s.runs, 10)),
+        Ach::Runs25 => Some((s.runs, 25)),
+        Ach::Runs50 => Some((s.runs, 50)),
+        _ => None,
+    }
+}
+
+// The unfinished counter achievement closest to done — the game-over screen's "one more run" hook.
+// Every death advanced SOMETHING; this line points at the something.
+fn nearest_grind(s: &Stats) -> Option<(Ach, u32, u32)> {
+    ACHIEVEMENTS
+        .iter()
+        .filter_map(|&a| ach_progress(a, s).map(|(c, t)| (a, c, t)))
+        .filter(|&(_, c, t)| c < t)
+        .max_by(|a, b| (a.1 as f32 / a.2 as f32).total_cmp(&(b.1 as f32 / b.2 as f32)))
+}
+
 // LIFETIME progress — accumulates across runs and is persisted to disk (see load/save_progress).
 // NOT reset by `reset_run`.
 #[derive(Resource, Default, Clone, Copy)]
@@ -1619,6 +1651,7 @@ struct Stats {
     waves: u32,        // waves cleared, lifetime (advancing past any wave counts one)
     warps: u32,        // warp holes opened (lifetime)
     deathless: bool,   // ever beat the game without losing a single life
+    best_wave: u32,    // deepest wave ever REACHED — the game-over screen's "you were close" marker
 }
 
 // Which achievements are unlocked (drives the toast + the menu list). Initialized from the loaded
@@ -5789,6 +5822,7 @@ fn phantom_update(
                     if let Some(s) = progress.0.as_mut() {
                         s.phantom = true; // achievement: Edgelord (beat the game)
                         s.waves += 1; // the finale counts toward the lifetime wave tally too
+                        s.best_wave = s.best_wave.max(30); // a win IS reaching the bottom of the run
                         if progress.1.as_ref().is_some_and(|f| !f.powerup_used) {
                             s.no_powerups = true; // achievement: Purist (won it clean)
                         }
@@ -7305,13 +7339,26 @@ fn spawn_pause_ui(
     });
 }
 
-fn spawn_gameover_ui(mut commands: Commands, score: Res<Score>, hs: Res<HighScores>, font: Res<MenuFont>) {
+fn spawn_gameover_ui(mut commands: Commands, score: Res<Score>, hs: Res<HighScores>, wave: Res<Wave>, stats: Res<Stats>, font: Res<MenuFont>) {
     let root = overlay(&mut commands, GameOverUi, 0.72);
     let f = &font.0;
     let gold = Color::srgb(0.98, 0.85, 0.35);
     commands.entity(root).with_children(|p| {
         p.spawn(text_f(f, 62.0, Color::srgb(1.0, 0.3, 0.3), "GAME OVER"));
         p.spawn(text_f(f, 24.0, Color::srgb(0.85, 0.9, 1.2), &format!("SCORE   {}", score.0)));
+        // the "you were close" line — a death must still read as measurable progress. best_wave was
+        // already refreshed by record_high_score (it runs first), so reached >= best ⇔ a new record.
+        let reached = wave.level as u32;
+        if reached >= stats.best_wave {
+            p.spawn(text_f(f, 18.0, gold, &format!("REACHED WAVE {reached}   —   NEW BEST!")));
+        } else {
+            p.spawn(text_f(f, 18.0, Color::srgb(0.72, 0.78, 1.0), &format!("REACHED WAVE {reached}   —   BEST {}", stats.best_wave)));
+        }
+        // the "one more run" hook: the lifetime grind closest to unlocking still ticked up this run
+        if let Some((a, c, t)) = nearest_grind(&stats) {
+            let (name, _) = ach_meta(a);
+            p.spawn(text_f(f, 13.0, Color::srgb(0.55, 0.6, 0.78), &format!("{}   {c} / {t}", name.to_uppercase())));
+        }
         // banner if this run cracked the table
         match hs.just_placed {
             Some(0) => {
@@ -8250,12 +8297,13 @@ fn read_progress() -> Option<Stats> {
         waves: num(18),
         warps: num(19),
         deathless: flag(20),
+        best_wave: num(21),
     })
 }
 #[cfg(not(test))]
 fn save_progress(s: &Stats) {
     let line = format!(
-        "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+        "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
         s.blue,
         s.green,
         s.enemies,
@@ -8276,7 +8324,8 @@ fn save_progress(s: &Stats) {
         s.runs,
         s.waves,
         s.warps,
-        s.deathless as u8
+        s.deathless as u8,
+        s.best_wave
     );
     let _ = std::fs::write(SAVE_PATH, line); // best-effort — never block gameplay on I/O
 }
@@ -8290,7 +8339,9 @@ fn save_progress(_s: &Stats) {}
 // ─────────────────────────────── high scores (top 5) ──────────────────
 // On game over, slot the final score into the top-5 table if it qualifies, remember where it landed
 // (for the game-over highlight), and persist. Runs before spawn_gameover_ui so the screen sees it.
-fn record_high_score(score: Res<Score>, mut hs: ResMut<HighScores>) {
+// Also records the deepest wave REACHED (the screen's "you were close" marker — failure must still
+// read as measurable progress, or a long run lost feels like nothing happened).
+fn record_high_score(score: Res<Score>, mut hs: ResMut<HighScores>, wave: Res<Wave>, mut stats: Option<ResMut<Stats>>) {
     hs.just_placed = None;
     let s = score.0;
     if let Some(i) = hs.top.iter().position(|&h| s > h) {
@@ -8300,6 +8351,12 @@ fn record_high_score(score: Res<Score>, mut hs: ResMut<HighScores>) {
         hs.top[i] = s;
         hs.just_placed = Some(i);
         save_high_scores(&hs);
+    }
+    if let Some(st) = stats.as_mut() {
+        if wave.level as u32 > st.best_wave {
+            st.best_wave = wave.level as u32;
+            save_progress(st);
+        }
     }
 }
 
@@ -9368,6 +9425,7 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.insert_resource(Score(350));
         app.insert_resource(HighScores { top: [500, 400, 300, 200, 100], just_placed: None });
+        app.insert_resource(Wave { level: 7, timer: WAVE_SECS, calm: 0.0 });
         app.add_systems(Update, record_high_score);
         app.update();
         let hs = app.world().resource::<HighScores>();
@@ -9381,6 +9439,7 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.insert_resource(Score(50));
         app.insert_resource(HighScores { top: [500, 400, 300, 200, 100], just_placed: None });
+        app.insert_resource(Wave { level: 7, timer: WAVE_SECS, calm: 0.0 });
         app.add_systems(Update, record_high_score);
         app.update();
         let hs = app.world().resource::<HighScores>();
@@ -10222,10 +10281,11 @@ mod tests {
             waves: 12,
             warps: 13,
             deathless: true,
+            best_wave: 14,
         };
         // mirror save_progress's field order (the real fn is a test no-op so runs can't clobber saves)
         let line = format!(
-            "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+            "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
             s.blue,
             s.green,
             s.enemies,
@@ -10246,10 +10306,11 @@ mod tests {
             s.runs,
             s.waves,
             s.warps,
-            s.deathless as u8
+            s.deathless as u8,
+            s.best_wave
         );
         let n: Vec<&str> = line.split_whitespace().collect();
-        assert_eq!(n.len(), 21, "the save line carries all 21 fields");
+        assert_eq!(n.len(), 22, "the save line carries all 22 fields");
         let flag = |i: usize| n[i] == "1";
         let num = |i: usize| n[i].parse::<u32>().unwrap();
         assert_eq!((num(0), num(1), num(2)), (s.blue, s.green, s.enemies));
@@ -10258,7 +10319,8 @@ mod tests {
         assert_eq!((num(10), num(11)), (s.mines, s.golds));
         assert_eq!((num(12), num(13), num(14), num(15), num(16)), (s.orange, s.pulser, s.red, s.cluster, s.beacon));
         assert_eq!((num(17), num(18), num(19)), (s.runs, s.waves, s.warps));
-        assert!(flag(20), "deathless rides in the final slot");
+        assert!(flag(20), "deathless rides in slot 20");
+        assert_eq!(num(21), s.best_wave, "best_wave rides in the final slot");
         // an OLD 12-field save (pre-expansion) must still load — new counters default to zero
         let old = "5 4 3 1 0 0 1 0 0 0 2 1";
         assert_eq!(old.split_whitespace().count(), 12);
@@ -10270,6 +10332,44 @@ mod tests {
         assert_eq!(onum(11), 1, "the old save's last field still reads");
         assert_eq!(onum(17), 0, "missing runs field defaults to 0");
         assert!(!oflag(20), "missing deathless field defaults to false");
+    }
+
+    #[test]
+    fn game_over_records_the_deepest_wave_reached() {
+        // record_high_score is the game-over entry (chained before the screen spawns): it must raise
+        // best_wave when the run went deeper and never lower it when it didn't.
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(Score(0));
+        app.insert_resource(HighScores::default());
+        app.insert_resource(Wave { level: 23, timer: WAVE_SECS, calm: 0.0 });
+        app.insert_resource(Stats { best_wave: 27, ..default() });
+        app.add_systems(Update, record_high_score);
+        app.update();
+        assert_eq!(app.world().resource::<Stats>().best_wave, 27, "a shallower death never lowers the record");
+        app.world_mut().resource_mut::<Wave>().level = 28;
+        app.update();
+        assert_eq!(app.world().resource::<Stats>().best_wave, 28, "a deeper run raises it");
+    }
+
+    #[test]
+    fn the_nearest_grind_ticker_picks_the_closest_counter() {
+        // runs at 9/10 (90%) beats blue at 500/1000 (50%) — the ticker points at the closest unlock
+        let s = Stats { runs: 9, blue: 500, ..default() };
+        let (a, c, t) = nearest_grind(&s).expect("counters are in progress");
+        assert!(matches!(a, Ach::Runs10), "Back for More at 9/10 is the nearest grind");
+        assert_eq!((c, t), (9, 10));
+        // a finished counter drops out — with the 10-run rung done, 990/1000 blue leads (Runs25 is 40%)
+        let s = Stats { runs: 10, blue: 990, ..default() };
+        let (a, ..) = nearest_grind(&s).expect("blue is still unfinished");
+        assert!(matches!(a, Ach::TrueBlue), "completed grinds leave the ticker");
+        // boss flags and capstones never appear, even on a maxed save — they're binary, not progress
+        let done = Stats {
+            blue: ACH_BLUE, green: ACH_GREEN, orange: ACH_ORANGE, pulser: ACH_PULSER, red: ACH_RED,
+            cluster: ACH_CLUSTER, beacon: ACH_BEACON, mines: ACH_MINES, golds: ACH_GOLDS,
+            waves: ACH_WAVES, warps: ACH_WARPS, runs: 50, ..default()
+        };
+        assert!(nearest_grind(&done).is_none(), "with every counter capped the ticker goes quiet");
     }
 
     #[test]

@@ -5,6 +5,13 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
+- **Every death now shows your progress.** The Game Over screen gained two lines under the score:
+  - `REACHED WAVE 23 — BEST 27` — a persisted **best-wave record** (gold `NEW BEST!` when you just
+    set it). Getting deeper is now a visible, bragging-rights stat, not a feeling.
+  - A **nearest-achievement ticker** (e.g. `TRUE BLUE  612 / 1000`) — the lifetime grind closest to
+    unlocking, because every run advances something even when it ends on a rock.
+  No difficulty was touched and nothing carries between runs — the game stays a one-credit arcade
+  run; what persists is your record, not your power.
 - **The Detonator fight flows now.** Two fixes for the same stall — the boss spending long stretches
   armored, "looking for a green":
   - Its priming channel (the vulnerable window) runs **2.5s, up from 1.5s** — long enough to land
