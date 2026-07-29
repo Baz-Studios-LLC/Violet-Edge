@@ -48,8 +48,7 @@ with the asteroids for attention.
 | Enemy | Status | Behaviour |
 | --- | --- | --- |
 | **Yellow mob** | ✅ | Standard enemy ship. Glides in, hovers and strafes around the player, steers clear of rocks/mines, lobs slow (dodgeable) shots, and flees off-screen after a lifetime. Runs in two windows: waves 3–4 and 8–9. |
-| **Darter** | 🔷 | Fast interceptor — telegraphs, then charges in a straight line. Pure dodge, no ranged threat. **Chosen as the Act II mob (waves 12–13); next to build.** |
-| **Miner** | 🔷 | Clings to and rides an asteroid as cover, popping out to fire. Kill the rock or catch it exposed. Deferred (Darter took the Act II slot) — a later act if we want a third type. |
+| **Darter** | 🔷 SHELVED | Fast interceptor — telegraphs, then charges. Shelved with the mob de-emphasis (2026-07-28): the asteroids are the star; the Limpet was removed outright and no Act II/III mob replaces it. |
 
 ## Bosses — the 50-level ladder
 
@@ -107,7 +106,7 @@ perfected*. (The `content_wave` loop past 30 is only a technical fallback the st
 | Act | Waves | New asteroid(s) | New enemy | Bosses |
 | --- | --- | --- | --- | --- |
 | I — The Field | 1–10 | Blue, Green ✅ | Yellow mob ✅ | Warden (5), Glutton (10) |
-| II — Volatile | 11–20 | Orange (explosive) ✅, Pulser (invuln-lit) ✅ | Limpet ✅ | Slinger (15) ✅, Detonator (20) ✅ |
+| II — Volatile | 11–20 | Orange (explosive) ✅, Pulser (invuln-lit) ✅ | — (Limpet REMOVED 2026-07-28) | Slinger (15) ✅, Detonator (20) ✅ |
 | III — Unstable | 21–30 | **Red (growing)** — new; **green phases out** here (oldest type), leaving **orange + pulser as the standard field** | — | Pulsar (25), **The Phantom** (30) |
 | IV — Deep Belt | 31–40 | **Crystal** (reflects) *or* **Ice** (shard-burst) — TBD | — | Hive (35), Prism (40) |
 | V — The Core | 41–50 | **Void** (swallows bullets) *or* **Magnetic** (bends fire) — TBD | — | Gemini (45), Progenitor (50) |
@@ -124,20 +123,20 @@ Per-wave content plan. The rock mix lives in `roll_rock_kind` (orange fraction ~
 | Wave | Content | Section status |
 | --- | --- | --- |
 | 11 | green + orange | wired ✅ |
-| 12 | Limpet (new mob) + orange | orange wired ✅ · Limpet ✅ (core) |
-| 13 | green + orange + Limpets (as 12) | orange/green wired ✅ · Limpet ✅ (core) |
+| 12 | green + orange (pure rock wave) | Limpet mob REMOVED 2026-07-28 |
+| 13 | green + orange (as 12) | orange/green wired ✅ |
 | 14 | orange only | wired ✅ |
 | 15 | **The Slinger** (boss) + green only | green wired ✅ · Slinger ✅ · Drone drop ✅ |
 
 Build order (one section at a time): **1. orange mechanic ✅ → 2. wave restructure + orange/green
-wiring ✅ (§A) → 3. Limpet mob ✅ core (§B) → 4. Slinger boss ✅ (§C) → 5. Slinger's Drone powerup ✅.**
+wiring ✅ (§A) → 3. (Limpet mob — since removed) → 4. Slinger boss ✅ (§C) → 5. Slinger's Drone powerup ✅.**
 
 ### Waves 16–20 — building now
 
 `content_wave` is now identity through **30** (`rem_euclid(30)` loop after 30). No blue past wave 10;
 waves 11–20 harden leftovers to green, and from content 21 on (Act III) green retires so leftovers are
 orange. The **Pulser** debuts here, and
-the **gravity Well** hazard appears on 18–19 (no mobs — Limpets stay in 12–13).
+the **gravity Well** hazard appears on 18–19 (no mobs in Act II at all — the Limpet was removed).
 
 | Wave | Content | Status |
 | --- | --- | --- |

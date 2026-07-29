@@ -83,8 +83,8 @@ with each boss you fell.
 | 25 | **The Pulsar** — lit/dark like its rocks; shockwaves fling the field | **Nova Shield** (regenerating one-hit barrier) |
 | 30 | **THE PHANTOM** — the finale: a three-phase spectral steersman | *the ending* |
 
-Also in the field: **mines** (wave 2+), brief **enemy mob** windows (3–4, 8–9), rock-riding
-**limpets** (12–13), and **gravity wells** (18–19) — garnish only; the asteroids stay the show.
+Also in the field: **mines** (wave 2+), brief **enemy mob** windows (3–4, 8–9), and **gravity
+wells** (18–19) — garnish only; the asteroids stay the show.
 
 ## Meta
 

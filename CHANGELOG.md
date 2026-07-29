@@ -5,6 +5,9 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
+- **The Limpet is gone.** The rock-riding parasite mob (waves 12–13) is removed outright — the
+  asteroids are the star, and waves 12–13 are pure rock waves now.
+
 - **Each act owns its asteroids now.** No rock type outlives its act: Act I is blue (green bridges in
   late), Act II runs green + orange + pulser and retires all three at wave 20, and **Act III belongs
   entirely to its own types** — red as the carrier (wave 21 is the all-red teaching wave, and the Pulsar
