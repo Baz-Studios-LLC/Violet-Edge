@@ -3,7 +3,7 @@
 Patch notes for the Rust + Bevy build. Newest first. (Releases are cut to GitHub and picked up by the
 Baz Studios launcher.) **Keep this current with every change** — it's the record testers read.
 
-## Unreleased
+## v0.4.5 — 23 achievements, progress on every death, and a Detonator that fights (2026-07-29)
 
 - **Every death now shows your progress.** The Game Over screen gained two lines under the score:
   - `REACHED WAVE 23 — BEST 27` — a persisted **best-wave record** (gold `NEW BEST!` when you just
