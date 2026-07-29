@@ -70,7 +70,7 @@ const CLUSTER_SHARD_SPEED: f32 = 210.0; // outward fling of the shard ring (× t
 // Beacon (waves 23+): a teal warden rock projecting an AURA — rocks inside it are immune to gunfire
 // and the chain until the beacon falls (blasts, the warp, and red-absorption all bypass it: the
 // counterplay). Spawns dense (hp = size), never splits — it dies clean when cracked.
-const BEACON_AURA_R: f32 = 200.0;
+const BEACON_AURA_R: f32 = 270.0; // was 200 — too small to matter; now it genuinely owns a region
 const BIG_FLOOR: i32 = 4; // always keep at least this many LARGE (size-3) rocks around: keeps the
                           // field from silting up with small debris, and gives the boss big rocks to grab
 const SPAWN_INTERVAL: f32 = 1.6; // seconds between streamed-in replacement rocks (manageable rate)
@@ -329,7 +329,7 @@ const HUD_STRIP_Y: f32 = 92.0; // the glyph row (world y = h.y - this), under it
 const SHOT_MODE_SHOW: f32 = 1.4; // s the "MASS/STANDARD SHOT" label lingers after a toggle
 const SPAWN_INVULN: f32 = 2.0; // s of blink-invulnerability on (re)spawn
 const TRAIL_LEN: usize = 10; // bullet trail points kept
-const SHIP_TRAIL_LEN: usize = 28; // ship light-ribbon points kept (~half a second of motion — Tron-short, extended per playtest)
+const SHIP_TRAIL_LEN: usize = 46; // ship light-ribbon points kept (~3/4s of motion — extended twice per playtest; still shy of a full Tron wall)
 const STAR_COUNT: usize = 90;
 // The game renders at a fixed DESIGN height, scale-to-fit to the window: on ANY monitor the camera
 // magnifies so DESIGN_H world-units fill the window height (a bigger screen magnifies — it does NOT reveal
@@ -5165,8 +5165,9 @@ fn render(
         };
         gizmos.linestrip_2d(ring(1.0), col);
         if beacon.is_some() {
-            // the AURA: a faint reach circle (what it's protecting) + the dense hp core ring
-            gizmos.circle_2d(Isometry2d::from_translation(c), BEACON_AURA_R, dim(col, 0.16 + 0.05 * (t * 2.0).sin()));
+            // the AURA: a soft reach circle (what it's protecting) + the dense hp core ring. Slightly
+            // brighter than the old faint ring — a zone this size must read as a boundary, not a smudge.
+            gizmos.circle_2d(Isometry2d::from_translation(c), BEACON_AURA_R, dim(col, 0.22 + 0.06 * (t * 2.0).sin()));
             let frac = a.hp.max(1) as f32 / a.size.max(1) as f32;
             gizmos.linestrip_2d(ring(0.35 + 0.3 * frac), col);
         } else if let Some(lit) = lit {
@@ -7731,24 +7732,28 @@ fn spawn_lore_ui(mut commands: Commands, stats: Res<Stats>, font: Res<MenuFont>)
     commands.entity(root).with_children(|p| {
         p.spawn(text_f(f, 40.0, title_color(), "PILOT LOG"));
         p.spawn(text_f(f, 14.0, locked_b, "Transmissions from the VIOLET CUTTER, relayed home."));
-        for (i, (title, body, unlocked, accent)) in lore_entries(&stats).into_iter().enumerate() {
-            // the boss ladder gates each report: waves 5,10,15,20,25 then the two wave-30 reveals
-            let gap = if i == 0 { 10.0 } else { 12.0 };
-            if unlocked {
-                p.spawn((text_f(f, 18.0, accent, title), Node { margin: UiRect::top(Val::Px(gap)), ..default() }));
-                for line in body {
-                    p.spawn(text_f(f, 14.0, body_col, line));
-                }
-            } else {
-                let hint = if i == 7 {
-                    "Awaiting the final transmission.".to_string() // follows the Phantom's record
+        // all 8 reports live in ONE column node: the overlay's row_gap is paid once for the whole
+        // journal (26 per-line gaps used to push the stack past the design height and clip both ends)
+        p.spawn(Node { flex_direction: FlexDirection::Column, align_items: AlignItems::Center, row_gap: Val::Px(2.0), ..default() }).with_children(|log| {
+            for (i, (title, body, unlocked, accent)) in lore_entries(&stats).into_iter().enumerate() {
+                // the boss ladder gates each report: waves 5,10,15,20,25 then the two wave-30 reveals
+                let gap = if i == 0 { 0.0 } else { 10.0 };
+                if unlocked {
+                    log.spawn((text_f(f, 18.0, accent, title), Node { margin: UiRect::top(Val::Px(gap)), ..default() }));
+                    for line in body {
+                        log.spawn(text_f(f, 14.0, body_col, line));
+                    }
                 } else {
-                    format!("Awaiting transmission — survive wave {}.", i * 5)
-                };
-                p.spawn((text_f(f, 18.0, locked_t, "▮▮▮▮▮▮▮▮  NO SIGNAL"), Node { margin: UiRect::top(Val::Px(gap)), ..default() }));
-                p.spawn(text_f(f, 14.0, locked_b, &hint));
+                    let hint = if i == 7 {
+                        "Awaiting the final transmission.".to_string() // follows the Phantom's record
+                    } else {
+                        format!("Awaiting transmission — survive wave {}.", i * 5)
+                    };
+                    log.spawn((text_f(f, 18.0, locked_t, "▮▮▮▮▮▮▮▮  NO SIGNAL"), Node { margin: UiRect::top(Val::Px(gap)), ..default() }));
+                    log.spawn(text_f(f, 14.0, locked_b, &hint));
+                }
             }
-        }
+        });
         menu_button(p, f, MenuAction::Back, "BACK");
     });
 }
@@ -9919,6 +9924,49 @@ mod tests {
         app.update();
         let plain_left = app.world_mut().query_filtered::<&Asteroid, Without<Beacon>>().iter(app.world()).filter(|a| a.size == 2).count();
         assert_eq!(plain_left, 0, "with the beacon down, the rock breaks normally");
+    }
+
+    #[test]
+    fn the_aura_stops_warheads_inside_and_nothing_outside() {
+        // The two edges the basic aura test doesn't pin: (1) even a WARHEAD round fizzles on a
+        // shielded rock — the aura's whole point is that no gun answers it; (2) the shield is a
+        // RADIUS, not a blanket — a rock past BEACON_AURA_R breaks normally while the beacon lives.
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_event::<SoundFx>();
+        app.insert_resource(Stats::default());
+        app.insert_resource(Score(0));
+        app.world_mut().spawn((
+            Asteroid { size: 3, verts: vec![Vec2::X * 65.0], rot: 0.0, spin: 0.0, dense: true, hp: 3 },
+            Beacon,
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+        ));
+        // one rock just inside the reach, one safely past it (size 1 so neither is size-2-ambiguous)
+        let inside = Vec2::new(BEACON_AURA_R - 30.0, 0.0);
+        let outside = Vec2::new(BEACON_AURA_R + 120.0, 0.0);
+        app.world_mut().spawn((
+            Asteroid { size: 1, verts: vec![Vec2::X * 22.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(inside.x, inside.y, 0.0),
+        ));
+        app.world_mut().spawn((
+            Asteroid { size: 1, verts: vec![Vec2::X * 22.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(outside.x, outside.y, 0.0),
+        ));
+        // a WARHEAD round on the shielded rock, a standard round on the free one
+        app.world_mut().spawn((Bullet { life: 1.0, trail: Vec::new(), mass: false }, WarheadShot, Velocity(Vec2::ZERO), Transform::from_xyz(inside.x, inside.y, 0.0)));
+        app.world_mut().spawn((Bullet { life: 1.0, trail: Vec::new(), mass: false }, Velocity(Vec2::ZERO), Transform::from_xyz(outside.x, outside.y, 0.0)));
+        app.add_systems(Update, collisions);
+        app.update();
+        let rocks: Vec<Vec2> = {
+            let mut q = app.world_mut().query_filtered::<(&Transform, &Asteroid), Without<Beacon>>();
+            q.iter(app.world()).map(|(t, _)| t.translation.truncate()).collect()
+        };
+        assert_eq!(rocks.len(), 1, "exactly one of the two rocks survives the volley");
+        assert!(rocks[0].distance(inside) < 1.0, "the SHIELDED rock is the survivor — the warhead fizzled on the aura");
+        assert_eq!(app.world_mut().query::<&Bullet>().iter(app.world()).count(), 0, "both rounds are spent: the warhead consumed by the aura, the standard by its kill");
     }
 
 

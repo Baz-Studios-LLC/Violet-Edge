@@ -5,6 +5,14 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
+- **Beacon aura enlarged** (200 → 270 radius, nearly double the area) — the shield zone now genuinely
+  owns a region of the field instead of hugging the rock. The reach ring is drawn a touch brighter so
+  the boundary reads at a glance. Mechanics audited + newly test-pinned: warhead rounds fizzle inside
+  the aura like everything else, rocks past the edge break normally, the beacon itself is always
+  shootable, and blasts/warp/red-absorb still bypass it (the counterplay).
+- **Longer light ribbon.** The ship's Tron trail carries ~3/4s of motion now (was ~1/2s).
+- **Pilot Log fits the screen.** The 8-entry journal was overflowing the frame (title and BACK
+  clipped); the reports now stack in a tight column and the whole screen sits comfortably inside.
 - **23 ACHIEVEMENTS** (up from 12) — built for a game you restart a lot. All lifetime, all persistent:
   - **One per rock type**: True Blue (1,000 blues), Green Thumb (500 greens), Demolition Derby
     (400 oranges lit), Beat It (300 pulsers on the dark beat), Seeing Red (400 reds), Ice Breaker
