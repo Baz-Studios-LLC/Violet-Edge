@@ -31,7 +31,7 @@ use std::collections::HashSet;
 const TAU: f32 = std::f32::consts::TAU;
 
 const SHIP_R: f32 = 13.5; // was 15 — trimmed slightly per playtest (hitbox + visuals shrink together, a touch forgiving)
-const TURN_RATE: f32 = 4.6; // rad/s — snappier aim for precision shooting
+const TURN_RATE: f32 = 5.2; // rad/s (~300°/s) — raised from 4.6 in the flight-feel pass: a 180° flip in ~0.6s makes gap-weaving answer the hands, and taps still land fine aim (~5°/frame at 60fps)
 const THRUST: f32 = 1000.0; // px/s^2 — raised to keep a usable top speed against the heavier drag below
 const FRICTION: f32 = 0.15; // velocity kept per second — much heavier drag than before, so the ship sheds momentum fast (~0.37s half-life) for precise, deliberate flying instead of a long glide
 const MAX_SPEED: f32 = 560.0; // px/s (a cap; sustained thrust settles a bit under it)
@@ -2661,7 +2661,9 @@ fn gather_input(
                 }
             }
             Action::Thrust => {
-                if h {
+                // keyboard/mouse thrust is full-on; PAD thrust is read as ANALOG below instead,
+                // so a trigger half-pull doesn't snap to 1.0 the frame it crosses press-threshold
+                if h && !matches!(b, Bind::Pad(_)) {
                     thrust = 1.0;
                 }
             }
@@ -2673,11 +2675,29 @@ fn gather_input(
             Action::Mute => mute |= j,
         }
     }
-    // left stick adds analog turn (finer than the d-pad): stick right (+x) = clockwise = negative turn
+    // left stick adds analog turn (finer than the d-pad): stick right (+x) = clockwise = negative
+    // turn. Rescaled past the deadzone so the response ramps smoothly from zero — the old raw pass
+    // jumped straight to 0.2 turn at the threshold, a kink you could feel when easing into a bank.
     for g in &gamepads {
         if let Some(x) = g.get(GamepadAxis::LeftStickX) {
             if x.abs() > STICK_DEADZONE {
-                turn -= x;
+                turn -= x.signum() * ((x.abs() - STICK_DEADZONE) / (1.0 - STICK_DEADZONE)).min(1.0);
+            }
+        }
+    }
+    // ANALOG thrust from whatever the pad's thrust is bound to: a trigger half-pull is a half burn
+    // (feathering is skill expression). Digital buttons report 0/1 here so a face-button bind still
+    // reads full-on; keyboard already set 1.0 above.
+    for (act, b) in bindings.pad.iter() {
+        if matches!(act, Action::Thrust) {
+            if let Bind::Pad(btn) = b {
+                for g in &gamepads {
+                    if let Some(v) = g.get(*btn) {
+                        if v > 0.05 {
+                            thrust = thrust.max(v.min(1.0));
+                        }
+                    }
+                }
             }
         }
     }
@@ -10374,6 +10394,35 @@ mod tests {
         assert_eq!(onum(11), 1, "the old save's last field still reads");
         assert_eq!(onum(17), 0, "missing runs field defaults to 0");
         assert!(!oflag(20), "missing deathless field defaults to false");
+    }
+
+    #[test]
+    fn ship_control_signs_and_drift_behave() {
+        // The flight contract: +turn rotates CCW and never adds velocity; thrust accelerates along
+        // the facing; releasing everything only ever DECAYS speed (drag, no phantom forces).
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(ActionState { turn: 1.0, ..default() });
+        let ship = app
+            .world_mut()
+            .spawn((Ship { angle: 0.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 }, Velocity(Vec2::ZERO)))
+            .id();
+        app.add_systems(Update, ship_control);
+        app.update();
+        app.update(); // first tick's dt is 0 under MinimalPlugins — the second does the moving
+        assert!(app.world().entity(ship).get::<Ship>().unwrap().angle > 0.0, "+turn = counter-clockwise");
+        assert_eq!(app.world().entity(ship).get::<Velocity>().unwrap().0, Vec2::ZERO, "turning alone never adds velocity");
+        // face +X and burn: velocity grows along the facing only
+        app.world_mut().entity_mut(ship).get_mut::<Ship>().unwrap().angle = 0.0;
+        app.insert_resource(ActionState { thrust: 1.0, ..default() });
+        app.update();
+        let v = app.world().entity(ship).get::<Velocity>().unwrap().0;
+        assert!(v.x > 0.0 && v.y.abs() < f32::EPSILON, "thrust accelerates along the facing");
+        // hands off: speed decays, direction holds (pure drag — no hidden steering)
+        app.insert_resource(ActionState::default());
+        app.update();
+        let after = app.world().entity(ship).get::<Velocity>().unwrap().0;
+        assert!(after.x < v.x && after.x > 0.0 && after.y.abs() < f32::EPSILON, "coasting only bleeds speed");
     }
 
     #[test]

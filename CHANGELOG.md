@@ -5,6 +5,14 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
+- **Flight-feel pass** (hitbox untouched — this is handling, not forgiveness):
+  - **Turn rate 4.6 → 5.2 rad/s** (~300°/s): a 180° flip lands in ~0.6s, so weaving a gap answers
+    your hands instead of arriving late; taps still resolve ~5° for fine aim.
+  - **Analog trigger thrust on controller** — the RT bind now reads the trigger's actual pull, so a
+    half-pull is a half burn. Feathered approaches are real now; face-button/keyboard thrust still
+    reads full-on.
+  - **Stick deadzone smoothed** — turn input past the deadzone rescales from zero instead of jumping
+    to 0.2, killing the kink when easing into a bank.
 - **The Pilot Log starts sealed.** THE BELT no longer reads before you've ever flown — it decrypts
   the moment your first run launches (the locked slot says "Awaiting deployment."). A brand-new
   player now opens an all-static log: the story only exists once the pilot is out there.

@@ -397,5 +397,13 @@ Considered and shelved (could layer on later): score extends, boss-clear +1, per
   entries survive every death by design. **Pillar: flying and shooting stay CLEAN — skilled play is
   the reward loop; difficulty may be merciless but the ship never is.** The release bar: the game
   ships when it can be beaten legitimately (no dev keys).
+- **Flight model (tuned 2026-07-29, hitbox EXPLICITLY untouched — user rule: clean maneuvering must
+  never come from shrinking the ship).** `ship_control` is fully dt-correct: turn 5.2 rad/s (~300°/s,
+  raised from 4.6 for gap-weaving), thrust 1000 px/s² against heavy drag (`FRICTION 0.15` retention/s,
+  ~0.37s speed half-life → terminal ~527, under the 560 cap), so flying is deliberate, not a glide;
+  drift management IS the skill (no brake key by design). Edges slide (only the into-wall velocity
+  component is killed). Controller: analog trigger thrust (feathered burns), left-stick turn rescaled
+  past the deadzone (no threshold kink). Rejected on principle: aim assist (v0.4.2), velocity-alignment
+  "grip", speed-dependent turn rates — hidden assists muddy the feel the skill ceiling lives on.
 - **Achievements (23):** the boss ladder (First Blood, Warden Off, Glutton for Punishment, Outgunned, Defused, Lights Out — one per boss, named for it), a grind per rock type (True Blue / Green Thumb / Demolition Derby / Beat It / Seeing Red / Ice Breaker / Keymaster), lifetime grinds (Minesweeper, Gold Rush, Wave Goodbye, Event Horizon), the restart ladder (Back for More / Sisyphus / The Definition of Insanity — 10/25/50 runs started), and the capstones (Edgelord = beat the game, Untouchable = deathless win, Purist = no-powerup win). Thresholds live beside the `Ach` enum (§main.rs); the full list with numbers is in the CHANGELOG.
 - **Field population:** the on-screen count targets `POP_BASE + wave` (cap `POP_CAP`), topped up from the edges at `SPAWN_INTERVAL`. Edge spawns are ~80% large; a `BIG_FLOOR` keeps large rocks present even at the cap. Rocks that drift fully off-screen are recycled back in *only if large* — small debris usually despawns for good (mids sometimes), so breaking rocks apart can't silt the arena up with an overwhelming cloud of little ones; the top-up refills with fresh large rocks. Freshly-broken fragments get a short grace window (`FRAGMENT_GRACE`) during which they always recycle rather than being culled, so a rock shattered right at the edge can't lose its pieces off-screen before you get a shot. The Warden grabs large/mid rocks for its shield and only resorts to a small one when nothing bigger is on-screen.
