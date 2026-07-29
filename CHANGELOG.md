@@ -5,6 +5,28 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
+- **EVERY BOSS IS A SPECTACLE NOW.** All six got full visual redesigns — and none of them ever sits
+  still:
+  - **The Warden** is an armored vault: counter-rotating octagon shells around an eye that TRACKS you,
+    with segmented tentacles that ripple and writhe as its shield array spins — idle arms wave, and a
+    capture visibly REACHES. Dying, the tentacles shear off one by one before the shell goes.
+  - **The Glutton** is a living maw: two counter-rotating rings of gnashing teeth around a gullet that
+    glows brighter the more it gorges, feeler-spines waving, and it LUNGES at prey in surging bites.
+    It dies in three deflating spasms.
+  - **The Slinger** is a proper railgun gunship: twin rail prongs frame the charging round, a slotted
+    ammo drum spins behind the cockpit, engine pods burn — and the whole hull KICKS BACK on every
+    launch. Dying, it lists off its heading while wings shear and pods pop.
+  - **The Detonator** is an armored bloom: six petal plates that HINGE OPEN when it primes — the
+    vulnerability window is literally visible — around a caged core, its priming beam now MARCHING
+    dashes. The petals blow off one by one as it dies, baring the failing core.
+  - **The Pulsar** is a living star: eight spikes that extend blazing toward the lit beat and retract
+    to a dim skeleton when it's dark (the extension telegraphs the invulnerable window), wrapped in
+    counter-rotating gyro arcs, swaying on a slow orbit. It dies shedding spikes, then goes NOVA.
+  - **The Phantom** keeps its skull — and gains tattered cloak wisps that sway beneath the jaw.
+- **A real WARNING banner.** The boss run-up now frames its warning in a hazard band with marching
+  edge-ticks and the boss's TRUE body (mini, alive, the same drawing the fight uses) beside its name.
+  The background cameo uses the same canonical bodies — what you're warned about is what arrives.
+
 - **The Limpet is gone.** The rock-riding parasite mob (waves 12–13) is removed outright — the
   asteroids are the star, and waves 12–13 are pure rock waves now.
 

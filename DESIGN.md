@@ -10,6 +10,11 @@ intended design; implemented rows describe what the code does today.
   field is always mostly rocks.
 - **Each boss weaponizes one *relationship to asteroids*** (a verb): hoard · eat · shoot · prime ·
   pulse · pull · split · reflect · link. The boss is a lens on the rock field, not a separate spectacle.
+- **Bosses are SPECTACLE and never static (user rule, 2026-07-28).** Every boss carries an idle-motion
+  layer (breathing shells, gnashing teeth, spinning drums, rippling tentacles, waving cloak wisps),
+  movement character (lunges, recoil, sway — not flat drift), and a STAGED death (parts shear off one
+  by one → core failure → the shared final blast). One canonical `draw_X_body()` per boss is shared by
+  the fight, the run-up WARNING BANNER, and the background cameo, so the silhouette never drifts.
 - **Each powerup is thematically derived from the boss whose defeat drops it** — the reward echoes the
   mechanic you just beat (chain shot ← the Warden *linking* rocks; mass shot ← the red Glutton gaining
   *mass*; drone ← the enemy *ship*). The base Warp weapon is core kit and exempt.
@@ -58,9 +63,10 @@ Glutton starts full too (heal cap == starting HP); eating heals the damage you'v
 full (never past — it grows in *size*, not max HP), so letting it feed visibly refills the bar.
 
 **Run-up telegraph (last 10s, `BOSS_CAMEO_SECS`):** the *actual* incoming boss drifts across the
-background as a faint silhouette in its own colour, a music riser builds, and stray mobs clear off. On
-top of that the screen names the boss ("WARNING:  THE GLUTTON INCOMING") and a full-screen tint pulses
-in that boss's colour, rising in intensity as the wave nears (`boss_warning_update`).
+background as a faint, ALIVE silhouette (`draw_boss_idle` — the same canonical body the fight uses),
+a music riser builds, and stray mobs clear off. On top of that a **WARNING BANNER** frames the warning
+line: a hazard band with marching edge-ticks and the boss's true mini body beside its name, plus the
+full-screen tint pulse — all rates ≤3 Hz (`boss_warning_update` + the banner block in `render_boss`).
 
 | Wave | Boss | Status | Verb → mechanic | Counterplay |
 | --- | --- | --- | --- | --- |

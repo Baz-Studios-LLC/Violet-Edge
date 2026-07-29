@@ -629,21 +629,42 @@ fn draw_haunt_skull(gizmos: &mut Gizmos, c: Vec2, hr: f32, body: Color, ember: f
             gizmos.line_2d(m(tx, -0.46), m(tx, -0.46 - 0.16 * f), dim(body, 0.9));
         }
     }
+    // ── tattered CLOAK: wisps trailing beneath the jaw, each swaying on its own beat — the ghost is
+    //    never still even when it holds position ──
+    for k in -1i32..=1 {
+        let x0 = k as f32 * 0.34 * hr;
+        let pts: Vec<Vec2> = (0..=5)
+            .map(|i| {
+                let f = i as f32 / 5.0;
+                c + Vec2::new(x0 + (pulse * 1.1 + k as f32 * 1.9 + f * 2.6).sin() * hr * 0.14 * f, -hr * (1.02 + 1.15 * f))
+            })
+            .collect();
+        gizmos.linestrip_2d(pts, dim(body, 0.42 - 0.09 * k.abs() as f32));
+    }
 }
 
-// A curved, tapering tentacle (a quadratic bezier bowed by a sine-driven curl) from `from` to `to`.
-// The Warden's shield arms (one per captured rock).
+// How many of a boss's `parts` still remain at this point of its death countdown. The staged deaths
+// key on this: when the count DROPS between frames a piece just sheared off (the update fires a burst
+// there, and the render — using the same formula — simply stops drawing it).
+fn death_parts(dying: f32, total: f32, parts: usize) -> usize {
+    ((dying / total).clamp(0.0, 1.0) * parts as f32).ceil() as usize
+}
+
+// A curved, tapering tentacle (a quadratic bezier bowed by a sine-driven curl, with a traveling
+// RIPPLE running down its length so it visibly writhes) from `from` to `to`. The Warden's arms.
 fn draw_tentacle(gizmos: &mut Gizmos, from: Vec2, to: Vec2, curl_phase: f32, color: Color) {
     let d = to - from;
     let dist = d.length().max(1.0);
     let perp = Vec2::new(-d.y, d.x) / dist;
     let mid = from + d * 0.5 + perp * (curl_phase.sin() * dist * 0.22);
-    let n = 9;
+    let n = 11;
     let pts: Vec<Vec2> = (0..=n)
         .map(|i| {
             let tt = i as f32 / n as f32;
             let it = 1.0 - tt;
-            from * (it * it) + mid * (2.0 * it * tt) + to * (tt * tt) // quadratic bezier from → mid → to
+            let base = from * (it * it) + mid * (2.0 * it * tt) + to * (tt * tt); // quadratic bezier
+            // the ripple: a wave that travels tip-ward, pinned at both ends
+            base + perp * ((curl_phase * 1.6 + tt * 5.2).sin() * dist * 0.05 * (tt * it * 4.0))
         })
         .collect();
     gizmos.linestrip_2d(pts, color);
@@ -940,6 +961,7 @@ struct Slinger {
     load: f32,            // > 0 while a cannonball charges in front of it; launches at 0
     ammo: Option<Entity>, // the loaded cannonball (a `Cannonball`-tagged asteroid)
     pulse: f32,
+    recoil: f32,          // > 0 → the hull kicks back after a launch (decays; pure spectacle)
     dying: f32,           // > 0 → death animation counting down; despawns at 0
 }
 
@@ -3906,7 +3928,7 @@ fn boss_director(
             commands.entity(a).despawn();
         }
         commands.spawn((
-            Slinger { hp: SLINGER_HP, entered: false, charge: SLINGER_INTRO, cool: SLINGER_COOL, load: 0.0, ammo: None, pulse: 0.0, dying: 0.0 },
+            Slinger { hp: SLINGER_HP, entered: false, charge: SLINGER_INTRO, cool: SLINGER_COOL, load: 0.0, ammo: None, pulse: 0.0, recoil: 0.0, dying: 0.0 },
             Transform::from_xyz(0.0, arena.half.y + SLINGER_R, 0.0),
         ));
     } else if is_detonator_wave(wave.level) {
@@ -3987,8 +4009,15 @@ fn boss_update(
 
         // ── DYING: a slow death animation, then despawn → reward calm → advance ──
         if boss.dying > 0.0 {
+            let before = death_parts(boss.dying, BOSS_DEATH_SECS, BOSS_ARMS);
             boss.dying -= dt;
             boss.rot += BOSS_SPIN * 2.5 * dt; // spins up as it comes apart
+            // STAGED: the tentacles shear off one by one (the render stops drawing each as it goes)
+            let after = death_parts(boss.dying.max(0.0), BOSS_DEATH_SECS, BOSS_ARMS);
+            if after < before {
+                let a = boss.rot + after as f32 / BOSS_ARMS as f32 * TAU;
+                burst(&mut commands, p + Vec2::from_angle(a) * BOSS_ORBIT_R * 0.5, boss_color(), 16, 340.0, &mut rng);
+            }
             for _ in 0..3 {
                 let off = Vec2::from_angle(rng.gen_range(0.0..TAU)) * rng.gen_range(0.0..BOSS_R);
                 burst(&mut commands, p + off, boss_color(), 3, 240.0, &mut rng); // crackle
@@ -4092,7 +4121,12 @@ fn devourer_update(
 
         // ── DYING: crackle, then a big blast → despawn → advance ──
         if dv.dying > 0.0 {
+            let before = death_parts(dv.dying, BOSS_DEATH_SECS, 3);
             dv.dying -= dt;
+            // STAGED: three deflate-SPASMS on the way down (the shrink is continuous; these punctuate it)
+            if death_parts(dv.dying.max(0.0), BOSS_DEATH_SECS, 3) < before {
+                burst(&mut commands, p, devourer_color(), 24, 360.0, &mut rng);
+            }
             for _ in 0..3 {
                 let off = Vec2::from_angle(rng.gen_range(0.0..TAU)) * rng.gen_range(0.0..r);
                 burst(&mut commands, p + off, devourer_color(), 3, 260.0, &mut rng);
@@ -4167,7 +4201,10 @@ fn devourer_update(
         let goal = nearest.or_else(|| ship.map(|(_, st, _)| st.translation.truncate()));
         if let Some(g) = goal {
             let dir = (g - p).normalize_or_zero();
-            let np = p + dir * DEVOURER_SPEED * dt;
+            // it LUNGES at its prey — surging bites of speed instead of a flat glide (alive, and each
+            // surge telegraphs; the average pace stays close to the old constant DEVOURER_SPEED)
+            let lunge = 0.55 + 0.9 * (dv.pulse * 0.35).sin().max(0.0).powi(2);
+            let np = p + dir * DEVOURER_SPEED * lunge * dt;
             tf.translation = Vec3::new(np.x.clamp(-h.x + r, h.x - r), np.y.clamp(-h.y + r, h.y - r), 0.0);
         }
 
@@ -5372,10 +5409,17 @@ fn slinger_update(
     for (se, mut st, mut sl) in &mut slingers {
         let mut p = st.translation.truncate();
         sl.pulse += dt * 4.0;
+        sl.recoil = (sl.recoil - dt * 2.5).max(0.0); // the launch kick eases back out
 
         // ── DYING: crackle apart, then despawn → reward calm → advance the wave ──
         if sl.dying > 0.0 {
+            // STAGED: wings shear, then the pods pop (the render hides each part as its threshold falls)
+            let before = death_parts(sl.dying, SLINGER_DEATH_SECS, 4);
             sl.dying -= dt;
+            if death_parts(sl.dying.max(0.0), SLINGER_DEATH_SECS, 4) < before {
+                let off = Vec2::from_angle(rng.gen_range(0.0..TAU)) * SLINGER_R * rng.gen_range(0.6..1.1);
+                burst(&mut commands, p + off, slinger_color(), 18, 340.0, &mut rng);
+            }
             for _ in 0..3 {
                 let off = Vec2::from_angle(rng.gen_range(0.0..TAU)) * rng.gen_range(0.0..SLINGER_R);
                 burst(&mut commands, p + off, slinger_color(), 3, 240.0, &mut rng);
@@ -5480,6 +5524,7 @@ fn slinger_update(
                         commands.entity(a).insert(Cannonball { launched: true });
                         sl.ammo = None;
                         sl.cool = SLINGER_COOL;
+                        sl.recoil = 1.0; // the hull kicks back off the shot (render eases it out)
                         sfx.write(SoundFx::Mine); // launch thump
                     }
                 }
@@ -6100,12 +6145,24 @@ fn pulsar_update(
 
         // ── DYING: crackle apart, despawn, advance the wave ──
         if pl.dying > 0.0 {
+            // STAGED: the star's spikes shear off one per beat of the countdown
+            let before = death_parts(pl.dying, PULSAR_DEATH_SECS, 8);
             pl.dying -= dt;
+            let after = death_parts(pl.dying.max(0.0), PULSAR_DEATH_SECS, 8);
+            if after < before {
+                let a = after as f32 / 8.0 * TAU;
+                burst(&mut commands, p + Vec2::from_angle(a) * PULSAR_R * 0.8, pulsar_color(), 12, 320.0, &mut rng);
+            }
             for _ in 0..3 {
                 let off = Vec2::from_angle(rng.gen_range(0.0..TAU)) * rng.gen_range(0.0..PULSAR_R);
                 burst(&mut commands, p + off, pulsar_color(), 3, 240.0, &mut rng);
             }
             if pl.dying <= 0.0 {
+                // the NOVA: the collapsed core lets go — a blast plus one clean expanding ring
+                commands.spawn((
+                    Shockwave { age: 0.0, ttl: 0.6, max_r: PULSAR_SHOCK_R, color: pulsar_color() },
+                    Transform::from_xyz(p.x, p.y, 0.0),
+                ));
                 burst(&mut commands, p, pulsar_color(), 50, 480.0, &mut rng);
                 commands.entity(pe).despawn();
                 // drop the Nova Shield orb (the boss-5 reward, content wave 25)
@@ -6145,7 +6202,9 @@ fn pulsar_update(
 
         // ── DRIFT: slow chase toward the ship's x, staying high — hard to camp ──
         if let Some(s) = sp {
-            let want = Vec2::new(s.x.clamp(-h.x * 0.6, h.x * 0.6), (h.y * 0.35).min(h.y - PULSAR_R - 20.0));
+            // a slow orbital SWAY rides on the chase — the star never just hangs there
+            let sway = Vec2::new((pl.pulse * 0.17).sin() * 46.0, (pl.pulse * 0.13).sin() * 20.0);
+            let want = Vec2::new(s.x.clamp(-h.x * 0.6, h.x * 0.6), (h.y * 0.35).min(h.y - PULSAR_R - 20.0)) + sway;
             p += (want - p).clamp_length_max(PULSAR_SPEED * dt);
         }
         ptf.translation.x = p.x.clamp(-h.x + PULSAR_R, h.x - PULSAR_R);
@@ -6220,7 +6279,14 @@ fn detonator_update(
 
         // ── DYING: crackle apart, despawn, drop the Warhead orb, then advance the wave ──
         if det.dying > 0.0 {
+            // STAGED: the armor petals blow off one by one, baring the failing core
+            let before = death_parts(det.dying, DETONATOR_DEATH_SECS, 6);
             det.dying -= dt;
+            let after = death_parts(det.dying.max(0.0), DETONATOR_DEATH_SECS, 6);
+            if after < before {
+                let a = after as f32 / 6.0 * TAU;
+                burst(&mut commands, p + Vec2::from_angle(a) * DETONATOR_R * 1.0, detonator_color(), 14, 330.0, &mut rng);
+            }
             for _ in 0..3 {
                 let off = Vec2::from_angle(rng.gen_range(0.0..TAU)) * rng.gen_range(0.0..DETONATOR_R);
                 burst(&mut commands, p + off, detonator_color(), 3, 240.0, &mut rng);
@@ -6317,9 +6383,172 @@ fn detonator_update(
     }
 }
 
-// Boss rendering, split out of `render` (it was at the 16-param system limit): the
-// background cameo telegraph, the magenta core (a jagged pulsing star, blinking while
-// it charges), and the octopus arms — curved tapering tentacles to each shield rock.
+// ─────────────────────────────── boss bodies (the spectacle) ──────────
+// ONE canonical draw per boss, shared by the fight, the run-up WARNING BANNER, and the background
+// cameo — the silhouette can never drift between the three. Every body carries an IDLE-MOTION layer
+// (breathing shells, gnashing teeth, spinning drums, waving feelers): a boss is never a static
+// object. Flash rates stay ≤3 Hz (photosensitivity); continuous motion is unrestricted.
+
+// The Warden — an armored VAULT: two counter-rotating octagon shells around a single EYE that tracks
+// the player. Its tentacles draw separately (one per held rock + idle stubs on empty slots).
+fn draw_warden_body(gizmos: &mut Gizmos, c: Vec2, r: f32, t: f32, eye_to: Vec2, color: Color) {
+    let breathe = 1.0 + 0.03 * (t * 1.9).sin();
+    let oct = |radius: f32, rot: f32| -> Vec<Vec2> { (0..=8).map(|k| c + Vec2::from_angle(k as f32 / 8.0 * TAU + rot) * radius).collect() };
+    gizmos.linestrip_2d(oct(r * breathe, t * 0.22), color);
+    gizmos.linestrip_2d(oct(r * 0.74 * breathe, -t * 0.16), dim(color, 0.55));
+    let look = eye_to.normalize_or_zero() * r * 0.12; // the eye leans toward its prey
+    gizmos.circle_2d(Isometry2d::from_translation(c), r * 0.30, dim(color, 1.1));
+    gizmos.circle_2d(Isometry2d::from_translation(c + look), r * 0.11, Color::srgb(6.0, 3.2, 5.6));
+}
+
+// The Glutton — a living MAW: a lumpy hide ringed with waving feeler-spines, two COUNTER-ROTATING
+// rings of teeth gnashing around a gullet that glows brighter the more it has gorged.
+fn draw_glutton_body(gizmos: &mut Gizmos, c: Vec2, r: f32, t: f32, wob: f32, gorge: f32, color: Color) {
+    let body: Vec<Vec2> = (0..=18)
+        .map(|k| {
+            let a = k as f32 / 18.0 * TAU + wob * 0.2;
+            let jag = 0.82 + 0.18 * (a * 3.0 + wob * 0.5).sin();
+            c + Vec2::from_angle(a) * r * jag
+        })
+        .collect();
+    gizmos.linestrip_2d(body, color);
+    for k in 0..8 {
+        // feeler-spines, each waving on its own beat
+        let a = k as f32 / 8.0 * TAU + 0.12 * (t * 1.4 + k as f32 * 1.3).sin();
+        let base = c + Vec2::from_angle(a) * r * 0.94;
+        gizmos.line_2d(base, base + Vec2::from_angle(a) * r * (0.16 + 0.05 * (t * 1.8 + k as f32).sin()), dim(color, 0.8));
+    }
+    for (n, ring_r, dir, tooth) in [(10i32, 0.56f32, 0.5f32, 0.16f32), (7, 0.30, -0.7, 0.12)] {
+        // the GNASH: outer teeth ring turns one way, inner the other
+        for k in 0..n {
+            let a = k as f32 / n as f32 * TAU + t * dir;
+            let out = Vec2::from_angle(a);
+            let side = out.perp() * r * tooth * 0.4;
+            let base = c + out * r * ring_r;
+            let tip = c + out * r * (ring_r - tooth);
+            gizmos.linestrip_2d(vec![base + side, tip, base - side], dim(color, 0.9));
+        }
+    }
+    // the gullet — its glow IS the gorge meter
+    gizmos.circle_2d(Isometry2d::from_translation(c), r * 0.13, mix(Color::srgb(2.0, 0.5, 0.4), Color::srgb(7.5, 5.5, 4.0), gorge));
+    gizmos.circle_2d(Isometry2d::from_translation(c), r * 0.20, dim(color, 0.4 + 0.5 * gorge));
+}
+
+// The Slinger — an ice-blue RAILGUN gunship: dart hull (kicking back on `recoil`), twin rail prongs
+// framing the loading round, swept wings, a spinning slotted ammo drum, and engine pods. `stage`
+// stages the death: wings shear and pods pop as it falls (1.0 = intact).
+fn draw_slinger_body(gizmos: &mut Gizmos, c: Vec2, rot: Vec2, s: f32, t: f32, recoil: f32, stage: f32, color: Color) {
+    let kick = rot * (-s * 0.20 * recoil); // the whole hull jolts back as it fires
+    let tf = |x: f32, y: f32| c + kick + rot.rotate(Vec2::new(x, y));
+    gizmos.linestrip_2d(
+        [tf(1.35 * s, 0.0), tf(0.25 * s, 0.62 * s), tf(-0.9 * s, 0.5 * s), tf(-0.55 * s, 0.0), tf(-0.9 * s, -0.5 * s), tf(0.25 * s, -0.62 * s), tf(1.35 * s, 0.0)],
+        color,
+    );
+    if stage > 0.62 {
+        gizmos.linestrip_2d([tf(-0.2 * s, 0.55 * s), tf(-1.15 * s, 1.05 * s), tf(-0.95 * s, 0.35 * s)], dim(color, 0.85)); // upper wing
+    }
+    if stage > 0.45 {
+        gizmos.linestrip_2d([tf(-0.2 * s, -0.55 * s), tf(-1.15 * s, -1.05 * s), tf(-0.95 * s, -0.35 * s)], dim(color, 0.85)); // lower wing
+    }
+    // twin RAIL PRONGS — the round charges in the open between them
+    for side in [-1.0f32, 1.0] {
+        gizmos.line_2d(tf(0.9 * s, side * 0.16 * s), tf(1.95 * s, side * 0.24 * s), color);
+        gizmos.line_2d(tf(1.95 * s, side * 0.24 * s), tf(1.95 * s, side * 0.38 * s), color);
+    }
+    // ammo drum: a slotted ring, always spinning
+    let dc = tf(-0.30 * s, 0.0);
+    gizmos.circle_2d(Isometry2d::from_translation(dc), 0.30 * s, dim(color, 0.9));
+    for k in 0..4 {
+        let a = k as f32 / 4.0 * TAU + t * 1.6;
+        gizmos.circle_2d(Isometry2d::from_translation(dc + rot.rotate(Vec2::from_angle(a) * 0.18 * s)), 0.045 * s, Color::srgb(4.5, 6.0, 8.0));
+    }
+    gizmos.circle_2d(Isometry2d::from_translation(dc), 0.12 * s, Color::srgb(4.5, 6.0, 8.0));
+    // engine pods + a flickering burn (amplitude-only shimmer)
+    for (i, side) in [-1.0f32, 1.0].into_iter().enumerate() {
+        if stage < 0.30 - i as f32 * 0.12 {
+            continue; // popped during the death
+        }
+        let p0 = tf(-0.72 * s, side * 0.72 * s);
+        let p1 = tf(-1.02 * s, side * 0.78 * s);
+        gizmos.line_2d(p0, p1, dim(color, 0.75));
+        let burn = 0.6 + 0.4 * (t * 2.6 + side).sin();
+        gizmos.line_2d(p1, p1 + rot.rotate(Vec2::new(-0.28 * s * burn, 0.0)), dim(Color::srgb(2.4, 4.2, 7.0), burn));
+    }
+}
+
+// The Detonator — an armored BLOOM: six petal plates sealed into a shell that HINGE OPEN as it
+// primes (`open` 0..1) — the vulnerability window is literally visible. The caged core brightens
+// when exposed; `alive_petals` stages the death (plates blow off one by one).
+fn draw_detonator_body(gizmos: &mut Gizmos, c: Vec2, r: f32, t: f32, open: f32, alive_petals: usize, color: Color) {
+    for k in 0..alive_petals.min(6) {
+        let a = k as f32 / 6.0 * TAU + t * 0.12; // the whole array creeps — never static
+        let tilt = 0.34 * open;
+        let hinge = c + Vec2::from_angle(a) * r * 0.36;
+        let left = c + Vec2::from_angle(a - 0.32 - tilt * 0.4) * r * (0.72 + 0.10 * open);
+        let tip = c + Vec2::from_angle(a + tilt) * r * (0.98 + 0.42 * open);
+        let right = c + Vec2::from_angle(a + 0.32 + tilt) * r * (0.72 + 0.16 * open);
+        gizmos.linestrip_2d(vec![hinge, left, tip, right, hinge], color);
+    }
+    let expose = 0.3 + 0.7 * open;
+    gizmos.circle_2d(Isometry2d::from_translation(c), r * 0.15, dim(Color::srgb(6.0, 7.0, 2.0), expose));
+    for k in 0..3 {
+        // the cage: three slow-orbiting arcs around the core
+        let a0 = k as f32 / 3.0 * TAU + t * 0.8;
+        let arc: Vec<Vec2> = (0..=6).map(|i| c + Vec2::from_angle(a0 + i as f32 / 6.0 * 1.6) * r * 0.26).collect();
+        gizmos.linestrip_2d(arc, dim(color, 0.5 + 0.4 * open));
+    }
+}
+
+// The Pulsar — a living STAR: eight spikes that EXTEND blazing toward the lit beat and retract to a
+// dim skeleton in the dark window (`lit_ease` runs ahead of the beat, so the extension telegraphs
+// the invulnerable window before it lands), wrapped in two counter-rotating gyro arcs.
+fn draw_pulsar_body(gizmos: &mut Gizmos, c: Vec2, r: f32, t: f32, lit_ease: f32, alive_spikes: usize, color_dark: Color) {
+    let col = mix(dim(color_dark, 0.7), Color::srgb(6.0, 6.3, 7.0), lit_ease);
+    for k in 0..alive_spikes.min(8) {
+        let a = k as f32 / 8.0 * TAU + t * 0.10;
+        let out = Vec2::from_angle(a);
+        let base = c + out * r * 0.34;
+        let tip = c + out * r * (0.42 + 0.68 * lit_ease);
+        let side = out.perp() * r * 0.05;
+        gizmos.linestrip_2d(vec![base + side, tip, base - side], col);
+    }
+    for (rr, spin, span) in [(0.72f32, 0.9f32, 3.6f32), (0.92, -0.65, 3.2)] {
+        // gyroscope arcs, counter-rotating
+        let a0 = t * spin;
+        let arc: Vec<Vec2> = (0..=14).map(|i| c + Vec2::from_angle(a0 + i as f32 / 14.0 * span) * r * rr).collect();
+        gizmos.linestrip_2d(arc, dim(color_dark, 0.45));
+    }
+    gizmos.circle_2d(Isometry2d::from_translation(c), r * 0.30, col);
+    gizmos.circle_2d(Isometry2d::from_translation(c), r * 0.13, Color::srgb(6.5, 6.5, 7.0));
+}
+
+// One boss body at idle, by kind — shared by the background CAMEO and the warning BANNER so both
+// always show the true silhouette (the same draw fns the fight uses).
+fn draw_boss_idle(gizmos: &mut Gizmos, kind: BossKind, c: Vec2, r: f32, t: f32, col: Color) {
+    match kind {
+        BossKind::Warden => {
+            draw_warden_body(gizmos, c, r * 0.8, t, Vec2::X, col);
+            for k in 0..6 {
+                // idle tentacles, waving
+                let a = k as f32 / 6.0 * TAU + t * 0.3;
+                let tip = c + Vec2::from_angle(a + 0.18 * (t * 1.5 + k as f32).sin()) * r * 1.5;
+                draw_tentacle(gizmos, c, tip, t * 1.4 + k as f32 * 1.7, dim(col, 0.6));
+            }
+        }
+        BossKind::Devourer => draw_glutton_body(gizmos, c, r, t, t * 2.0, 0.55, col),
+        BossKind::Slinger => draw_slinger_body(gizmos, c, Vec2::X, r * 0.8, t, 0.0, 1.0, col),
+        BossKind::Detonator => draw_detonator_body(gizmos, c, r, t, 0.25 + 0.25 * (t * 0.9).sin(), 6, col),
+        BossKind::Pulsar => {
+            let ease = (((t * PULSE_RATE).sin() + 0.30) / 0.45).clamp(0.0, 1.0);
+            draw_pulsar_body(gizmos, c, r, t, ease, 8, col);
+        }
+        BossKind::Phantom => draw_haunt_skull(gizmos, c, r * 0.9, col, 0.5, t * 1.6, true, 0.0),
+    }
+}
+
+// Boss rendering, split out of `render` (it was at the 16-param system limit): the warning banner +
+// background cameo telegraph, and each boss's canonical body (see the draw fns above) plus its
+// fight-specific dressing (tentacles, beams, prongs, rays).
 // The shield rocks themselves draw as normal asteroids in `render`.
 fn render_boss(
     mut gizmos: Gizmos,
@@ -6356,18 +6585,8 @@ fn render_boss(
         let charge = ((dv.grow - 0.7) / 0.3).clamp(0.0, 1.0);
         let flash = 0.5 + 0.5 * (dv.pulse * (2.0 + 1.5 * charge)).sin();
         let dc = if dv.dying <= 0.0 { mix(devourer_color(), Color::srgb(8.0, 7.5, 7.0), charge * flash) } else { devourer_color() };
-        let body: Vec<Vec2> = (0..=18)
-            .map(|k| {
-                let a = k as f32 / 18.0 * TAU + dv.pulse * 0.2;
-                let jag = 0.82 + 0.18 * (a * 3.0 + dv.pulse * 0.5).sin();
-                c + Vec2::from_angle(a) * r * throb * jag
-            })
-            .collect();
-        gizmos.linestrip_2d(body, dc);
-        // HP core: brighter/bigger the more health it has (a read on how far you've whittled it)
-        let hpf = (dv.hp as f32 / DEVOURER_HP as f32).clamp(0.2, 1.0);
-        gizmos.circle_2d(Isometry2d::from_translation(c), r * 0.42 * throb, dim(dc, 0.7 * hpf));
-        gizmos.circle_2d(Isometry2d::from_translation(c), r * 0.18, Color::srgb(6.0, 4.0, 4.0));
+        // the living maw: gnashing teeth rings + a gullet that glows with its gorge
+        draw_glutton_body(&mut gizmos, c, r * throb, t, dv.pulse, dv.grow, dc);
         // HP bar (top-center) — tracks its heal-toward-max; hidden once dying
         if dv.dying <= 0.0 {
             boss_hp_bar(&mut gizmos, h.y - 42.0, dv.hp as f32 / DEVOURER_HP_MAX as f32, devourer_color());
@@ -6381,21 +6600,34 @@ fn render_boss(
         let r = DETONATOR_R * scale;
         let dc = detonator_color();
         let priming = det.prime > 0.0 && det.charge <= 0.0;
-        let shell: Vec<Vec2> = (0..=6).map(|k| c + Vec2::from_angle(k as f32 / 6.0 * TAU + det.pulse * 0.3) * r).collect();
-        gizmos.linestrip_2d(shell, if priming { dim(dc, 0.5) } else { dc });
+        // the BLOOM: petals hinge open through the priming channel (open = the vulnerability, visibly);
+        // while DYING they've been blowing off one by one (staged in detonator_update) and what's left
+        // gapes fully open around the failing core
+        let open = if det.dying > 0.0 {
+            1.0 - scale
+        } else if priming {
+            ((DETONATOR_PRIME_SECS - det.prime) * 5.0).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let alive_petals = if det.dying > 0.0 { (scale * 6.0).ceil() as usize } else { 6 };
+        draw_detonator_body(&mut gizmos, c, r, t, open, alive_petals, dc);
         if priming {
-            // beam to the rock it's priming — the visible "attachment"
+            // the priming beam: MARCHING dashes crawling toward the rock it's cooking
             if let Some(rt) = det.target.and_then(|t| prime_targets.get(t).ok()) {
                 let rp = rt.translation.truncate();
-                gizmos.line_2d(c, rp, dc);
+                let to = rp - c;
+                let len = to.length().max(1.0);
+                let d = to / len;
+                let dash = 26.0;
+                let mut x = (t * 160.0) % dash;
+                while x < len {
+                    let e = (x + dash * 0.55).min(len);
+                    gizmos.line_2d(c + d * x, c + d * e, dc);
+                    x += dash;
+                }
                 gizmos.circle_2d(Isometry2d::from_translation(rp), 5.0 + 3.0 * (det.pulse * 3.0).sin().abs(), Color::srgb(6.0, 7.0, 2.0));
             }
-            // core opens + throbs bright — the "shoot me NOW" tell
-            let throb = 0.6 + 0.4 * (det.pulse * 3.0).sin().abs();
-            gizmos.circle_2d(Isometry2d::from_translation(c), r * 0.42 * throb, Color::srgb(6.0, 7.0, 2.0));
-            gizmos.circle_2d(Isometry2d::from_translation(c), r * 0.72, dim(dc, 0.8));
-        } else {
-            gizmos.circle_2d(Isometry2d::from_translation(c), r * 0.3, dim(dc, 0.5)); // sealed, dim
         }
         if det.dying <= 0.0 {
             boss_hp_bar(&mut gizmos, h.y - 42.0, det.hp as f32 / DETONATOR_HP as f32, dc);
@@ -6407,12 +6639,13 @@ fn render_boss(
         let c = ptf.translation.truncate();
         let scale = if pl.dying > 0.0 { (pl.dying / PULSAR_DEATH_SECS).clamp(0.0, 1.0) } else { 1.0 };
         let r = PULSAR_R * scale * (1.0 + 0.05 * pl.pulse.sin());
-        let lit = pulser_lit(pl.phase, t);
-        let col = if lit { Color::srgb(6.0, 6.3, 7.0) } else { dim(pulsar_color(), 0.7) };
-        let ring: Vec<Vec2> = (0..=28).map(|k| c + Vec2::from_angle(k as f32 / 28.0 * TAU) * r).collect();
-        gizmos.linestrip_2d(ring, col);
-        gizmos.circle_2d(Isometry2d::from_translation(c), r * if lit { 0.7 } else { 0.32 }, col); // core: swells bright when lit (don't shoot), shrinks dark (open)
-        gizmos.circle_2d(Isometry2d::from_translation(c), r * 0.15, Color::srgb(6.5, 6.5, 7.0));
+        // the living star: spikes ease out ahead of the lit beat (the extension telegraphs the
+        // invulnerable window) and retract to a dim skeleton while it's dark and open to fire.
+        // Spikes shear off one by one while dying (staged in pulsar_update).
+        let s = (t * PULSE_RATE + pl.phase).sin();
+        let lit_ease = ((s + 0.30) / 0.45).clamp(0.0, 1.0);
+        let alive_spikes = if pl.dying > 0.0 { (scale * 8.0).ceil() as usize } else { 8 };
+        draw_pulsar_body(&mut gizmos, c, r, t, lit_ease, alive_spikes, pulsar_color());
         if pl.dying <= 0.0 {
             boss_hp_bar(&mut gizmos, h.y - 42.0, pl.hp as f32 / PULSAR_HP as f32, pulsar_color());
         }
@@ -6582,77 +6815,64 @@ fn render_boss(
         draw_ship(&mut gizmos, c, Vec2::X, SHIP_R, sc, true);
     }
 
-    // cameo: the boss THAT'S ACTUALLY COMING drifts by in the background during the run-up — its own
-    // silhouette + colour, so you know who you're about to face.
+    // ── the run-up telegraph: the WARNING BANNER + the background cameo, both drawn with the boss's
+    //    CANONICAL body (draw_boss_idle) — the silhouette you're warned about is the one you fight. ──
     if boss_incoming(&wave) {
         let prog = ((BOSS_CAMEO_SECS - wave.timer) / BOSS_CAMEO_SECS).clamp(0.0, 1.0);
-        let c = Vec2::new(-h.x - 150.0 + (2.0 * h.x + 300.0) * prog, h.y * 0.45);
         let kind = boss_kind(wave.level + 1);
-        let col = dim(boss_kind_color(kind), 0.22);
-        let r = BOSS_R * 1.5;
-        match kind {
-            BossKind::Warden => {
-                let ghost: Vec<Vec2> = (0..=20).map(|k| {
-                    let a = k as f32 / 20.0 * TAU + t * 0.3;
-                    c + Vec2::from_angle(a) * r * if k % 2 == 0 { 1.0 } else { 0.72 }
-                }).collect();
-                gizmos.linestrip_2d(ghost, col);
-            }
-            BossKind::Devourer => {
-                let ghost: Vec<Vec2> = (0..=18).map(|k| {
-                    let a = k as f32 / 18.0 * TAU + t * 0.2;
-                    c + Vec2::from_angle(a) * r * (0.82 + 0.18 * (a * 3.0).sin())
-                }).collect();
-                gizmos.linestrip_2d(ghost, col);
-            }
-            BossKind::Detonator => {
-                // an armored hex, drifting
-                let ghost: Vec<Vec2> = (0..=6).map(|k| c + Vec2::from_angle(k as f32 / 6.0 * TAU + t * 0.3) * r).collect();
-                gizmos.linestrip_2d(ghost, col);
-            }
-            BossKind::Slinger => {
-                // the gunship dart, drifting nose-first (nose = +X, its travel direction)
-                let s = r * 0.8;
-                let p = |x: f32, y: f32| c + Vec2::new(x, y);
-                gizmos.linestrip_2d(
-                    [p(1.35 * s, 0.0), p(0.25 * s, 0.62 * s), p(-0.9 * s, 0.5 * s), p(-0.55 * s, 0.0), p(-0.9 * s, -0.5 * s), p(0.25 * s, -0.62 * s), p(1.35 * s, 0.0)],
-                    col,
-                );
-                gizmos.line_2d(p(0.6 * s, 0.0), p(1.7 * s, 0.0), col); // cannon barrel
-            }
-            BossKind::Pulsar => {
-                let ghost: Vec<Vec2> = (0..=28).map(|k| c + Vec2::from_angle(k as f32 / 28.0 * TAU) * r).collect();
-                gizmos.linestrip_2d(ghost, col);
-                gizmos.circle_2d(Isometry2d::from_translation(c), r * 0.5, col);
-            }
-            BossKind::Phantom => {
-                gizmos.circle_2d(Isometry2d::from_translation(c), r, col);
-                gizmos.circle_2d(Isometry2d::from_translation(c), r * 0.45, dim(col, 0.5));
+        // background cameo: the boss drifts by, faint, alive
+        let cam = Vec2::new(-h.x - 150.0 + (2.0 * h.x + 300.0) * prog, h.y * 0.45);
+        draw_boss_idle(&mut gizmos, kind, cam, BOSS_R * 1.5, t, dim(boss_kind_color(kind), 0.22));
+        // the BANNER: a hazard band framing the ui warning line ("WARNING: THE X INCOMING" sits at
+        // ui top:40% = world y ≈ h.y*0.2), its edges ticked and MARCHING, the boss's true body beside
+        // the name. Alpha tracks the same ramp + ≤3 Hz pulse as the warning text.
+        let by = h.y * 0.2;
+        let a = prog * (0.6 + 0.4 * (wave.timer * 4.5).sin());
+        let bcol = dim(boss_kind_color(kind), a);
+        for sy in [-1.0f32, 1.0] {
+            let y = by + sy * 54.0;
+            gizmos.line_2d(Vec2::new(-h.x * 0.72, y), Vec2::new(h.x * 0.72, y), dim(bcol, 0.85));
+            // hazard ticks marching along the band edge
+            let tick = 34.0;
+            let mut x = -h.x * 0.72 + (t * 55.0) % tick;
+            while x < h.x * 0.72 - 14.0 {
+                gizmos.line_2d(Vec2::new(x, y - sy * 5.0), Vec2::new(x + 14.0, y + sy * 5.0), dim(bcol, 0.45));
+                x += tick;
             }
         }
+        // the boss itself, mini + alive, left of the name
+        draw_boss_idle(&mut gizmos, kind, Vec2::new(-h.x * 0.52, by), 30.0, t, bcol);
     }
 
+    let ship_eye = players.iter().next().map(|t| t.translation.truncate());
     for (boss, bt) in &bosses {
         let c = bt.translation.truncate();
-        // arms: a curved, tapering tentacle to each shield rock
-        for (st, sh) in &shielded {
-            draw_tentacle(&mut gizmos, c, st.translation.truncate(), boss.pulse * 1.4 + sh.slot as f32 * 1.7, dim(mc, 0.7));
-        }
-        // core: jagged pulsing star + glowing center. Blinks while charging (invuln);
-        // while DYING it shrinks toward nothing and flickers as it comes apart.
-        let throb = 1.0 + 0.1 * boss.pulse.sin();
         let scale = if boss.dying > 0.0 { (boss.dying / BOSS_DEATH_SECS).clamp(0.0, 1.0) } else { 1.0 };
-        let blink = boss.charge > 0.0 || boss.dying > 0.0;
+        // DYING, the arms shear off one by one (the bursts fire in boss_update; here the countdown
+        // simply stops drawing each sheared arm)
+        let arms_alive = if boss.dying > 0.0 { (scale * BOSS_ARMS as f32).ceil() as usize } else { BOSS_ARMS };
+        // arms: a rippling tentacle to each held rock…
+        let mut held: [bool; BOSS_ARMS] = [false; BOSS_ARMS];
+        for (st, sh) in &shielded {
+            let slot = sh.slot.min(BOSS_ARMS - 1);
+            held[slot] = true;
+            if slot < arms_alive {
+                draw_tentacle(&mut gizmos, c, st.translation.truncate(), boss.pulse * 1.4 + slot as f32 * 1.7, dim(mc, 0.7));
+            }
+        }
+        // …and idle stubs WAVING on the empty slots (the octopus is never still)
+        for (k, taken) in held.iter().enumerate().take(arms_alive) {
+            if !taken {
+                let a = boss.rot + k as f32 / BOSS_ARMS as f32 * TAU;
+                let tip = c + Vec2::from_angle(a + 0.18 * (t * 1.6 + k as f32).sin()) * BOSS_ORBIT_R * 0.45;
+                draw_tentacle(&mut gizmos, c, tip, boss.pulse * 1.4 + k as f32 * 1.7, dim(mc, 0.45));
+            }
+        }
+        // the armored VAULT + tracking eye. Blinks only while charging in (its intro invuln);
+        // dying no longer blinks — it visibly breaks apart instead.
+        let blink = boss.charge > 0.0;
         if !blink || ((boss.pulse * 3.0) as i32) % 2 == 0 {
-            let star: Vec<Vec2> = (0..=20)
-                .map(|k| {
-                    let a = k as f32 / 20.0 * TAU + boss.rot;
-                    let r = BOSS_R * throb * scale * if k % 2 == 0 { 1.0 } else { 0.72 };
-                    c + Vec2::from_angle(a) * r
-                })
-                .collect();
-            gizmos.linestrip_2d(star, mc);
-            gizmos.circle_2d(Isometry2d::from_translation(c), BOSS_R * 0.4 * throb * scale, mc);
+            draw_warden_body(&mut gizmos, c, BOSS_R * scale, t, ship_eye.map(|s| s - c).unwrap_or(Vec2::X), mc);
         }
         // HP bar (top-center), hidden once it's dying (the fight's over)
         if boss.dying <= 0.0 {
@@ -6671,26 +6891,14 @@ fn render_boss(
         let s = SLINGER_R * throb * scale;
         // point the hull at the player (nose = cannon); default facing down if there's no ship
         let face = ship_pos.map(|sp| (sp - c).to_angle()).unwrap_or(-std::f32::consts::FRAC_PI_2);
-        let rot = Vec2::from_angle(face);
-        let tf = |x: f32, y: f32| c + rot.rotate(Vec2::new(x, y)); // ship-space (nose +X) → world
-        let blink = sl.charge > 0.0 || sl.dying > 0.0;
+        let blink = sl.charge > 0.0;
         if !blink || ((sl.pulse * 3.0) as i32) % 2 == 0 {
-            // elongated dart hull (nose forward, notched tail) + swept wings + a barrel + a reactor core
-            let hull = [
-                tf(1.35 * s, 0.0),
-                tf(0.25 * s, 0.62 * s),
-                tf(-0.9 * s, 0.5 * s),
-                tf(-0.55 * s, 0.0),
-                tf(-0.9 * s, -0.5 * s),
-                tf(0.25 * s, -0.62 * s),
-                tf(1.35 * s, 0.0),
-            ];
-            gizmos.linestrip_2d(hull, sc);
-            gizmos.linestrip_2d([tf(-0.2 * s, 0.55 * s), tf(-1.15 * s, 1.05 * s), tf(-0.95 * s, 0.35 * s)], dim(sc, 0.85)); // wing
-            gizmos.linestrip_2d([tf(-0.2 * s, -0.55 * s), tf(-1.15 * s, -1.05 * s), tf(-0.95 * s, -0.35 * s)], dim(sc, 0.85)); // wing
-            gizmos.line_2d(tf(0.6 * s, 0.0), tf(1.7 * s, 0.0), sc); // cannon barrel
-            gizmos.circle_2d(Isometry2d::from_translation(tf(-0.1 * s, 0.0)), 0.34 * s, sc); // reactor core
-            gizmos.circle_2d(Isometry2d::from_translation(tf(-0.1 * s, 0.0)), 0.16 * s, Color::srgb(4.5, 6.0, 8.0)); // hot center
+            // DYING it LISTS — the hull rolls off its facing as it falls, wings/pods shearing away
+            // (staged via `stage`; the bursts fire in slinger_update)
+            let stage = if sl.dying > 0.0 { scale } else { 1.0 };
+            let list = (1.0 - stage) * 1.1;
+            let rot2 = Vec2::from_angle(face + list);
+            draw_slinger_body(&mut gizmos, c, rot2, s, t, sl.recoil, stage, sc);
         }
         if sl.dying <= 0.0 {
             boss_hp_bar(&mut gizmos, h.y - 42.0, sl.hp as f32 / SLINGER_HP as f32, sc);
@@ -10489,7 +10697,7 @@ mod tests {
         // an entered, no-longer-charging Slinger at the origin, plus a bullet on top of it
         let boss = app
             .world_mut()
-            .spawn((Slinger { hp: SLINGER_HP, entered: true, charge: 0.0, cool: SLINGER_COOL, load: 0.0, ammo: None, pulse: 0.0, dying: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0)))
+            .spawn((Slinger { hp: SLINGER_HP, entered: true, charge: 0.0, cool: SLINGER_COOL, load: 0.0, ammo: None, pulse: 0.0, recoil: 0.0, dying: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0)))
             .id();
         app.world_mut()
             .spawn((Bullet { life: 1.0, trail: Vec::new(), mass: false }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0)));
@@ -10737,7 +10945,7 @@ mod tests {
         // vs a boss the mass shot does NOT vaporize — it chips MASS_BOSS_POWER (a bit more than standard's 1)
         let boss = app
             .world_mut()
-            .spawn((Slinger { hp: SLINGER_HP, entered: true, charge: 0.0, cool: SLINGER_COOL, load: 0.0, ammo: None, pulse: 0.0, dying: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0)))
+            .spawn((Slinger { hp: SLINGER_HP, entered: true, charge: 0.0, cool: SLINGER_COOL, load: 0.0, ammo: None, pulse: 0.0, recoil: 0.0, dying: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0)))
             .id();
         app.world_mut().spawn((Bullet { life: 1.0, trail: Vec::new(), mass: true }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0)));
         app.add_systems(Update, collisions);
@@ -11251,7 +11459,7 @@ mod tests {
         app.world_mut().spawn((Ship { angle: 0.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0)));
         app.world_mut().spawn((Drone { fire: -0.1, angle: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0))); // primed to fire
         // a boss in range with NO asteroids around — the drone should still fire (at the boss)
-        app.world_mut().spawn((Slinger { hp: SLINGER_HP, entered: true, charge: 0.0, cool: SLINGER_COOL, load: 0.0, ammo: None, pulse: 0.0, dying: 0.0 }, Transform::from_xyz(150.0, 0.0, 0.0)));
+        app.world_mut().spawn((Slinger { hp: SLINGER_HP, entered: true, charge: 0.0, cool: SLINGER_COOL, load: 0.0, ammo: None, pulse: 0.0, recoil: 0.0, dying: 0.0 }, Transform::from_xyz(150.0, 0.0, 0.0)));
         app.add_systems(Update, drone_update);
         app.update();
         assert_eq!(app.world_mut().query::<&Bullet>().iter(app.world()).count(), 1, "the drone auto-fires at a nearby boss, not just asteroids");
