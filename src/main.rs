@@ -191,7 +191,8 @@ const DETONATOR_INTRO: f32 = 1.2; // invulnerable power-up after entering
 const DETONATOR_SPEED: f32 = 120.0; // drift speed while armored (repositioning toward rocks to prime)
 const DETONATOR_ATTACH_R: f32 = 150.0; // must be within this of a rock to START priming it (else keep drifting in — never primes "nothing")
 const DETONATOR_COOL: f32 = 1.6; // s armored between priming channels
-const DETONATOR_PRIME_SECS: f32 = 1.5; // length of the priming channel — the VULNERABLE window
+const DETONATOR_PRIME_SECS: f32 = 2.5; // length of the priming channel — the VULNERABLE window (was 1.5:
+                                       // too short to land real damage once drift/search time was paid)
 const DETONATOR_BOMB_FUSE: f32 = 1.4; // once primed, the rock ticks this long, then detonates (dodge it)
 const DETONATOR_DEATH_SECS: f32 = 2.2;
 
@@ -2014,13 +2015,13 @@ fn roll_rock_kind(level: i32, rng: &mut impl Rng) -> RockKind {
     if rng.gen_bool(pulser) {
         return RockKind::Pulser;
     }
-    // Orange (explosive) — an ACT II type: debuts w11, peaks at 14, and bows out at the Detonator's
-    // wave 20 (its own boss). It does NOT carry into Act III.
+    // Orange (explosive) — an ACT II type: debuts w11, peaks at 14, and is GONE by wave 20, its own
+    // boss's wave. The Detonator can't prime explosives (they're already bombs), so every orange on
+    // its field was a dead slot that left the boss hunting — armored — for something green: wave 20
+    // is pure green fodder now, and the boss itself brings the explosions. No orange in Act III.
     let orange = match cw {
         11..=13 => 0.25,
         14 => 1.0,  // the all-orange danger wave
-        20 => 0.55, // the Detonator's wave: heavy on live bombs, but with green fodder mixed in — the boss
-        // only PRIMES non-explosive rocks now (an orange is already a bomb), so it must have prey on field
         17..=19 => 0.3,
         _ => 0.0, // wave 30 (the finale) rolls its own all-types mix (`roll_finale_kind`), not this table
     };
@@ -5025,7 +5026,7 @@ fn render(
     stars: Query<(&Star, &Transform)>,
     ships: Query<(&Ship, &Transform, Option<&ShipTrail>)>,
     asteroids: Query<(&Asteroid, &Transform, Option<&Gold>, Option<&Explosive>, Option<&Detonating>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>)>,
-    bullets: Query<(&Bullet, &Transform)>,
+    bullets: Query<(&Bullet, &Transform, Has<WarheadShot>, &Velocity)>,
     particles: Query<(&Particle, &Transform)>,
     holes: Query<(&BlackHole, &Transform)>,
     missiles: Query<&Transform, With<WarpMissile>>,
@@ -5300,10 +5301,28 @@ fn render(
     // blobs shrink to a fine point at the tail and heat up toward the head (deep
     // purple tip → hot lavender base); the head itself is kept compact.
     let core = Color::srgb(5.0, 4.2, 5.6); // white-hot center
-    for (b, bt) in &bullets {
+    for (b, bt, is_warhead, vel) in &bullets {
         let c = bt.translation.truncate();
         let br = bullet_radius(b.mass);
-        if b.mass {
+        if is_warhead {
+            // WARHEAD round: an ARMED violet shell — a dart body along its flight plus a slow-spinning
+            // ring of detonation ticks (the same language as its HUD glyph and blast ring). Reads
+            // instantly as "the one that deletes rocks" against the standard orb / fat mass round.
+            let wc = warhead_color();
+            let dir = vel.0.normalize_or_zero();
+            let perp = dir.perp();
+            let tip = c + dir * (br * 2.8);
+            let butt = c - dir * (br * 1.6);
+            gizmos.line_2d(butt, tip, wc); // spine
+            gizmos.line_2d(butt + perp * (br * 0.9), tip, dim(wc, 0.85)); // swept casing sides
+            gizmos.line_2d(butt - perp * (br * 0.9), tip, dim(wc, 0.85));
+            gizmos.circle_2d(Isometry2d::from_translation(c), br * 0.5, core);
+            for k in 0..3 {
+                let a = t * 7.0 + k as f32 / 3.0 * TAU; // continuous spin (~1.1 rev/s) — motion, not flash
+                let d = Vec2::from_angle(a);
+                gizmos.line_2d(c + d * (br * 1.5), c + d * (br * 2.2), dim(wc, 0.7));
+            }
+        } else if b.mass {
             // mass shot: a fat hot-violet round with a tapering trail
             let base = mass_color();
             let flame_tip = dim(base, 0.5); // deep (tail)
@@ -10701,12 +10720,12 @@ mod tests {
         // green retires WITH its act: gone from wave 21 on
         let (_b, g22, _o, _p) = sample(22, 400, &mut rng);
         assert_eq!(g22, 0, "no green in Act III (each act owns its roster)");
-        // wave 20 (the Detonator): orange-heavy, but with GREEN fodder mixed in — the boss only primes
-        // non-explosive rocks (an all-orange field would leave it nothing to prime = unkillable)
+        // wave 20 (the Detonator): pure GREEN fodder — the boss can't prime an explosive (it's already
+        // a bomb), so any orange was a dead slot that stalled the fight with it hunting, armored, for
+        // a green. The boss brings the explosions; the field brings the prey.
         let (b, g, o, p) = sample(20, 400, &mut rng);
-        assert_eq!((b, p), (0, 0), "wave 20 has no blue and no pulsers");
-        assert!(o > 0, "wave 20 is heavy on live bombs");
-        assert!(g > 0, "wave 20 keeps green fodder for the Detonator to prime");
+        assert_eq!((b, o, p), (0, 0, 0), "wave 20 spawns no blue, no orange, no pulsers");
+        assert_eq!(g, 400, "wave 20 is nothing but primeable green fodder");
         // the devourer wave (10) stays plain blue food so it can be starved
         let (_b, g, o, p) = sample(10, 200, &mut rng);
         assert_eq!((g, o, p), (0, 0, 0), "the devourer wave is plain blue food");

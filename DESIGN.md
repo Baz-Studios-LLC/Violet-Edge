@@ -37,7 +37,7 @@ act's roster (10 = blue food, 20 = orange + green fodder, 25 = pure red).
 | --- | --- | --- |
 | **Blue** | ✅ | The standard rock. Sizes L/M/S (radius 88 / 46 / 30); a hit splits it into two of the next size down, the smallest is destroyed. One bullet per break. |
 | **Green** | ✅ | Dense — takes multiple hits (HP = size, so a large green needs 3). A normal bullet *chips* it; the chain beam or a mine blast shear it in one, and a **mass shot** destroys it outright. Bridges in wave 6, owns 7–9, CARRIES Act II (the 11–19 baseline), and retires with its act at 20. |
-| **Orange** | ✅ | Explosive. Instead of splitting, a destroyed orange **detonates** after a brief fuse — a big AOE (`ORANGE_BLAST_R`) that **destroys everything inside outright** (rocks obliterated, not split), pops mines/enemies, kills the ship if caught, and lights other oranges (chain reaction). **Gold is spared**; bullet/chain/mine all *light* it. Act II only: debuts 11, peaks at 14, bows out at its boss's wave 20. |
+| **Orange** | ✅ | Explosive. Instead of splitting, a destroyed orange **detonates** after a brief fuse — a big AOE (`ORANGE_BLAST_R`) that **destroys everything inside outright** (rocks obliterated, not split), pops mines/enemies, kills the ship if caught, and lights other oranges (chain reaction). **Gold is spared**; bullet/chain/mine all *light* it. Act II only: debuts 11, peaks at 14, last seen 19 — its own boss's wave 20 is pure green fodder (the Detonator can't prime a rock that's already a bomb). |
 | **Red** | ✅ | Grows, like the Glutton boss: absorbs nearby asteroids (other reds included) to gain size. A broken red splits into two reds, and *those* absorb and swell back — a whack-a-mole unless you clear the field around them. Soft (1 hp); mass/warhead/chain/mine destroy one outright, no regrow. **Act III's CARRIER**: wave 21 is all-red (the teaching wave), it's the 21–29 fallback, and the Pulsar's wave 25 is fought over a pure red field. |
 | **Pulser** | ✅ | Pulses bright white ↔ dim on its own **slow** beat (`PULSE_RATE`, ~3.7s, per-rock phase); **invulnerable while LIT** — bullets/chain/mine-blast all no-op on it (a shot fizzles with a white spark). Hit it on the **dark** beat. Breaks into **smaller pulsers** (a sustained timing puzzle, not inert rubble); internally dense so there's never any blue. Act II only: debuts 16 (all-pulser), retires with its act at 20 — the Pulsar boss carries the beat into Act III itself. `pulser_lit()` derives the beat from global time. |
 | **Cluster** | ✅ | Fractured pale-ICE rock (visible crack lines). Breaking it **SHATTERS it into a ring of ~7 tiny fast shards** instead of two chunks — point-blank shots become a bad habit; spacing matters. The **mass shot vaporizes it clean** (no shards) and the **warp swallows it whole** — the first rock where tool choice really matters. A mine-triggered shatter flings the ring even faster. Debuts wave 26 (splits Act III into two eras). |
@@ -150,7 +150,7 @@ the **gravity Well** hazard appears on 18–19 (no mobs in Act II at all — the
 | 17 | green + orange + pulser | ✅ wired |
 | 18 | pulser-heavy + orange + **Well** | ✅ wired |
 | 19 | green + orange + pulser + **Well** | ✅ wired |
-| 20 | **The Detonator** (boss) + orange | orange wired ✅ · Detonator ✅ · Warhead drop ✅ |
+| 20 | **The Detonator** (boss) + green fodder (no orange — the boss can't prime bombs) | Detonator ✅ · Warhead drop ✅ |
 
 The **gravity Well** (`WELL_*`, ✅): an "opposite warp" HAZARD — a small, tight rose-red swirl that
 **pops in at random intervals** (`WELL_MIN_GAP`..`WELL_MAX_GAP`), drags the *ship* toward it
@@ -161,10 +161,13 @@ field-hazard preview of the Phantom's *Pull* (W30).
 
 The Detonator (§D, ✅): boss 4, wave 20 — a hazard-**chartreuse** armored core. Invulnerable while it
 drifts; it drifts UNTIL it reaches a rock (within `DETONATOR_ATTACH_R`), then HALTS and PRIMES that rock —
-a ~`DETONATOR_PRIME_SECS` channel with a chartreuse **beam** to the rock, its core OPENING (the ONLY
+a `DETONATOR_PRIME_SECS` channel (2.5s, retuned from 1.5 — the window was too short to land real damage
+once drift/search time was paid) with a chartreuse **beam** to the rock, its core OPENING (the ONLY
 window to damage it, `det.prime > 0`). The primed rock becomes a live bomb (a `Detonating` rock on
-`DETONATOR_BOMB_FUSE`) to dodge. It never primes "nothing" — no rock in reach ⇒ keep drifting in. Wave 20
-is **all-orange** (its bombs). On death it drops **Warhead rounds** (permanent passive: every primary shot
+`DETONATOR_BOMB_FUSE`) to dodge. It never primes "nothing" — no rock in reach ⇒ keep drifting in; it
+never primes gold or an ORANGE (already a bomb). Wave 20 is therefore **all-green fodder** (retuned
+2026-07-29: the old orange-heavy mix filled the field with unprimeable rocks, leaving the boss hunting —
+armored — for a green; the boss brings the explosions now). On death it drops **Warhead rounds** (permanent passive: every primary shot
 makes the rock it hits detonate + chain, reusing the orange pipeline; gold is spared). Warhead blasts are
 tagged `Detonating { friendly: true }` — **violet and player-safe** (skips the ship-kill) — vs the orange,
 lethal `friendly: false` bombs (boss primes, orange rocks, mines); the flag propagates through chains.

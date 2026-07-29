@@ -5,6 +5,16 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
+- **The Detonator fight flows now.** Two fixes for the same stall — the boss spending long stretches
+  armored, "looking for a green":
+  - Its priming channel (the vulnerable window) runs **2.5s, up from 1.5s** — long enough to land
+    real damage once you've closed the distance.
+  - **No orange rocks spawn on wave 20 anymore.** The boss can't prime an explosive (it's already a
+    bomb), so every orange was a dead slot it had to drift past. Its wave is pure green fodder — the
+    Detonator itself brings the explosions.
+- **Warhead rounds look ARMED now.** They used to draw exactly like standard shots; a warhead round
+  is now a violet dart-shell with a slow-spinning ring of detonation ticks (the same visual language
+  as its HUD glyph and blast ring) — instantly distinct from the standard orb and the fat mass round.
 - **Beacon aura enlarged** (200 → 270 radius, nearly double the area) — the shield zone now genuinely
   owns a region of the field instead of hugging the rock. The reach ring is drawn a touch brighter so
   the boundary reads at a glance. Mechanics audited + newly test-pinned: warhead rounds fizzle inside
