@@ -5,6 +5,18 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
+- **23 ACHIEVEMENTS** (up from 12) — built for a game you restart a lot. All lifetime, all persistent:
+  - **One per rock type**: True Blue (1,000 blues), Green Thumb (500 greens), Demolition Derby
+    (400 oranges lit), Beat It (300 pulsers on the dark beat), Seeing Red (400 reds), Ice Breaker
+    (300 clusters), Keymaster (100 beacons).
+  - **The restart ladder**: Back for More (10 runs), Sisyphus (25), The Definition of Insanity (50) —
+    every press of Start counts, and the tally saves immediately.
+  - **Lifetime grinds**: Wave Goodbye (250 waves cleared — boss kills count), Event Horizon (150 warp
+    holes opened).
+  - **Untouchable** — beat the game without losing a single life (a Nova Shield absorb doesn't
+    count against you; a real death does).
+  - The achievements screen packs all 23 rows cleanly into the frame.
+  - Save format extended (old saves load fine — new counters just start at zero).
 - **The Glutton has real fangs now.** Its teeth were reading as thin "V" chevrons; each tooth is now a
   closed fang with a bright center rib (solid under bloom), chunkier and fewer per ring.
 - **Menus fit the screen.** The Controls screen was clipping top and bottom; every menu got a layout

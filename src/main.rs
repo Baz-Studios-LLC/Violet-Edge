@@ -795,9 +795,28 @@ fn kill_ship(
     sfx.write(SoundFx::Death);
     commands.entity(ship_e).despawn();
     run.lives -= 1;
+    run.died = true; // a real death (not a Nova absorb) — forfeits Untouchable for this run
     // Even on the last life we DON'T jump straight to Game Over — set a timer so the death
     // explosion plays out; `respawn` makes the transition once it elapses (less abrupt).
     run.respawn = if run.lives <= 0 { GAMEOVER_DELAY } else { RESPAWN_DELAY };
+}
+
+// Credit a player rock-kill to its type's lifetime counter (the per-type achievements). One source
+// of truth for the priority order (beacon/pulser are ALSO dense internally, so they check first).
+fn credit_rock_kill(stats: &mut Stats, dense: bool, pulser: bool, red: bool, cluster: bool, beacon: bool) {
+    if beacon {
+        stats.beacon += 1;
+    } else if pulser {
+        stats.pulser += 1;
+    } else if red {
+        stats.red += 1;
+    } else if cluster {
+        stats.cluster += 1;
+    } else if dense {
+        stats.green += 1;
+    } else {
+        stats.blue += 1;
+    }
 }
 
 // A combat kill of an enemy mob: award score, splash debris, play the death zap, despawn.
@@ -1381,6 +1400,7 @@ struct Run {
     lives: i32,
     respawn: f32,
     nova: Nova, // the Nova Shield's per-run state (see `Nova`)
+    died: bool, // any life lost this run (a Nova absorb doesn't count) — drives the deathless-win achievement
 }
 
 #[derive(Resource)]
@@ -1455,14 +1475,26 @@ enum Ach {
     Pulsar,
     TrueBlue,
     GreenThumb,
+    Demolition,
+    BeatIt,
+    SeeingRed,
+    IceBreaker,
+    Keymaster,
     Minesweeper,
     GoldRush,
+    WaveGoodbye,
+    EventHorizon,
+    Runs10,
+    Runs25,
+    Runs50,
     Edgelord,
+    Untouchable,
     Purist,
 }
-// Order defines the index into `Achievements.unlocked` and the menu list: the boss ladder, then the
-// lifetime grinds, then the two "beat the game" capstones.
-const ACHIEVEMENTS: [Ach; 12] = [
+// Order defines the index into `Achievements.unlocked` and the menu list: the boss ladder, the
+// rock-type grinds (one per type), the other lifetime grinds, the restart ladder, then the
+// beat-the-game capstones.
+const ACHIEVEMENTS: [Ach; 23] = [
     Ach::FirstBlood,
     Ach::Warden,
     Ach::Glutton,
@@ -1471,18 +1503,37 @@ const ACHIEVEMENTS: [Ach; 12] = [
     Ach::Pulsar,
     Ach::TrueBlue,
     Ach::GreenThumb,
+    Ach::Demolition,
+    Ach::BeatIt,
+    Ach::SeeingRed,
+    Ach::IceBreaker,
+    Ach::Keymaster,
     Ach::Minesweeper,
     Ach::GoldRush,
+    Ach::WaveGoodbye,
+    Ach::EventHorizon,
+    Ach::Runs10,
+    Ach::Runs25,
+    Ach::Runs50,
     Ach::Edgelord,
+    Ach::Untouchable,
     Ach::Purist,
 ];
 
 // Lifetime-grind thresholds. Stats accumulate across EVERY run — and runs end in death a lot, by
-// design — so these are set high on purpose: they're careers, not errands.
+// design — so these are set high on purpose: they're careers, not errands. Per-type targets scale
+// with how much of the game each rock inhabits (blues everywhere; beacons rare and late).
 const ACH_BLUE: u32 = 1000;
 const ACH_GREEN: u32 = 500; // dense rocks are far rarer than blues
+const ACH_ORANGE: u32 = 400;
+const ACH_PULSER: u32 = 300; // every one is a timed dark-beat kill
+const ACH_RED: u32 = 400;
+const ACH_CLUSTER: u32 = 300;
+const ACH_BEACON: u32 = 100; // the rarest rock — and each takes deliberate focus
 const ACH_MINES: u32 = 250;
 const ACH_GOLDS: u32 = 25;
+const ACH_WAVES: u32 = 250; // lifetime waves cleared (a full win is 30)
+const ACH_WARPS: u32 = 150; // warp holes opened
 
 fn ach_meta(a: Ach) -> (&'static str, &'static str) {
     match a {
@@ -1494,9 +1545,20 @@ fn ach_meta(a: Ach) -> (&'static str, &'static str) {
         Ach::Pulsar => ("Lights Out", "Defeat the Pulsar — boss 5"),
         Ach::TrueBlue => ("True Blue", "Destroy 1,000 blue asteroids"),
         Ach::GreenThumb => ("Green Thumb", "Destroy 500 dense green asteroids"),
+        Ach::Demolition => ("Demolition Derby", "Set off 400 orange asteroids"),
+        Ach::BeatIt => ("Beat It", "Crack 300 pulsers on the dark beat"),
+        Ach::SeeingRed => ("Seeing Red", "Destroy 400 red asteroids"),
+        Ach::IceBreaker => ("Ice Breaker", "Shatter 300 clusters"),
+        Ach::Keymaster => ("Keymaster", "Crack 100 beacons"),
         Ach::Minesweeper => ("Minesweeper", "Destroy 250 mines"),
         Ach::GoldRush => ("Gold Rush", "Earn 25 extra lives from gold rocks"),
+        Ach::WaveGoodbye => ("Wave Goodbye", "Clear 250 waves, lifetime"),
+        Ach::EventHorizon => ("Event Horizon", "Open 150 warp holes"),
+        Ach::Runs10 => ("Back for More", "Start 10 runs"),
+        Ach::Runs25 => ("Sisyphus", "Start 25 runs"),
+        Ach::Runs50 => ("The Definition of Insanity", "Start 50 runs"),
         Ach::Edgelord => ("Edgelord", "Beat the game — defeat the Phantom at wave 30"),
+        Ach::Untouchable => ("Untouchable", "Beat the game without losing a single life"),
         Ach::Purist => ("Purist", "Beat the game without a single powerup"),
     }
 }
@@ -1511,11 +1573,22 @@ fn ach_met(a: Ach, s: &Stats) -> bool {
         Ach::Pulsar => s.pulsar,
         Ach::TrueBlue => s.blue >= ACH_BLUE,
         Ach::GreenThumb => s.green >= ACH_GREEN,
+        Ach::Demolition => s.orange >= ACH_ORANGE,
+        Ach::BeatIt => s.pulser >= ACH_PULSER,
+        Ach::SeeingRed => s.red >= ACH_RED,
+        Ach::IceBreaker => s.cluster >= ACH_CLUSTER,
+        Ach::Keymaster => s.beacon >= ACH_BEACON,
         Ach::Minesweeper => s.mines >= ACH_MINES,
         Ach::GoldRush => s.golds >= ACH_GOLDS,
-        // The REAL win: the wave-30 Haunt kill. (Historically this fired on boss 2 — the old
+        Ach::WaveGoodbye => s.waves >= ACH_WAVES,
+        Ach::EventHorizon => s.warps >= ACH_WARPS,
+        Ach::Runs10 => s.runs >= 10,
+        Ach::Runs25 => s.runs >= 25,
+        Ach::Runs50 => s.runs >= 50,
+        // The REAL win: the wave-30 Phantom kill. (Historically this fired on boss 2 — the old
         // 10-wave arc's "beat the game" — which read as unlocking a third of the way in.)
         Ach::Edgelord => s.phantom,
+        Ach::Untouchable => s.deathless,
         Ach::Purist => s.no_powerups,
     }
 }
@@ -1533,9 +1606,18 @@ struct Stats {
     slinger: bool,     // ever defeated boss 3
     detonator: bool,   // ever defeated boss 4
     pulsar: bool,      // ever defeated boss 5
-    phantom: bool,     // ever defeated the Haunt (boss 6, wave 30) = beat the game
+    phantom: bool,     // ever defeated the Phantom (boss 6, wave 30) = beat the game
     mines: u32,        // mines destroyed (lifetime, player-credited)
     golds: u32,        // gold lineages fully cleared (extra lives earned, lifetime)
+    orange: u32,       // orange (explosive) rocks lit/destroyed by the player's fire (lifetime)
+    pulser: u32,       // pulsers cracked on the dark beat (lifetime)
+    red: u32,          // red (growing) rocks destroyed (lifetime)
+    cluster: u32,      // clusters shattered (lifetime)
+    beacon: u32,       // beacons cracked (lifetime)
+    runs: u32,         // runs STARTED (every restart counts — the player dies a lot, by design)
+    waves: u32,        // waves cleared, lifetime (advancing past any wave counts one)
+    warps: u32,        // warp holes opened (lifetime)
+    deathless: bool,   // ever beat the game without losing a single life
 }
 
 // Which achievements are unlocked (drives the toast + the menu list). Initialized from the loaded
@@ -1640,12 +1722,15 @@ fn devourer_radius(grow: f32) -> f32 {
 }
 
 // Shared "boss defeated" bookkeeping (both bosses use it): reward, then advance into the calm.
-fn defeat_boss(score: &mut Score, wave: &mut Wave, banner: &mut WaveBanner) {
+fn defeat_boss(score: &mut Score, wave: &mut Wave, banner: &mut WaveBanner, stats: Option<&mut Stats>) {
     score.0 += BOSS_SCORE;
     wave.level += 1;
     wave.timer = WAVE_SECS;
     wave.calm = BOSS_CALM;
     banner.timer = WAVE_BANNER_SECS;
+    if let Some(s) = stats {
+        s.waves += 1; // a boss wave cleared counts toward the lifetime wave tally
+    }
 }
 
 #[derive(Resource)]
@@ -3020,7 +3105,11 @@ fn collisions(
                         Transform::from_xyz(ap.x, ap.y, 0.0),
                     ));
                     sfx.write(SoundFx::Break(a.size));
-                    if a.dense { stats.green += 1; } else { stats.blue += 1; }
+                    if explosive.is_some() {
+                        stats.orange += 1; // the round deletes an orange whole — still a player-credited kill
+                    } else {
+                        credit_rock_kill(&mut stats, a.dense, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some());
+                    }
                     continue; // PIERCE — do not consume the round
                 }
                 // MASS / STANDARD: consume the round, chip hp (mass hits harder), split on the killing hit
@@ -3035,14 +3124,11 @@ fn collisions(
                     dead_a.insert(ae);
                     if explosive.is_some() {
                         commands.entity(ae).insert(Detonating { fuse: ORANGE_FUSE, friendly: false }); // orange detonates + chains
+                        stats.orange += 1; // you lit it — the kill is yours
                     } else {
                         break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, a.dense, gold.is_some(), pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), true);
                         sfx.write(SoundFx::Break(a.size));
-                        if a.dense {
-                            stats.green += 1;
-                        } else {
-                            stats.blue += 1;
-                        }
+                        credit_rock_kill(&mut stats, a.dense, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some());
                     }
                 }
                 break;
@@ -3262,6 +3348,7 @@ fn wave_timer(
     mut commands: Commands,
     arena: Res<Arena>,
     asteroids: Query<(), With<Asteroid>>,
+    mut stats: Option<ResMut<Stats>>, // optional so headless tests needn't insert it
 ) {
     if wave.calm > 0.0 {
         wave.calm -= time.delta_secs(); // during the post-boss calm the timer is paused
@@ -3277,6 +3364,9 @@ fn wave_timer(
     wave.level += 1;
     wave.timer = WAVE_SECS;
     banner.timer = WAVE_BANNER_SECS; // flash the new wave number
+    if let Some(s) = stats.as_mut() {
+        s.waves += 1; // lifetime wave tally (saved on run end / progress saves)
+    }
     let target = population_target(wave.level);
     let have = asteroids.iter().count() as i32;
     let mut rng = rand::thread_rng();
@@ -3530,6 +3620,7 @@ fn warp_fire(
     mut sfx: EventWriter<SoundFx>,
     mut flash: ResMut<HudFlash>,
     ships: Query<(&Ship, &Transform)>,
+    mut stats: Option<ResMut<Stats>>, // optional so headless tests needn't insert it
 ) {
     // While refilling (all charges were spent), tick the long cooldown; when it
     // ends, restore all charges. No firing during the refill.
@@ -3555,6 +3646,9 @@ fn warp_fire(
         ));
         sfx.write(SoundFx::Warp);
         warp.charges -= 1;
+        if let Some(s) = stats.as_mut() {
+            s.warps += 1; // lifetime holes opened (achievement: Event Horizon)
+        }
         if warp.charges <= 0 {
             warp.cooldown = WARP_COOLDOWN; // last charge spent → start the long refill
         }
@@ -4037,7 +4131,7 @@ fn boss_update(
                     ));
                 }
                 stats.warden = true; // achievement: defeated the Warden
-                defeat_boss(&mut score, &mut wave, &mut banner);
+                defeat_boss(&mut score, &mut wave, &mut banner, Some(&mut stats));
             }
             continue; // no movement / contact / damage while it dies
         }
@@ -4143,7 +4237,7 @@ fn devourer_update(
                     Transform::from_xyz(0.0, 0.0, 0.0),
                 ));
                 stats.glutton = true; // achievement: defeated the Glutton
-                defeat_boss(&mut score, &mut wave, &mut banner);
+                defeat_boss(&mut score, &mut wave, &mut banner, Some(&mut stats));
             }
 
             continue;
@@ -4461,17 +4555,14 @@ fn chain_update(
                 dead.insert(ae);
                 if explosive.is_some() {
                     commands.entity(ae).insert(Detonating { fuse: ORANGE_FUSE, friendly: false }); // the beam lights the orange (hostile blast)
+                    stats.orange += 1; // your beam lit it — the kill is yours
                     continue;
                 }
                 // chain beam shears dense rocks outright — the beam ignores hp, like a mine (a BEACON dies
                 // in one sweep: the beam is a clean answer to an aura)
                 break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, ast.size, 1.0, ast.dense, gold.is_some(), pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), true); // chain shears rocks; a red splits into reds (they stay red + regrow)
                 sfx.write(SoundFx::Break(ast.size));
-                if ast.dense {
-                    stats.green += 1;
-                } else {
-                    stats.blue += 1;
-                }
+                credit_rock_kill(&mut stats, ast.dense, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some());
             }
         }
         for (ee, et) in &enemies {
@@ -5441,7 +5532,7 @@ fn slinger_update(
                     Velocity(pdir * PICKUP_DRIFT),
                     Transform::from_xyz(0.0, 0.0, 0.0),
                 ));
-                defeat_boss(&mut score, &mut wave, &mut banner);
+                defeat_boss(&mut score, &mut wave, &mut banner, stats.as_deref_mut());
             }
             continue;
         }
@@ -5677,8 +5768,12 @@ fn phantom_update(
                     // Victory screen: the send-off scene that follows is pure theatre and can't be lost.
                     if let Some(s) = progress.0.as_mut() {
                         s.phantom = true; // achievement: Edgelord (beat the game)
+                        s.waves += 1; // the finale counts toward the lifetime wave tally too
                         if progress.1.as_ref().is_some_and(|f| !f.powerup_used) {
                             s.no_powerups = true; // achievement: Purist (won it clean)
+                        }
+                        if !run.died {
+                            s.deathless = true; // achievement: Untouchable (won without losing a life)
                         }
                     }
                     p = Vec2::ZERO;
@@ -6175,7 +6270,7 @@ fn pulsar_update(
                 if let Some(s) = stats.as_mut() {
                     s.pulsar = true; // achievement: defeated the Pulsar
                 }
-                defeat_boss(&mut score, &mut wave, &mut banner);
+                defeat_boss(&mut score, &mut wave, &mut banner, stats.as_deref_mut());
             }
             continue;
         }
@@ -6304,7 +6399,7 @@ fn detonator_update(
                     Velocity(pdir * PICKUP_DRIFT),
                     Transform::from_xyz(0.0, 0.0, 0.0),
                 ));
-                defeat_boss(&mut score, &mut wave, &mut banner);
+                defeat_boss(&mut score, &mut wave, &mut banner, stats.as_deref_mut());
             }
             continue;
         }
@@ -7284,10 +7379,14 @@ fn reset_run(
     warhead: &mut Warhead,
     flags: &mut RunFlags,
     gold: &mut GoldRush,
+    stats: &mut Stats,
 ) {
     run.lives = START_LIVES;
     run.respawn = 0.0;
     run.nova = Nova::default(); // the Nova Shield must be re-earned (like every other pickup)
+    run.died = false; // fresh deathless slate (achievement: Untouchable)
+    stats.runs += 1; // every launch counts — dying a lot is the expected way to play
+    save_progress(stats); // persist immediately: a rage-quit mid-run still counts the attempt
     score.0 = 0;
     wave.level = 1;
     wave.timer = WAVE_SECS;
@@ -7323,7 +7422,7 @@ fn menu_start(
     mut wave: ResMut<Wave>,
     mut banner: ResMut<WaveBanner>,
     mut warp: ResMut<Warp>,
-    mut progress: (ResMut<BossState>, ResMut<Chain>, ResMut<MassShot>, ResMut<RunFlags>, ResMut<GoldRush>, ResMut<Warhead>), // bundled (16-param limit)
+    mut progress: (ResMut<BossState>, ResMut<Chain>, ResMut<MassShot>, ResMut<RunFlags>, ResMut<GoldRush>, ResMut<Warhead>, ResMut<Stats>), // bundled (16-param limit)
     mut clicks: EventReader<MenuClick>,
 ) {
     let actions: Vec<MenuAction> = clicks.read().map(|c| c.0).collect(); // read once, then test
@@ -7348,7 +7447,7 @@ fn menu_start(
     if !(keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) || actions.contains(&MenuAction::Play)) {
         return;
     }
-    reset_run(&mut commands, &mut run, &mut score, &mut wave, &mut banner, &mut warp, &mut progress.0, &mut progress.1, &mut progress.2, &mut progress.5, &mut progress.3, &mut progress.4);
+    reset_run(&mut commands, &mut run, &mut score, &mut wave, &mut banner, &mut warp, &mut progress.0, &mut progress.1, &mut progress.2, &mut progress.5, &mut progress.3, &mut progress.4, &mut progress.6);
     next.set(GameState::Playing);
 }
 
@@ -7431,20 +7530,21 @@ fn spawn_menu_ui(mut commands: Commands, achieved: Res<Achievements>, stats: Res
     });
 }
 
-// One row of a two-column reference table (left label | right text). Shared by the achievements and
-// controls screens so they align identically and there's a single place to tune the layout.
+// One row of the achievements table (name | description). Compact on purpose: 23 rows plus the
+// title and BACK button must fit the 800px design height, so the rows are dense and the container
+// below (not the overlay's row_gap) owns the spacing.
 fn table_row(p: &mut ChildSpawnerCommands, font: &Handle<Font>, left: &str, left_col: Color, left_w: f32, right: &str, right_col: Color) {
     p.spawn(Node {
         flex_direction: FlexDirection::Row,
         align_items: AlignItems::Center,
-        column_gap: Val::Px(28.0),
-        width: Val::Px(760.0),
-        padding: UiRect::vertical(Val::Px(3.0)),
+        column_gap: Val::Px(24.0),
+        width: Val::Px(740.0),
+        padding: UiRect::vertical(Val::Px(1.0)),
         ..default()
     })
     .with_children(|row| {
-        row.spawn((text_f(font, 17.0, left_col, left), Node { width: Val::Px(left_w), ..default() }));
-        row.spawn(text_f(font, 15.0, right_col, right));
+        row.spawn((text_f(font, 14.0, left_col, left), Node { width: Val::Px(left_w), ..default() }));
+        row.spawn(text_f(font, 12.5, right_col, right));
     });
 }
 
@@ -7454,16 +7554,19 @@ fn spawn_achievements_ui(mut commands: Commands, achieved: Res<Achievements>, fo
     let f = &font.0;
     commands.entity(root).with_children(|p| {
         p.spawn(text_f(f, 40.0, title_color(), "ACHIEVEMENTS")); // static — no neon warm-up here
-        // two-column table: name | description (aligns cleanly, no separator glyph)
-        for (i, &a) in ACHIEVEMENTS.iter().enumerate() {
-            let (name, desc) = ach_meta(a);
-            let (namecol, desccol) = if achieved.unlocked[i] {
-                (ach_earned_color(), Color::srgb(0.78, 0.82, 0.95))
-            } else {
-                (Color::srgb(0.5, 0.52, 0.62), Color::srgb(0.38, 0.4, 0.5))
-            };
-            table_row(p, f, name, namecol, 330.0, desc, desccol);
-        }
+        // two-column table: name | description (aligns cleanly, no separator glyph). All 23 rows
+        // live in ONE column node so the overlay's row_gap is paid once, not 23 times.
+        p.spawn(Node { flex_direction: FlexDirection::Column, align_items: AlignItems::Center, ..default() }).with_children(|table| {
+            for (i, &a) in ACHIEVEMENTS.iter().enumerate() {
+                let (name, desc) = ach_meta(a);
+                let (namecol, desccol) = if achieved.unlocked[i] {
+                    (ach_earned_color(), Color::srgb(0.78, 0.82, 0.95))
+                } else {
+                    (Color::srgb(0.5, 0.52, 0.62), Color::srgb(0.38, 0.4, 0.5))
+                };
+                table_row(table, f, name, namecol, 300.0, desc, desccol);
+            }
+        });
         menu_button(p, f, MenuAction::Back, "BACK");
     });
 }
@@ -8114,12 +8217,21 @@ fn read_progress() -> Option<Stats> {
         phantom: flag(9),
         mines: num(10),
         golds: num(11),
+        orange: num(12),
+        pulser: num(13),
+        red: num(14),
+        cluster: num(15),
+        beacon: num(16),
+        runs: num(17),
+        waves: num(18),
+        warps: num(19),
+        deathless: flag(20),
     })
 }
 #[cfg(not(test))]
 fn save_progress(s: &Stats) {
     let line = format!(
-        "{} {} {} {} {} {} {} {} {} {} {} {}",
+        "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
         s.blue,
         s.green,
         s.enemies,
@@ -8131,7 +8243,16 @@ fn save_progress(s: &Stats) {
         s.pulsar as u8,
         s.phantom as u8,
         s.mines,
-        s.golds
+        s.golds,
+        s.orange,
+        s.pulser,
+        s.red,
+        s.cluster,
+        s.beacon,
+        s.runs,
+        s.waves,
+        s.warps,
+        s.deathless as u8
     );
     let _ = std::fs::write(SAVE_PATH, line); // best-effort — never block gameplay on I/O
 }
@@ -8196,7 +8317,7 @@ fn gameover_restart(
     mut wave: ResMut<Wave>,
     mut banner: ResMut<WaveBanner>,
     mut warp: ResMut<Warp>,
-    mut progress: (ResMut<BossState>, ResMut<Chain>, ResMut<MassShot>, ResMut<RunFlags>, ResMut<GoldRush>, ResMut<Warhead>),
+    mut progress: (ResMut<BossState>, ResMut<Chain>, ResMut<MassShot>, ResMut<RunFlags>, ResMut<GoldRush>, ResMut<Warhead>, ResMut<Stats>),
     field: Query<Entity, GameplayEntity>,
 ) {
     if keys.just_pressed(KeyCode::Escape) {
@@ -8209,7 +8330,7 @@ fn gameover_restart(
     for e in &field {
         commands.entity(e).despawn();
     }
-    reset_run(&mut commands, &mut run, &mut score, &mut wave, &mut banner, &mut warp, &mut progress.0, &mut progress.1, &mut progress.2, &mut progress.5, &mut progress.3, &mut progress.4);
+    reset_run(&mut commands, &mut run, &mut score, &mut wave, &mut banner, &mut warp, &mut progress.0, &mut progress.1, &mut progress.2, &mut progress.5, &mut progress.3, &mut progress.4, &mut progress.6);
     next.set(GameState::Playing); // field refills from the edges via top_up_asteroids
 }
 
@@ -9355,7 +9476,7 @@ mod tests {
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());
         app.insert_resource(NextState::<GameState>::default());
-        app.insert_resource(Run { lives: 3, respawn: 0.0, nova: Nova { unlocked: true, down: 0.0, grace: 0.0 } });
+        app.insert_resource(Run { lives: 3, respawn: 0.0, nova: Nova { unlocked: true, down: 0.0, grace: 0.0 }, ..default() });
         app.insert_resource(Dev::default());
         app.world_mut().spawn((
             Ship { angle: 0.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 },
@@ -9958,13 +10079,130 @@ mod tests {
             assert!(ach_met(a, &st), "the boss flag unlocks its achievement");
             assert!(!ach_met(a, &Stats::default()), "and stays locked without it");
         }
-        // the lifetime grinds sit at their (deliberately steep) thresholds
-        assert!(!ach_met(Ach::TrueBlue, &Stats { blue: ACH_BLUE - 1, ..default() }));
-        assert!(ach_met(Ach::TrueBlue, &Stats { blue: ACH_BLUE, ..default() }));
-        assert!(!ach_met(Ach::Minesweeper, &Stats { mines: ACH_MINES - 1, ..default() }));
-        assert!(ach_met(Ach::Minesweeper, &Stats { mines: ACH_MINES, ..default() }));
-        assert!(!ach_met(Ach::GoldRush, &Stats { golds: ACH_GOLDS - 1, ..default() }));
-        assert!(ach_met(Ach::GoldRush, &Stats { golds: ACH_GOLDS, ..default() }));
+        // the lifetime grinds sit at their (deliberately steep) thresholds — one below misses,
+        // exactly at unlocks. Table-driven so every counter achievement is pinned the same way.
+        let grinds: [(Ach, fn(u32) -> Stats, u32); 11] = [
+            (Ach::TrueBlue, |n| Stats { blue: n, ..default() }, ACH_BLUE),
+            (Ach::GreenThumb, |n| Stats { green: n, ..default() }, ACH_GREEN),
+            (Ach::Demolition, |n| Stats { orange: n, ..default() }, ACH_ORANGE),
+            (Ach::BeatIt, |n| Stats { pulser: n, ..default() }, ACH_PULSER),
+            (Ach::SeeingRed, |n| Stats { red: n, ..default() }, ACH_RED),
+            (Ach::IceBreaker, |n| Stats { cluster: n, ..default() }, ACH_CLUSTER),
+            (Ach::Keymaster, |n| Stats { beacon: n, ..default() }, ACH_BEACON),
+            (Ach::Minesweeper, |n| Stats { mines: n, ..default() }, ACH_MINES),
+            (Ach::GoldRush, |n| Stats { golds: n, ..default() }, ACH_GOLDS),
+            (Ach::WaveGoodbye, |n| Stats { waves: n, ..default() }, ACH_WAVES),
+            (Ach::EventHorizon, |n| Stats { warps: n, ..default() }, ACH_WARPS),
+        ];
+        for (a, make, at) in grinds {
+            assert!(!ach_met(a, &make(at - 1)), "one short of the threshold must stay locked");
+            assert!(ach_met(a, &make(at)), "hitting the threshold unlocks");
+        }
+        // the restart ladder — dying a lot is the expected way to play, so it's celebrated
+        for (a, at) in [(Ach::Runs10, 10), (Ach::Runs25, 25), (Ach::Runs50, 50)] {
+            assert!(!ach_met(a, &Stats { runs: at - 1, ..default() }));
+            assert!(ach_met(a, &Stats { runs: at, ..default() }));
+        }
+        // the capstones key their own dedicated flags, not each other's
+        assert!(ach_met(Ach::Untouchable, &Stats { deathless: true, ..default() }));
+        assert!(!ach_met(Ach::Untouchable, &Stats { phantom: true, no_powerups: true, ..default() }));
+        assert!(ach_met(Ach::Purist, &Stats { no_powerups: true, ..default() }));
+        assert!(!ach_met(Ach::Purist, &Stats { phantom: true, deathless: true, ..default() }));
+    }
+
+    #[test]
+    fn rock_kills_credit_the_right_lifetime_counter() {
+        // beacon/pulser/red/cluster rocks are ALSO dense internally (2-hp bodies), so the helper must
+        // check the special kinds BEFORE falling through to the plain green/blue split.
+        let mut s = Stats::default();
+        credit_rock_kill(&mut s, true, false, false, false, true); // dense + beacon
+        assert_eq!((s.beacon, s.green), (1, 0), "a beacon credits beacon, not green");
+        credit_rock_kill(&mut s, true, true, false, false, false); // dense + pulser
+        assert_eq!((s.pulser, s.green), (1, 0), "a pulser credits pulser, not green");
+        credit_rock_kill(&mut s, true, false, true, false, false); // dense + red
+        assert_eq!((s.red, s.green), (1, 0), "a red credits red, not green");
+        credit_rock_kill(&mut s, true, false, false, true, false); // dense + cluster
+        assert_eq!((s.cluster, s.green), (1, 0), "a cluster credits cluster, not green");
+        credit_rock_kill(&mut s, true, false, false, false, false); // plain dense
+        credit_rock_kill(&mut s, false, false, false, false, false); // plain blue
+        assert_eq!((s.green, s.blue), (1, 1), "plain rocks split on the dense flag");
+    }
+
+    #[test]
+    fn the_save_line_round_trips_every_stat_field() {
+        // The save is a positional space-separated line; a field written out of order would silently
+        // swap two lifetime counters. Serialize a fully-populated Stats and re-read it via the same
+        // positional contract read_progress uses.
+        let s = Stats {
+            blue: 1,
+            green: 2,
+            enemies: 3,
+            warden: true,
+            glutton: false,
+            no_powerups: true,
+            slinger: false,
+            detonator: true,
+            pulsar: false,
+            phantom: true,
+            mines: 4,
+            golds: 5,
+            orange: 6,
+            pulser: 7,
+            red: 8,
+            cluster: 9,
+            beacon: 10,
+            runs: 11,
+            waves: 12,
+            warps: 13,
+            deathless: true,
+        };
+        // mirror save_progress's field order (the real fn is a test no-op so runs can't clobber saves)
+        let line = format!(
+            "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+            s.blue,
+            s.green,
+            s.enemies,
+            s.warden as u8,
+            s.glutton as u8,
+            s.no_powerups as u8,
+            s.slinger as u8,
+            s.detonator as u8,
+            s.pulsar as u8,
+            s.phantom as u8,
+            s.mines,
+            s.golds,
+            s.orange,
+            s.pulser,
+            s.red,
+            s.cluster,
+            s.beacon,
+            s.runs,
+            s.waves,
+            s.warps,
+            s.deathless as u8
+        );
+        let n: Vec<&str> = line.split_whitespace().collect();
+        assert_eq!(n.len(), 21, "the save line carries all 21 fields");
+        let flag = |i: usize| n[i] == "1";
+        let num = |i: usize| n[i].parse::<u32>().unwrap();
+        assert_eq!((num(0), num(1), num(2)), (s.blue, s.green, s.enemies));
+        assert_eq!((flag(3), flag(4), flag(5)), (s.warden, s.glutton, s.no_powerups));
+        assert_eq!((flag(6), flag(7), flag(8), flag(9)), (s.slinger, s.detonator, s.pulsar, s.phantom));
+        assert_eq!((num(10), num(11)), (s.mines, s.golds));
+        assert_eq!((num(12), num(13), num(14), num(15), num(16)), (s.orange, s.pulser, s.red, s.cluster, s.beacon));
+        assert_eq!((num(17), num(18), num(19)), (s.runs, s.waves, s.warps));
+        assert!(flag(20), "deathless rides in the final slot");
+        // an OLD 12-field save (pre-expansion) must still load — new counters default to zero
+        let old = "5 4 3 1 0 0 1 0 0 0 2 1";
+        assert_eq!(old.split_whitespace().count(), 12);
+        // (read_progress itself is stubbed under test; this pins the compatibility CONTRACT — the
+        // .get()-with-default reads — by mirroring its accessors over the short line)
+        let o: Vec<&str> = old.split_whitespace().collect();
+        let onum = |i: usize| o.get(i).and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+        let oflag = |i: usize| o.get(i).is_some_and(|v| *v == "1");
+        assert_eq!(onum(11), 1, "the old save's last field still reads");
+        assert_eq!(onum(17), 0, "missing runs field defaults to 0");
+        assert!(!oflag(20), "missing deathless field defaults to false");
     }
 
     #[test]
@@ -10971,7 +11209,7 @@ mod tests {
         app.add_event::<MenuClick>();
         app.insert_resource(NextState::<GameState>::default());
         // stale end-of-run state that Start must wipe
-        app.insert_resource(Run { lives: 0, respawn: 5.0, ..default() });
+        app.insert_resource(Run { lives: 0, respawn: 5.0, died: true, ..default() });
         app.insert_resource(Score(999));
         app.insert_resource(Wave { level: 7, timer: 1.0, calm: 3.0 });
         app.insert_resource(WaveBanner::default());
@@ -10982,19 +11220,37 @@ mod tests {
         app.insert_resource(Warhead { unlocked: true, active: true });
         app.insert_resource(RunFlags { powerup_used: true });
         app.insert_resource(GoldRush { active: true, forfeited: false, cooldown: 0.0 });
+        app.insert_resource(Stats { runs: 9, ..default() });
         let mut input = ButtonInput::<KeyCode>::default();
         input.press(KeyCode::Enter);
         app.insert_resource(input);
         app.add_systems(Update, menu_start);
         app.update();
         assert_eq!(app.world().resource::<Run>().lives, START_LIVES, "Start resets lives");
+        assert!(!app.world().resource::<Run>().died, "Start opens a fresh deathless slate");
         assert_eq!(app.world().resource::<Score>().0, 0, "Start resets score");
         assert_eq!(app.world().resource::<Wave>().level, 1, "Start resets to wave 1");
         assert!(!app.world().resource::<Chain>().unlocked, "Start relocks the chain shot");
         assert!(!app.world().resource::<MassShot>().unlocked, "Start relocks the mass shot");
         assert!(!app.world().resource::<Warhead>().unlocked, "Start relocks the Warhead rounds");
         assert!(!app.world().resource::<GoldRush>().active, "Start clears any stale gold hunt");
+        assert_eq!(app.world().resource::<Stats>().runs, 10, "every Start counts a lifetime run (the restart ladder)");
         assert_eq!(app.world_mut().query::<&Ship>().iter(app.world()).count(), 1, "a fresh ship spawns");
+    }
+
+    #[test]
+    fn boss_and_timer_wave_clears_both_feed_the_lifetime_tally() {
+        // Wave Goodbye counts EVERY advance — timer waves and boss kills alike. defeat_boss is the
+        // boss-side entry; passing None (headless caller) must also stay safe.
+        let mut score = Score(0);
+        let mut wave = Wave { level: 5, timer: 0.0, calm: 0.0 };
+        let mut banner = WaveBanner::default();
+        let mut s = Stats::default();
+        defeat_boss(&mut score, &mut wave, &mut banner, Some(&mut s));
+        assert_eq!(s.waves, 1, "a boss kill credits a cleared wave");
+        assert_eq!(wave.level, 6, "and still advances the wave");
+        defeat_boss(&mut score, &mut wave, &mut banner, None);
+        assert_eq!(wave.level, 7, "a stats-less caller still advances safely");
     }
 
     #[test]

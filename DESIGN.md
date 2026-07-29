@@ -255,11 +255,18 @@ run is perfected**.
     win path in one press. (Dev keys are gated to the Playing state.)
   **The standard run is beatable end-to-end — six bosses, waves 1–30.** Still open: the **Magnet** (§C)
   powerup drop (the Nova Shield ✅ shipped); then balance tuning. The **achievements pass ✅ shipped
-  (2026-07-28)**: 12 achievements — every boss has one, *Edgelord*/"beat the game" now keys on the real
-  wave-30 Haunt kill (recorded at the erupt, with *Purist* riding the same moment), plus lifetime grinds
-  (`ACH_BLUE` 1000 / `ACH_GREEN` 500 / `ACH_MINES` 250 / `ACH_GOLDS` 25 — deliberately steep: players die
-  a lot and stats span every run). Save format extended 6 → 12 fields, old saves load with the new fields
-  defaulted (nothing lost, nothing wrongly granted).
+  (2026-07-28), expanded to 23 (2026-07-29)**: every boss has one, *Edgelord*/"beat the game" keys on the
+  real wave-30 Haunt kill (recorded at the erupt, with *Purist* and *Untouchable*/deathless riding the
+  same moment — `Run.died` tracks real deaths, Nova absorbs don't count). One grind PER ROCK TYPE
+  (`ACH_BLUE` 1000 / `ACH_GREEN` 500 / `ACH_ORANGE` 400 / `ACH_RED` 400 / `ACH_PULSER` 300 /
+  `ACH_CLUSTER` 300 / `ACH_BEACON` 100 — scaled to how much of the run each type inhabits), lifetime
+  grinds (`ACH_MINES` 250 / `ACH_GOLDS` 25 / `ACH_WAVES` 250 / `ACH_WARPS` 150), and the **restart
+  ladder** (10/25/50 runs — *Back for More* / *Sisyphus* / *The Definition of Insanity*; every Start
+  counts and saves immediately, celebrating the die-a-lot loop instead of punishing it). All are
+  deliberately steep careers: players die a lot and stats span every run. `credit_rock_kill` is the one
+  source of truth for kill → counter routing (beacon/pulser/red/cluster check before the dense/blue
+  split, since specials are dense internally). Save format extended 6 → 12 → 21 fields, old saves load
+  with the new fields defaulted (nothing lost, nothing wrongly granted).
 
 The Slinger (§C, ✅): boss 3, wave 15 — a large **ice-blue gunship** (its nose/cannon tracks the
 player; unique boss colour, apart from the Warden's magenta + Devourer's red). Glides in, then hovers
@@ -371,5 +378,5 @@ Considered and shelved (could layer on later): score extends, boss-clear +1, per
 - **High scores:** a persisted **top 5** (numeric), saved to `violet-edge.hiscore`. On game over the
   final score slots into the table (`record_high_score`), the screen shows the board with the new
   entry lit and a **NEW BEST!** / **TOP 5!** banner, and the main menu shows a **BEST** line.
-- **Achievements:** First Blood, Warden Off, Glutton for Punishment, True Blue (100 blue), Green Thumb (100 green), Edgelord (beat the arc), Purist (beat it with no powerups). New bosses each get one, named for the boss.
+- **Achievements (23):** the boss ladder (First Blood, Warden Off, Glutton for Punishment, Outgunned, Defused, Lights Out — one per boss, named for it), a grind per rock type (True Blue / Green Thumb / Demolition Derby / Beat It / Seeing Red / Ice Breaker / Keymaster), lifetime grinds (Minesweeper, Gold Rush, Wave Goodbye, Event Horizon), the restart ladder (Back for More / Sisyphus / The Definition of Insanity — 10/25/50 runs started), and the capstones (Edgelord = beat the game, Untouchable = deathless win, Purist = no-powerup win). Thresholds live beside the `Ach` enum (§main.rs); the full list with numbers is in the CHANGELOG.
 - **Field population:** the on-screen count targets `POP_BASE + wave` (cap `POP_CAP`), topped up from the edges at `SPAWN_INTERVAL`. Edge spawns are ~80% large; a `BIG_FLOOR` keeps large rocks present even at the cap. Rocks that drift fully off-screen are recycled back in *only if large* — small debris usually despawns for good (mids sometimes), so breaking rocks apart can't silt the arena up with an overwhelming cloud of little ones; the top-up refills with fresh large rocks. Freshly-broken fragments get a short grace window (`FRAGMENT_GRACE`) during which they always recycle rather than being culled, so a rock shattered right at the edge can't lose its pieces off-screen before you get a shot. The Warden grabs large/mid rocks for its shield and only resorts to a small one when nothing bigger is on-screen.
