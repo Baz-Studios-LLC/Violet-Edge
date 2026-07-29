@@ -5,7 +5,13 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
-_Nothing yet — work in progress lands here, then gets renamed to the next version when a release is cut._
+- **The Glutton has real fangs now.** Its teeth were reading as thin "V" chevrons; each tooth is now a
+  closed fang with a bright center rib (solid under bloom), chunkier and fewer per ring.
+- **Menus fit the screen.** The Controls screen was clipping top and bottom; every menu got a layout
+  pass — tighter row spacing, slimmer buttons, wider rebind slots so bindings never wrap — and the busy
+  screens now sit comfortably inside the frame at any window size.
+- **Briefing objective rewritten**: "Investigate and hold back the approaching mass." (The old
+  sign-off line is gone.)
 
 ## v0.4.4 — Living bosses, the act-owned belt, and two new rocks (2026-07-28)
 

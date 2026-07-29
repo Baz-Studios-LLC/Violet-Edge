@@ -6418,15 +6418,17 @@ fn draw_glutton_body(gizmos: &mut Gizmos, c: Vec2, r: f32, t: f32, wob: f32, gor
         let base = c + Vec2::from_angle(a) * r * 0.94;
         gizmos.line_2d(base, base + Vec2::from_angle(a) * r * (0.16 + 0.05 * (t * 1.8 + k as f32).sin()), dim(color, 0.8));
     }
-    for (n, ring_r, dir, tooth) in [(10i32, 0.56f32, 0.5f32, 0.16f32), (7, 0.30, -0.7, 0.12)] {
-        // the GNASH: outer teeth ring turns one way, inner the other
+    for (n, ring_r, dir, tooth) in [(8i32, 0.58f32, 0.5f32, 0.22f32), (6, 0.32, -0.7, 0.16)] {
+        // the GNASH: outer teeth ring turns one way, inner the other. Each tooth is a CLOSED fang
+        // (outline + a bright center rib, so bloom reads it as solid) — not an open V.
         for k in 0..n {
             let a = k as f32 / n as f32 * TAU + t * dir;
             let out = Vec2::from_angle(a);
-            let side = out.perp() * r * tooth * 0.4;
+            let side = out.perp() * r * tooth * 0.42;
             let base = c + out * r * ring_r;
             let tip = c + out * r * (ring_r - tooth);
-            gizmos.linestrip_2d(vec![base + side, tip, base - side], dim(color, 0.9));
+            gizmos.linestrip_2d(vec![base + side, tip, base - side, base + side], dim(color, 0.95));
+            gizmos.line_2d(c + out * r * (ring_r - tooth * 0.15), tip, color); // the rib — fills the fang
         }
     }
     // the gullet — its glow IS the gorge meter
@@ -7056,7 +7058,9 @@ fn overlay(commands: &mut Commands, marker: impl Component, alpha: f32) -> Entit
                 justify_content: JustifyContent::Center,
                 align_items: AlignItems::Center,
                 flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(16.0),
+                // keep the gap TIGHT: every screen pays it between every child, and the busy screens
+                // (Controls, Lore) must fit the 800px design height with margin — no clipping
+                row_gap: Val::Px(8.0),
                 ..default()
             },
             BackgroundColor(Color::srgba(0.02, 0.01, 0.06, alpha)),
@@ -7162,7 +7166,7 @@ fn spawn_pause_ui(
     let head = Color::srgb(0.72, 0.76, 0.9);
     let key_col = Color::srgb(0.85, 0.88, 1.0);
     commands.entity(root).with_children(|p| {
-        p.spawn(text_f(f, 54.0, title_color(), "PAUSED"));
+        p.spawn(text_f(f, 44.0, title_color(), "PAUSED"));
         menu_button(p, f, MenuAction::Resume, "RESUME  (Esc)");
         menu_button(p, f, MenuAction::Quit, "QUIT TO MENU  (Q)");
         p.spawn((text_f(f, 20.0, title_color(), "CONTROLS"), Node { margin: UiRect::top(Val::Px(18.0)), ..default() }));
@@ -7365,8 +7369,10 @@ fn menu_button(p: &mut ChildSpawnerCommands, font: &Handle<Font>, action: MenuAc
         MenuButton(action),
         Button,
         Node {
-            padding: UiRect::axes(Val::Px(30.0), Val::Px(12.0)),
-            margin: UiRect::all(Val::Px(7.0)),
+            // slimmer than the original (30,12)/7/24px — the button-heavy screens (Controls: five)
+            // must fit the design height alongside their tables
+            padding: UiRect::axes(Val::Px(24.0), Val::Px(8.0)),
+            margin: UiRect::all(Val::Px(5.0)),
             border: UiRect::all(Val::Px(2.0)),
             justify_content: JustifyContent::Center,
             align_items: AlignItems::Center,
@@ -7377,7 +7383,7 @@ fn menu_button(p: &mut ChildSpawnerCommands, font: &Handle<Font>, action: MenuAc
         BackgroundColor(Color::srgba(0.10, 0.04, 0.20, 0.45)),
     ))
     .with_children(|b| {
-        b.spawn(text_f(font, 24.0, Color::srgb(0.72, 0.82, 1.0), label));
+        b.spawn(text_f(font, 20.0, Color::srgb(0.72, 0.82, 1.0), label));
     });
 }
 
@@ -7447,7 +7453,7 @@ fn spawn_achievements_ui(mut commands: Commands, achieved: Res<Achievements>, fo
     let root = overlay(&mut commands, AchievementsUi, 0.5);
     let f = &font.0;
     commands.entity(root).with_children(|p| {
-        p.spawn(text_f(f, 48.0, title_color(), "ACHIEVEMENTS")); // static — no neon warm-up here
+        p.spawn(text_f(f, 40.0, title_color(), "ACHIEVEMENTS")); // static — no neon warm-up here
         // two-column table: name | description (aligns cleanly, no separator glyph)
         for (i, &a) in ACHIEVEMENTS.iter().enumerate() {
             let (name, desc) = ach_meta(a);
@@ -7471,21 +7477,21 @@ fn spawn_controls_ui(mut commands: Commands, font: Res<MenuFont>) {
     let f = &font.0;
     let head = Color::srgb(0.72, 0.76, 0.9);
     commands.entity(root).with_children(|p| {
-        p.spawn(text_f(f, 44.0, title_color(), "CONTROLS"));
+        p.spawn(text_f(f, 36.0, title_color(), "CONTROLS"));
         p.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(8.0), ..default() }).with_children(|row| {
             menu_button(row, f, MenuAction::SetInput(InputMethod::Auto), "AUTO");
             menu_button(row, f, MenuAction::SetInput(InputMethod::KeyboardMouse), "KB + MOUSE");
             menu_button(row, f, MenuAction::SetInput(InputMethod::Controller), "CONTROLLER");
         });
-        p.spawn((InputLabel, text_f(f, 15.0, head, "")));
-        p.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(14.0), width: Val::Px(494.0), margin: UiRect::top(Val::Px(6.0)), ..default() }).with_children(|row| {
-            row.spawn((text_f(f, 13.0, head, "ACTION"), Node { width: Val::Px(180.0), ..default() }));
-            row.spawn((text_f(f, 13.0, head, "KEYBOARD / MOUSE"), Node { width: Val::Px(150.0), ..default() }));
+        p.spawn((InputLabel, text_f(f, 14.0, head, "")));
+        p.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(14.0), width: Val::Px(514.0), margin: UiRect::top(Val::Px(2.0)), ..default() }).with_children(|row| {
+            row.spawn((text_f(f, 13.0, head, "ACTION"), Node { width: Val::Px(150.0), ..default() }));
+            row.spawn((text_f(f, 13.0, head, "KEYBOARD / MOUSE"), Node { width: Val::Px(168.0), ..default() }));
             row.spawn(text_f(f, 13.0, head, "CONTROLLER"));
         });
         for &a in ACTIONS.iter() {
-            p.spawn(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: Val::Px(14.0), width: Val::Px(494.0), padding: UiRect::vertical(Val::Px(1.0)), ..default() }).with_children(|row| {
-                row.spawn((text_f(f, 14.0, head, action_label(a)), Node { width: Val::Px(180.0), ..default() }));
+            p.spawn(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: Val::Px(14.0), width: Val::Px(514.0), ..default() }).with_children(|row| {
+                row.spawn((text_f(f, 13.0, head, action_label(a)), Node { width: Val::Px(150.0), ..default() }));
                 rebind_slot(row, f, a, false);
                 rebind_slot(row, f, a, true);
             });
@@ -7508,11 +7514,10 @@ fn spawn_briefing_ui(mut commands: Commands, font: Res<MenuFont>) {
         p.spawn(text_f(f, 17.0, flavor, "Reports indicate a large mass approaching the planet — fast."));
         p.spawn(text_f(f, 17.0, flavor, "There was no time to plan. The VIOLET CUTTER has been deployed:"));
         p.spawn(text_f(f, 17.0, flavor, "a prototype ship, one pilot, and possibly the only chance."));
-        p.spawn(text_f(f, 17.0, flavor, "Cut the field. Hold the edge."));
         p.spawn((text_f(f, 22.0, title_color(), "OBJECTIVE"), Node { margin: UiRect::top(Val::Px(14.0)), ..default() }));
         for line in [
+            "Investigate and hold back the approaching mass.",
             "Survive each wave's timer to advance.",
-            "See how far into the run you can push.",
         ] {
             p.spawn(text_f(f, 16.0, obj, line));
         }
@@ -7621,7 +7626,7 @@ fn spawn_lore_ui(mut commands: Commands, stats: Res<Stats>, font: Res<MenuFont>)
     let locked_t = Color::srgb(0.42, 0.44, 0.55);
     let locked_b = Color::srgb(0.32, 0.34, 0.44);
     commands.entity(root).with_children(|p| {
-        p.spawn(text_f(f, 48.0, title_color(), "PILOT LOG"));
+        p.spawn(text_f(f, 40.0, title_color(), "PILOT LOG"));
         p.spawn(text_f(f, 14.0, locked_b, "Transmissions from the VIOLET CUTTER, relayed home."));
         for (i, (title, body, unlocked, accent)) in lore_entries(&stats).into_iter().enumerate() {
             // the boss ladder gates each report: waves 5,10,15,20,25 then the two wave-30 reveals
@@ -7702,8 +7707,10 @@ fn rebind_slot(p: &mut ChildSpawnerCommands, font: &Handle<Font>, action: Action
         RebindSlot { action, pad },
         Button,
         Node {
-            width: Val::Px(150.0),
-            padding: UiRect::axes(Val::Px(8.0), Val::Px(5.0)),
+            // wide enough that "ShiftLeft / ShiftRight" fits ONE line at 13px — a wrapped bind used
+            // to double the row height and push the screen past the design height
+            width: Val::Px(168.0),
+            padding: UiRect::axes(Val::Px(8.0), Val::Px(3.0)),
             border: UiRect::all(Val::Px(1.5)),
             justify_content: JustifyContent::Center,
             ..default()
@@ -7712,7 +7719,7 @@ fn rebind_slot(p: &mut ChildSpawnerCommands, font: &Handle<Font>, action: Action
         BorderRadius::all(Val::Px(6.0)),
     ))
     .with_children(|c| {
-        c.spawn(text_f(font, 15.0, Color::srgb(0.85, 0.88, 1.0), "—"));
+        c.spawn(text_f(font, 13.0, Color::srgb(0.85, 0.88, 1.0), "—"));
     });
 }
 
