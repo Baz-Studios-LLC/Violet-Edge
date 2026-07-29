@@ -1935,67 +1935,57 @@ fn roll_rock_kind(level: i32, rng: &mut impl Rng) -> RockKind {
     // Cluster (shatters into shards) — debuts w26, splitting Act III into two eras; heavy through the
     // pre-finale gauntlet.
     let cluster = match cw {
-        26 | 27 => 0.3,
-        28 | 29 => 0.28,
+        26 | 27 => 0.35,
+        28 | 29 => 0.3,
         _ => 0.0,
     };
     if rng.gen_bool(cluster) {
         return RockKind::Cluster;
     }
-    // Red (growing) — Act III's opening act. Debuts w21; a steady presence on the non-boss Act III waves.
-    let red = match cw {
-        21 => 0.25,
-        22 => 0.3,
-        23 | 24 | 26 | 27 => 0.35,
-        28 | 29 => 0.4,
-        _ => 0.0, // boss waves 25/30 get themed fields; earlier acts have no red
-    };
-    if rng.gen_bool(red) {
-        return RockKind::Red;
-    }
-    // Pulser (invuln-when-lit). Debuts w16; a baseline through Act III; the Pulsar boss wave (25) leans on it.
+    // Red (growing) — ACT III'S CARRIER: it needs no roll of its own, it's the act's FALLBACK below
+    // (waves 21-29 are red wherever beacon/cluster don't land — wave 21 is the all-red teaching wave,
+    // and the Pulsar's wave 25 is fought over a pure red field its shockwaves keep scattering).
+    // Pulser (invuln-when-lit) — an ACT II type: debuts w16, retires with its act at 20 (no rock
+    // outlives its act — user rule; the wave-30 finale's all-types roll is the one exception).
     let pulser = match cw {
         16 => 1.0, // wave 16 is pulser-ONLY — a pure timing wave to learn the beat
         17 | 19 => 0.3,
         18 => 0.55,
-        21..=24 | 26..=29 => 0.3, // Act III baseline (orange + white are the new standard field)
-        25 => 0.6,                // the Pulsar's wave — a dark-beat timing gauntlet
         _ => 0.0,
     };
     if rng.gen_bool(pulser) {
         return RockKind::Pulser;
     }
-    // Orange (explosive). Debuts w11; w14 all-orange; w20 Detonator-heavy; the Act III baseline (and fallback).
+    // Orange (explosive) — an ACT II type: debuts w11, peaks at 14, and bows out at the Detonator's
+    // wave 20 (its own boss). It does NOT carry into Act III.
     let orange = match cw {
         11..=13 => 0.25,
         14 => 1.0,  // the all-orange danger wave
         20 => 0.55, // the Detonator's wave: heavy on live bombs, but with green fodder mixed in — the boss
         // only PRIMES non-explosive rocks now (an orange is already a bomb), so it must have prey on field
         17..=19 => 0.3,
-        21..=24 | 26..=29 => 0.5, // Act III baseline
-        _ => 0.0,                 // wave 30 (the finale) rolls its own all-types mix (`roll_finale_kind`), not this table
+        _ => 0.0, // wave 30 (the finale) rolls its own all-types mix (`roll_finale_kind`), not this table
     };
     if rng.gen_bool(orange) {
         return RockKind::Orange;
     }
-    // Green (dense) — the OLDEST type, now RETIRING across Act III: a thin transition on waves 21-22,
-    // then gone. (Earlier waves are unchanged: 6 mixes it in, 7-9 all green, 11-19 harden to green.)
+    // Green (dense) — bridges Act I (debuts 6, owns 7-9) and CARRIES Act II (the 11-19 baseline),
+    // then retires with its act at wave 20. No green in Act III.
     let green = match cw {
         6 => 0.5,
         7..=9 => 1.0,
         11..=13 | 15..=17 | 19 => 1.0,
-        21 => 0.4, // last gasp as it phases out
-        22 => 0.2,
         _ => 0.0,
     };
     if rng.gen_bool(green) {
         return RockKind::Green;
     }
-    // Blue lives only in the first arc (content 1-10). 11-20 hardened the belt to green. From content 21
-    // on the belt is VOLATILE — green has retired, so leftovers are orange (orange + pulser are Act III's
-    // standard field). Keyed on content_wave so a later loop repeats the arc cleanly.
+    // EACH ACT OWNS ITS ROSTER (user rule): blue lives only in Act I (1-10); Act II (11-20) runs
+    // green + orange + pulser; Act III (21-29) runs red + beacon + cluster, with RED as the carrier —
+    // so the fallback here is the current act's baseline rock. Keyed on content_wave so a later loop
+    // repeats the arc cleanly. (Wave 30, the finale, is the one all-types exception.)
     if cw > 20 {
-        RockKind::Orange
+        RockKind::Red
     } else if cw > 10 {
         RockKind::Green
     } else {
@@ -9872,7 +9862,8 @@ mod tests {
         }
         assert!(reds(23, 600) > 0, "wave 23 (Act III) spawns red growing asteroids");
         assert_eq!(reds(12, 600), 0, "no red asteroids before wave 21");
-        assert_eq!(reds(25, 600), 0, "the Pulsar wave (25) has no red — it's a themed pulser field");
+        assert_eq!(reds(21, 200), 200, "wave 21 is ALL red — the act's teaching wave (red is Act III's carrier)");
+        assert_eq!(reds(25, 200), 200, "the Pulsar's wave (25) is fought over a pure red field");
     }
 
     #[test]
@@ -10635,13 +10626,13 @@ mod tests {
         // wave 16 is pulser-ONLY (a pure timing wave to debut the mechanic)
         let (b, g, o, p) = sample(16, 200, &mut rng);
         assert_eq!((b, g, o, p), (0, 0, 0, 200), "wave 16 is nothing but pulsers");
-        // Act III (waves 21+): green has RETIRED and orange + pulser are the standard field — no blue anywhere
+        // ACT OWNERSHIP: no Act I/II rock survives into Act III — wave 23 rolls NOTHING but the act's
+        // own types (red carrier + beacon; cluster from 26)
         let (b, g, o, p) = sample(23, 600, &mut rng);
-        assert_eq!((b, g), (0, 0), "by wave 23 there's no blue and no green (green retired)");
-        assert!(o > 0 && p > 0, "wave 23 mixes orange and pulser as the baseline");
-        // wave 22 still shows a little green as it phases out
-        let (_b, g22, _o, _p) = sample(22, 800, &mut rng);
-        assert!(g22 > 0, "wave 22 still has some green (phasing out)");
+        assert_eq!((b, g, o, p), (0, 0, 0, 0), "Act III sheds every earlier type — red/beacon/cluster only");
+        // green retires WITH its act: gone from wave 21 on
+        let (_b, g22, _o, _p) = sample(22, 400, &mut rng);
+        assert_eq!(g22, 0, "no green in Act III (each act owns its roster)");
         // wave 20 (the Detonator): orange-heavy, but with GREEN fodder mixed in — the boss only primes
         // non-explosive rocks (an all-orange field would leave it nothing to prime = unkillable)
         let (b, g, o, p) = sample(20, 400, &mut rng);
@@ -10651,9 +10642,9 @@ mod tests {
         // the devourer wave (10) stays plain blue food so it can be starved
         let (_b, g, o, p) = sample(10, 200, &mut rng);
         assert_eq!((g, o, p), (0, 0, 0), "the devourer wave is plain blue food");
-        // NO blue past wave 10 — Act III (wave 21+) leftovers are orange now, never blue
+        // NO blue past wave 10 — Act III's fallback is RED (its carrier), never blue
         let (b, ..) = sample(21, 200, &mut rng);
-        assert_eq!(b, 0, "wave 21 has no blue (green retired → leftovers are orange)");
+        assert_eq!(b, 0, "wave 21 has no blue (Act III's fallback is red)");
     }
 
     #[test]

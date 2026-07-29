@@ -5,6 +5,11 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
+- **Each act owns its asteroids now.** No rock type outlives its act: Act I is blue (green bridges in
+  late), Act II runs green + orange + pulser and retires all three at wave 20, and **Act III belongs
+  entirely to its own types** — red as the carrier (wave 21 is the all-red teaching wave, and the Pulsar
+  is fought over a pure red field), joined by the beacon and the cluster. The wave-30 finale stays the
+  one exception, rolling every type at random.
 - **TWO NEW ASTEROID TYPES fill out Act III** (waves 21–29 ran the same three-rock recipe for 8 waves):
   - **The BEACON (wave 23+)** — a teal aura warden. Every rock inside its aura is **immune to your guns
     and the chain until the beacon falls**: the field becomes a question of what you shoot *first*.
