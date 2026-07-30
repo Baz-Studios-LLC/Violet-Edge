@@ -3,6 +3,24 @@
 Patch notes for the Rust + Bevy build. Newest first. (Releases are cut to GitHub and picked up by the
 Baz Studios launcher.) **Keep this current with every change** — it's the record testers read.
 
+## Unreleased
+
+- **The whole soundtrack is produced music now.** The main and boss themes join the game-over
+  theme as Antigravity-generated tracks (embedded, so the exe stays self-contained): the main is a
+  high-energy arcade drive with detuned supersaw leads, acid sub-bass and 909 drums; the boss is
+  dark industrial with tritone stabs and distorted sub-rumble. Both loop gap-free and are
+  level-matched to the rest of the mix — they arrived mastered hot (peaking at full scale, 4.3 dB
+  and 2.7 dB above the old score), so each carries a measured trim that also keeps headroom for
+  the sound effects.
+- **The post-boss corruption is paused, not lost.** The main ships as a single track for now, so
+  the tier system stays wired but dormant (the tier index clamps to the tracks that exist — which
+  also guarantees the music can never restart mid-run at an act boundary). Drop in per-act variants
+  later and it wakes up untouched.
+- **Retired code deleted, not parked.** The procedural music score (~280 lines: the club
+  arrangement, the six-tier corruption DSP, and its instrument voices) is gone now that produced
+  tracks have replaced it — `git log` keeps it if it's ever wanted back. All the sound effects and
+  the boss buildup riser are still synthesized as before.
+
 ## v0.4.9 — The first produced track (2026-07-30)
 
 - **The Game Over theme is now a produced track.** Generated in Antigravity from the procedural

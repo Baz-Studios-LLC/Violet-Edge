@@ -1460,8 +1460,8 @@ struct Wave {
 // NEW GAME+ — the second lap, for players who've beaten the game (the menu button exists only once
 // `stats.phantom` is set). Same 30-wave arc, harder at the SOURCE (never via player nerfs): a denser
 // field from wave 1 (mobs and mines scale with it automatically — they're capped as fractions of
-// the rock count), boss cores half again as tough, and the Belt is ALREADY corrupted when you
-// arrive — the music starts at tier 1 and climbs from there. Selected per-run from the menu;
+// the rock count), boss cores half again as tough, and a music-corruption FLOOR of tier 1 (dormant
+// while the produced main ships as a single track — see MAIN_MP3). Selected per-run from the menu;
 // restarting a run keeps the mode, launching normal PLAY clears it.
 #[derive(Resource, Default, Clone, Copy)]
 struct NewGamePlus(bool);
@@ -7470,9 +7470,18 @@ const BAZ_STING_MP3: &[u8] = include_bytes!("../assets/logo_sound.mp3");
 // self-contained. The procedural `audio::gameover_track_wav` is no longer shipped — it survives as
 // the reference render + fallback.
 const GAMEOVER_MP3: &[u8] = include_bytes!("../assets/gameover.mp3");
-// This track masters ~1.6 dB quieter (mean -17.8 dB) than the procedural score (main: -16.2 dB),
-// so it gets a measured gain trim to sit at the same perceived level as the other cues.
+// MAIN + BOSS, also produced in Antigravity (2026-07-30). MAIN ships WITHOUT corruption tiers for
+// now — `mains` holds this one track and the tier index clamps to it, so the score never restarts
+// mid-run. The tier plumbing (`MusicCue::Main(tier)`) is intact but DORMANT: drop in per-act
+// produced variants and it wakes up untouched. See DESIGN.md "PRODUCED music".
+const MAIN_MP3: &[u8] = include_bytes!("../assets/main.mp3");
+const BOSS_MP3: &[u8] = include_bytes!("../assets/boss.mp3");
+// Measured gain trims so every cue sits at one level (mean loudness vs the procedural score, which
+// MUSIC_VOLUME was tuned against): game-over came in 1.6 dB quiet; main is 4.3 dB HOT and boss
+// 2.7 dB hot, and both peak at full scale — trimming also restores headroom over the sfx layer.
 const GAMEOVER_GAIN: f32 = 1.2;
+const MAIN_GAIN: f32 = 0.61;
+const BOSS_GAIN: f32 = 0.73;
 
 #[derive(Resource)]
 struct LogoImage(Handle<Image>);
@@ -8800,14 +8809,11 @@ struct MusicDirector {
 // Synthesize the tracks up front and install the director. The first cue is spawned by
 // `music_director` on its first run.
 fn start_music(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
-    // ONE main-track synthesis, six masters: tier k plays after boss k falls. The corruption is the
-    // lore speaking — the deeper the run, the wronger the Belt sounds (and a win hands back tier 0).
-    let mains = audio::main_track_variants(6)
-        .into_iter()
-        .map(|wav| sources.add(AudioSource { bytes: wav.into() }))
-        .collect();
-    let boss = sources.add(AudioSource { bytes: audio::boss_track_wav().into() });
-    // the game-over theme is a PRODUCED mp3 (not synthesized) — decoded by bevy's `mp3` feature
+    // MAIN / BOSS / GAME OVER are all PRODUCED mp3s now (decoded by bevy's `mp3` feature); the
+    // procedural score in audio.rs is retired to reference-render + fallback duty. `mains` is a
+    // ONE-entry vec until corruption variants exist — `music_director` clamps the tier index to it.
+    let mains = vec![sources.add(AudioSource { bytes: MAIN_MP3.to_vec().into() })];
+    let boss = sources.add(AudioSource { bytes: BOSS_MP3.to_vec().into() });
     let gameover = sources.add(AudioSource { bytes: GAMEOVER_MP3.to_vec().into() });
     let buildup = sources.add(AudioSource { bytes: audio::boss_buildup_wav().into() });
     commands.insert_resource(MusicDirector { mains, boss, buildup, gameover, cue: None, muted: false });
@@ -8857,7 +8863,10 @@ fn music_director(
     // Corruption tier = bosses down this run (wave 1-5 → 0 … 26-30 → 5). Off-run screens play the
     // CLEAN tier — including Victory: beating the Phantom hands the uncorrupted track back.
     // NEW GAME+: the Belt is ALREADY wrong when you arrive — the floor is tier 1, climbing from there.
-    let tier = (((wave.level - 1) / 5).clamp(0, 5) as u8).max(if plus.0 { 1 } else { 0 });
+    // CLAMPED to the variants that actually exist: the produced main currently ships as ONE track,
+    // and without this the cue would change at every act boundary and RESTART the music mid-run.
+    let top_tier = dir.mains.len().max(1) as u8 - 1;
+    let tier = (((wave.level - 1) / 5).clamp(0, 5) as u8).max(if plus.0 { 1 } else { 0 }).min(top_tier);
     let desired = if *state.get() != GameState::Playing {
         match *state.get() {
             GameState::GameOver => MusicCue::GameOver, // its own somber track — a run ending SOUNDS different from playing one
@@ -8871,7 +8880,7 @@ fn music_director(
     } else if is_boss_wave(wave.level + 1) && wave.timer <= BOSS_CAMEO_SECS {
         MusicCue::Buildup // last 10 s before the boss wave → riser leads in
     } else {
-        MusicCue::Main(tier) // each boss down, the field's own music comes back a little WRONGER
+        MusicCue::Main(tier) // one boss down = one tier wronger, ONCE per-act variants exist (see top_tier)
     };
 
     if dir.cue != Some(desired) {
@@ -8882,11 +8891,11 @@ fn music_director(
             MusicCue::Silence => {}
             MusicCue::Main(t) => {
                 let h = dir.mains[(t as usize).min(dir.mains.len() - 1)].clone();
-                play_track(&mut commands, h, dir.muted, true, 1.0);
+                play_track(&mut commands, h, dir.muted, true, MAIN_GAIN); // produced track, hot master
             }
             MusicCue::Boss => {
                 let h = dir.boss.clone();
-                play_track(&mut commands, h, dir.muted, true, 1.0);
+                play_track(&mut commands, h, dir.muted, true, BOSS_GAIN); // produced track, hot master
             }
             MusicCue::Buildup => {
                 let h = dir.buildup.clone();
@@ -12800,6 +12809,42 @@ mod tests {
         }
         app.update();
         assert_eq!(app.world().resource::<MusicDirector>().cue, Some(MusicCue::Main(1)), "NG+ starts a tier deep in the corruption");
+    }
+
+    #[test]
+    fn a_single_main_variant_never_restarts_the_track() {
+        // The produced main ships as ONE track (no corruption variants yet). The tier index MUST
+        // clamp to what exists — otherwise the cue changes at every act boundary and the music
+        // restarts mid-run. Regression guard for exactly that.
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(ActionState::default());
+        app.insert_resource(NewGamePlus(true)); // even the NG+ tier-1 floor must clamp down to 0
+        app.insert_resource(Wave { level: 1, timer: WAVE_SECS, calm: 0.0 });
+        app.insert_resource(MusicDirector {
+            mains: vec![Handle::default()], // ONE variant, as shipped
+            boss: Handle::default(),
+            buildup: Handle::default(),
+            gameover: Handle::default(),
+            cue: None,
+            muted: false,
+        });
+        app.insert_resource(State::new(GameState::Playing));
+        app.add_systems(Update, music_director);
+        app.update();
+        assert_eq!(app.world().resource::<MusicDirector>().cue, Some(MusicCue::Main(0)), "a single variant always plays tier 0");
+        let live = app.world_mut().query::<&Music>().iter(app.world()).count();
+        // walk deep into the run: every act boundary must leave the SAME cue and the SAME player
+        for level in [6, 11, 16, 21, 26, 29] {
+            app.world_mut().resource_mut::<Wave>().level = level;
+            app.update();
+            assert_eq!(
+                app.world().resource::<MusicDirector>().cue,
+                Some(MusicCue::Main(0)),
+                "wave {level} must not switch cues (that would restart the music)"
+            );
+        }
+        assert_eq!(app.world_mut().query::<&Music>().iter(app.world()).count(), live, "the same track keeps playing — never respawned");
     }
 
     #[test]

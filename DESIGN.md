@@ -431,18 +431,26 @@ Considered and shelved (could layer on later): score extends, boss-clear +1, per
   `MusicCue::Main(tier)`, tier = (wave-1)/5 — each boss down, the field's music returns a tier
   wronger; menu/Briefing/Victory play tier 0 (a win hands the clean track back). The lore speaks
   through the mix: the Belt sounds progressively wronger the deeper the run goes.
-- **PRODUCED music (started 2026-07-30).** The score is migrating from fully-procedural synthesis to
-  externally-produced tracks generated in **Antigravity** (the same tool the whole of Wingman was
-  made on, so licensing is settled by that precedent), using the procedural score as the style
-  reference. **Shipped so far: the GAME OVER theme** (`assets/gameover.mp3` → `GAMEOVER_MP3`,
-  `include_bytes!`-embedded, decoded by bevy's `mp3` feature; ambient synthwave, Am–Fmaj7–Dm7–E7
-  pads + Rhodes arpeggios, 15s gap-free loop). Pipeline notes for the next tracks: verify the loop
-  has **no edge silence** (`silencedetect`) and **level-match it** — `play_track` takes a `gain`
-  multiplier per cue, and produced masters have run ~1.6 dB quieter than the procedural ones
-  (`GAMEOVER_GAIN` = 1.2). Superseded procedural fns stay as reference renders + fallbacks
-  (`render_full_tracks` writes them for handoff), never deleted. ⚠️ If MAIN is ever replaced, the
-  corruption tiers need either per-act produced variants or the existing `corrupt()` DSP applied to
-  the decoded PCM — the tier system is a story beat, not an effect.
+- **PRODUCED music (2026-07-30) — the score is now ALL produced tracks.** Generated in
+  **Antigravity** (the same tool the whole of Wingman was made on, so licensing is settled by that
+  precedent) using the old procedural score as the style reference. Shipped: **MAIN**
+  (`assets/main.mp3`, arcade drive — supersaw leads, acid sub-bass, 909s, ~26s), **BOSS**
+  (`assets/boss.mp3`, dark industrial — tritone stabs, distorted sub-rumble, ~24s), **GAME OVER**
+  (`assets/gameover.mp3`, ambient synthwave — Am–Fmaj7–Dm7–E7 pads + Rhodes arps, ~15s). All
+  `include_bytes!`-embedded (exe stays self-contained), decoded by bevy's `mp3` feature. The only
+  synthesized music left is the boss BUILDUP riser; the procedural score was **deleted** (in git
+  history) rather than left as dead code — user call.
+  **Per-track wiring checklist:** (1) verify **no edge silence** (`silencedetect`) or the loop
+  gaps; (2) **level-match** via `play_track`'s per-cue `gain` — measure `volumedetect` mean against
+  the mix (produced tracks have arrived both quieter *and* hotter: `GAMEOVER_GAIN` 1.2,
+  `MAIN_GAIN` 0.61, `BOSS_GAIN` 0.73, the last two also reclaiming headroom from full-scale
+  masters).
+  ⚠️ **Corruption tiers are DORMANT, not removed:** `MusicCue::Main(tier)` and the NG+ tier-1 floor
+  are intact, but the tier index **clamps to `dir.mains.len()`** — with one produced main every
+  wave plays tier 0, which is also what stops the track restarting at act boundaries (test-pinned:
+  `a_single_main_variant_never_restarts_the_track`). To revive the story beat, add per-act produced
+  variants to `mains`; nothing else changes. (The old `corrupt()` DSP is gone — reviving it over
+  produced audio would mean decoding the mp3 to PCM first.)
 - **Flight model (tuned 2026-07-29, hitbox EXPLICITLY untouched — user rule: clean maneuvering must
   never come from shrinking the ship).** `ship_control` is fully dt-correct: turn 5.2 rad/s (~300°/s,
   raised from 4.6 for gap-weaving), thrust 1000 px/s² against heavy drag (`FRICTION 0.15` retention/s,
