@@ -3,6 +3,14 @@
 Patch notes for the Rust + Bevy build. Newest first. (Releases are cut to GitHub and picked up by the
 Baz Studios launcher.) **Keep this current with every change** — it's the record testers read.
 
+## Unreleased
+
+- **Baz Studios boot splash.** The game now opens on the studio card — black screen, the BAZ
+  STUDIOS logo fading in with the logo sting (the same logo + sound Wingman ships, embedded so the
+  exe stays self-contained). Auto-dismisses into the menu at ~3.5s; any key/click/pad press skips
+  ahead to the fade-out (never a hard cut). Music holds silent until the menu so the sting owns
+  the boot moment.
+
 ## v0.4.6 — Cleaner flight, a sealed log, and the Pacifist run (2026-07-29)
 
 - **Mine blasts score nothing — the mine itself still pays.** Destroying a mine (shot, chain beam,

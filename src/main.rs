@@ -850,6 +850,7 @@ fn kill_enemy(commands: &mut Commands, score: &mut Score, sfx: &mut EventWriter<
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Hash, States)]
 enum GameState {
     #[default]
+    Splash, // Baz Studios boot logo + sting (auto-advances to Menu; any input skips)
     Menu,
     Achievements, // the achievements screen, reached from the main menu
     Lore,         // the lore archive — entries decrypt as bosses fall (reached from the main menu)
@@ -7277,7 +7278,7 @@ fn pause_toggle(
                 next.set(GameState::Menu); // quit the run → OnEnter(Menu) wipes the field
             }
         }
-        GameState::Menu | GameState::Achievements | GameState::Lore | GameState::Controls | GameState::Briefing | GameState::GameOver | GameState::Victory => {}
+        GameState::Splash | GameState::Menu | GameState::Achievements | GameState::Lore | GameState::Controls | GameState::Briefing | GameState::GameOver | GameState::Victory => {}
     }
 }
 
@@ -7326,28 +7327,120 @@ fn install_menu_font(app: &mut App) {
 
 // The logo (purple spear), embedded so the exe stays self-contained.
 const LOGO_PNG: &[u8] = include_bytes!("../assets/logo.png");
+// The BAZ STUDIOS logo + sting for the boot splash — the same files Wingman ships, so every
+// studio game opens identically.
+const BAZ_LOGO_PNG: &[u8] = include_bytes!("../assets/baz_logo.png");
+const BAZ_STING_MP3: &[u8] = include_bytes!("../assets/logo_sound.mp3");
 
 #[derive(Resource)]
 struct LogoImage(Handle<Image>);
+#[derive(Resource)]
+struct BazLogoImage(Handle<Image>);
 
-// Decode the embedded logo. Keeps the CPU copy (RenderAssetUsages::default) so the window-icon
+// Decode an embedded PNG. Keeps the CPU copy (RenderAssetUsages::default) so the window-icon
 // system can read its RGBA bytes.
-fn decode_logo() -> Image {
+fn decode_png(bytes: &[u8], what: &str) -> Image {
     Image::from_buffer(
-        LOGO_PNG,
+        bytes,
         ImageType::Extension("png"),
         CompressedImageFormats::NONE,
         true, // colour image (sRGB)
         ImageSampler::Default,
         RenderAssetUsages::default(),
     )
-    .expect("assets/logo.png is a valid PNG")
+    .unwrap_or_else(|_| panic!("{what} is a valid PNG"))
 }
 
-// Install the menu-masthead logo at BUILD time (like the font) so the initial OnEnter(Menu) can use it.
+fn decode_logo() -> Image {
+    decode_png(LOGO_PNG, "assets/logo.png")
+}
+
+// Install the menu-masthead + splash logos at BUILD time (like the font) so the initial
+// OnEnter screens can use them.
 fn install_logo(app: &mut App) {
     let handle = app.world_mut().resource_mut::<Assets<Image>>().add(decode_logo());
     app.insert_resource(LogoImage(handle));
+    let studio = app.world_mut().resource_mut::<Assets<Image>>().add(decode_png(BAZ_LOGO_PNG, "assets/baz_logo.png"));
+    app.insert_resource(BazLogoImage(studio));
+}
+
+// ─────────────────────────────── boot splash (Baz Studios) ────────────
+// The studio card every Baz game opens on: black screen, the BAZ STUDIOS logo fading in with the
+// sting, auto-dismissing into the menu. Timings mirror Wingman's splash (0.5s in, dismiss at 3.5s);
+// any key/click/pad press skips ahead to the fade-out — never a hard cut. One slow fade, no pulses
+// (photosensitivity rule). Music is held silent until the Menu so the sting owns the moment.
+const SPLASH_FADE_IN: f32 = 0.5;
+const SPLASH_HOLD_UNTIL: f32 = 3.5; // fade-out begins here (or on any input, whichever is first)
+const SPLASH_FADE_OUT: f32 = 0.8;
+const SPLASH_STING_VOLUME: f32 = 0.7;
+
+#[derive(Component)]
+struct SplashUi;
+#[derive(Component)]
+struct SplashLogo;
+#[derive(Resource, Default)]
+struct SplashClock(f32);
+
+fn spawn_splash(mut commands: Commands, logo: Res<BazLogoImage>, mut sources: ResMut<Assets<AudioSource>>) {
+    commands
+        .spawn((
+            SplashUi,
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(0.0),
+                left: Val::Px(0.0),
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            BackgroundColor(Color::BLACK), // opaque card — the starfield stays hidden until the menu
+        ))
+        .with_children(|p| {
+            p.spawn((
+                SplashLogo,
+                ImageNode { image: logo.0.clone(), color: Color::WHITE.with_alpha(0.0), ..default() },
+                Node { width: Val::Px(560.0), ..default() },
+            ));
+        });
+    let sting = sources.add(AudioSource { bytes: BAZ_STING_MP3.to_vec().into() });
+    one_shot(&mut commands, sting, SPLASH_STING_VOLUME);
+}
+
+fn splash_update(
+    time: Res<Time>,
+    mut clock: ResMut<SplashClock>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    pads: Query<&Gamepad>,
+    mut next: ResMut<NextState<GameState>>,
+    mut logo: Query<&mut ImageNode, With<SplashLogo>>,
+) {
+    clock.0 += time.delta_secs();
+    let skip = keys.get_just_pressed().next().is_some()
+        || mouse.get_just_pressed().next().is_some()
+        || pads.iter().any(|g| g.get_just_pressed().next().is_some());
+    if skip && clock.0 < SPLASH_HOLD_UNTIL {
+        clock.0 = SPLASH_HOLD_UNTIL; // skip = jump to the dismiss point, keeping the fade
+    }
+    let a = if clock.0 < SPLASH_HOLD_UNTIL {
+        (clock.0 / SPLASH_FADE_IN).clamp(0.0, 1.0)
+    } else {
+        1.0 - ((clock.0 - SPLASH_HOLD_UNTIL) / SPLASH_FADE_OUT).clamp(0.0, 1.0)
+    };
+    for mut img in &mut logo {
+        img.color = Color::WHITE.with_alpha(a);
+    }
+    if clock.0 >= SPLASH_HOLD_UNTIL + SPLASH_FADE_OUT {
+        next.set(GameState::Menu);
+    }
+}
+
+fn despawn_splash(mut commands: Commands, q: Query<Entity, With<SplashUi>>) {
+    for e in &q {
+        commands.entity(e).despawn();
+    }
 }
 
 // Set the window / taskbar icon from the same logo. Startup system — the primary window exists by
@@ -8598,9 +8691,10 @@ fn music_director(
         return;
     }
     // The wave-based cue only applies IN PLAYING. Otherwise force a screen-appropriate track — critically,
-    // never leave the boss loop running over the Victory or menu screens after a win.
+    // never leave the boss loop running over the Victory or menu screens after a win. The SPLASH is
+    // silent too: the Baz sting owns the boot moment, and the menu track starting is the handoff.
     let desired = if *state.get() != GameState::Playing {
-        if *state.get() == GameState::GameOver { MusicCue::Silence } else { MusicCue::Main }
+        if matches!(*state.get(), GameState::GameOver | GameState::Splash) { MusicCue::Silence } else { MusicCue::Main }
     } else if wave.calm > 0.0 {
         MusicCue::Silence // post-boss breather — let it be quiet, don't slam the track back on
     } else if is_boss_wave(wave.level) {
@@ -8874,6 +8968,7 @@ fn main() {
         .insert_resource(Stats::default())
         .insert_resource(Achievements::default())
         .insert_resource(LoreSeen::default())
+        .insert_resource(SplashClock::default())
         .insert_resource(PacifistWatch::default())
         .insert_resource(RunFlags::default())
         .insert_resource(GoldRush::default())
@@ -8977,6 +9072,9 @@ fn main() {
         .add_systems(Update, gameover_restart.run_if(in_state(GameState::GameOver)))
         .add_systems(Update, (victory_continue, victory_reveal).run_if(in_state(GameState::Victory)))
         .add_systems(OnEnter(GameState::Playing), disarm_fire)
+        .add_systems(OnEnter(GameState::Splash), spawn_splash)
+        .add_systems(OnExit(GameState::Splash), despawn_splash)
+        .add_systems(Update, splash_update.run_if(in_state(GameState::Splash)))
         .add_systems(OnEnter(GameState::Menu), (clear_field, spawn_menu_ui))
         .add_systems(OnExit(GameState::Menu), (despawn_menu_ui, mark_title_intro_played))
         .add_systems(OnEnter(GameState::Achievements), spawn_achievements_ui)
@@ -10558,6 +10656,36 @@ mod tests {
         app.world_mut().resource_mut::<Wave>().timer = 0.0;
         app.update();
         assert_eq!(app.world().resource::<PacifistWatch>().streak, 0, "reaching for a powerup resets the streak too");
+    }
+
+    #[test]
+    fn the_splash_fades_skips_and_hands_off_to_the_menu() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(SplashClock(1.0)); // mid-hold: logo fully in, nothing dismissing yet
+        app.insert_resource(ButtonInput::<KeyCode>::default());
+        app.insert_resource(ButtonInput::<MouseButton>::default());
+        app.insert_resource(NextState::<GameState>::default());
+        app.add_systems(Update, splash_update);
+        app.update();
+        assert!(
+            matches!(*app.world().resource::<NextState<GameState>>(), NextState::Unchanged),
+            "mid-hold the splash stays put"
+        );
+        // any key skips AHEAD to the dismiss point (fade-out start) — a skip is never a hard cut
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::Space);
+        app.update();
+        assert!(
+            (app.world().resource::<SplashClock>().0 - SPLASH_HOLD_UNTIL).abs() < 0.05,
+            "a keypress jumps the clock to the fade-out"
+        );
+        // once the fade-out has run its course, the splash hands off to the menu
+        app.world_mut().resource_mut::<SplashClock>().0 = SPLASH_HOLD_UNTIL + SPLASH_FADE_OUT;
+        app.update();
+        assert!(
+            matches!(*app.world().resource::<NextState<GameState>>(), NextState::Pending(GameState::Menu)),
+            "the splash ends on the menu"
+        );
     }
 
     #[test]

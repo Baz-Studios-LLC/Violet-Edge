@@ -9,7 +9,8 @@ edition = "2021"
 # changes its API a lot between releases.
 # `wav` adds rodio's WAV decoder (not in Bevy's defaults) so we can feed the
 # procedurally-synthesized soundtrack (src/audio.rs) as an in-memory WAV.
-bevy = { version = "0.16", features = ["wav"] }
+# `mp3` decodes the embedded Baz Studios splash sting (assets/logo_sound.mp3, shared with Wingman).
+bevy = { version = "0.16", features = ["wav", "mp3"] }
 # For setting the window/taskbar icon (Bevy's Window has no icon field). Pinned to the exact
 # version Bevy 0.16 resolves so there's a single winit copy — the Icon type must match bevy_winit's.
 winit = "=0.30.13"
