@@ -92,7 +92,7 @@ Each boss drops a powerup that echoes its own mechanic.
 | Slinger (W15) | **Drone** | ✅ | an ally craft that orbits the ship a short distance out and auto-fires the player's Bullet at the nearest asteroid in range — mops up rocks you left behind (one per run) |
 | Detonator (W20) | **Warhead rounds** | ✅ | permanent passive — every primary shot makes the rock it hits **detonate & chain** in a **violet, player-SAFE blast** (gold is spared; your own boom won't kill you) — echoes the primed bombs |
 | Pulsar (W25) | **Nova Shield** | ✅ | a regenerating **one-hit barrier**: while UP it eats one lethal hit and collapses; after `NOVA_REGEN` (~9s) it **flickers back on** (its ring blinks ≤3 Hz as it re-lights). A hit while it's DOWN costs the life as normal. The player inherits the Pulsar's lit-invulnerable ↔ dark-vulnerable identity. (Replaced the earlier "Nova pulse" shockwave sketch — playtest direction 2026-07-28.) |
-| Phantom (W30) | **Magnet** | 🔷 | pulls pickups/small rocks in — echoes the gravity pull the Phantom keeps (base Warp stays core kit) |
+| Phantom (W30) | ~~Magnet~~ **CUT** (2026-07-30) | ❌ | the wave-30 kill ends the game — the victory cinematic plays immediately, so there is nothing to pick a drop up WITH. The Phantom deliberately drops nothing; its "reward" is the ending + NEW GAME+ unlocking on the menu. |
 | Hive (W35) | **Spread shot** | 🔷 | your shot *splits* into several — echoes mitosis |
 | Prism (W40) | **Ricochet rounds** | 🔷 | bullets *reflect* off walls/rocks — echoes the facets |
 | Gemini (W45) | **Twin cannons** | 🔷 | two linked fire streams — echoes the twins (kept distinct from the drone) |
@@ -256,7 +256,8 @@ run is perfected**.
   - **Dev F4 (`dev_face_phantom`, debug only)** — wipes the field (keeps the ship) + jumps to wave 30 (resets
     the group cycle) so the finale can be tested without clearing 29 waves. Dev F2 sets phase 3 + zero → the
     win path in one press. (Dev keys are gated to the Playing state.)
-  **The standard run is beatable end-to-end — six bosses, waves 1–30.** Still open: the **Magnet** (§C)
+  **The standard run is beatable end-to-end — six bosses, waves 1–30.** The Magnet (§C) is CUT — the
+  Phantom drops nothing by design (see the powerup table). Formerly listed as still open
   powerup drop (the Nova Shield ✅ shipped); then balance tuning. The **achievements pass ✅ shipped
   (2026-07-28), expanded to 23 (2026-07-29)**: every boss has one, *Edgelord*/"beat the game" keys on the
   real wave-30 Haunt kill (recorded at the erupt, with *Purist* and *Untouchable*/deathless riding the
@@ -399,6 +400,23 @@ Considered and shelved (could layer on later): score extends, boss-clear +1, per
   entries survive every death by design. **Pillar: flying and shooting stay CLEAN — skilled play is
   the reward loop; difficulty may be merciless but the ship never is.** The release bar: the game
   ships when it can be beaten legitimately (no dev keys).
+- **NEW GAME+ (2026-07-30, deliberately SMALL — user: "start small since it's essentially a New
+  Game").** Unlocked forever once `stats.phantom` is set; the `NEW GAME+` menu button exists ONLY
+  then (button-only, no keyboard shortcut — the second lap is chosen, never stumbled into). It IS a
+  new game: same `reset_run`, nothing carried, achievements all count. Three difficulty dials, all
+  at the SOURCE (never player nerfs): `NGP_POP_BONUS` (+6 rocks every wave, past the cap; mobs and
+  mines scale automatically — they're capped as fractions of the rock count; the finale cap gains
+  +3; the Slinger arena stays sparse by fight design), `NGP_BOSS_HP_MULT` (cores ×1.5 at spawn, one
+  place: `boss_director`), and a music-corruption FLOOR of tier 1 (the Belt is already wrong when
+  you return). The HUD wave line carries a quiet `NG+` tag; restarting keeps the mode, normal PLAY
+  clears it. **NG+ Act I (waves 1-5) rolls the FULL rock roster** (the finale's all-types mix via
+  `roll_finale_kind`) — the lap assumes mastery, no teaching rosters; act arcs resume at wave 6.
+  **Every boss carries the mark: `THE WARDEN+`** (warning banner + HUD, `(name)+` in NG+ only).
+  **THE WARDEN+** is the first upgraded fight: old kit at 0.65× cadence, a TWO-rock spread per
+  throw, and every hurled rock is PRIMED (`Detonating`, 1.7s fuse — shoot it out of the air or
+  clear the blast; reuses `detonate` wholesale). Upgraded mechanics for bosses 2-6 come one at a
+  time (small steps). Explicitly deferred: rock speed scaling, per-phase Phantom scaling,
+  NG+-only rewards.
 - **The JUICE layer (2026-07-30, the AAA-bar feel pass).** Hit-stop (`HitStop`, real-time ticked,
   freezes `Time<Virtual>`: player death 0.12s / boss down 0.14s / Nova absorb 0.07s, capped at
   0.14, never stacking) + trauma screenshake (`Shake`, offset = trauma² × 14px max, smooth layered

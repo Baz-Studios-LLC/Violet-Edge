@@ -3,6 +3,26 @@
 Patch notes for the Rust + Bevy build. Newest first. (Releases are cut to GitHub and picked up by the
 Baz Studios launcher.) **Keep this current with every change** — it's the record testers read.
 
+## Unreleased
+
+- **NEW GAME+.** Beat the game once (ever) and a `NEW GAME+` button appears on the menu — forever.
+  It's essentially a new game: same fresh start, nothing carried over, every achievement still
+  counts. What changes is the Belt: a denser field from wave 1 (+6 rocks over the whole curve,
+  finale included; mobs and mines scale with it), boss cores half again as tough, and the music
+  already corrupted a tier when you arrive. The HUD wave line carries a quiet `NG+` tag, restarts
+  stay in the mode, and a normal PLAY clears it. Button-only by design — the second lap is chosen,
+  never stumbled into. And because the lap assumes mastery:
+  - **Waves 1-5 roll the full rock roster** — every type the Belt has, from the first wave. The
+    teaching rosters are for the first game; act arcs resume from wave 6.
+  - **Every boss carries the mark** — the warning banner and HUD read `THE WARDEN+`, `THE
+    GLUTTON+`, and so on.
+  - **THE WARDEN+ fights like it means it**: throws come at 0.65× cadence as a TWO-rock spread,
+    and every hurled rock is a PRIMED live bomb on a 1.7s fuse — shoot it out of the air or clear
+    the blast radius. (Upgraded mechanics for the other five bosses arrive one at a time.)
+- **The Phantom's planned drop is cut.** The wave-30 kill rolls straight into the ending — there
+  was never anything to pick a drop up with, so the finale boss now *officially* drops nothing.
+  Its reward is the ending itself, and the NEW GAME+ unlock.
+
 ## v0.4.7 — The juice pass, a corrupting score, and the studio splash (2026-07-30)
 
 - **THE JUICE PASS — kills land now.** The feel layer the game was missing, all photosensitivity-safe

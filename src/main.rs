@@ -529,14 +529,15 @@ fn asteroid_radius(size: u8) -> f32 {
 fn body_mass(r: f32) -> f32 {
     r * r
 }
-fn population_target(level: i32) -> i32 {
+fn population_target(level: i32, plus: bool) -> i32 {
     // the Slinger doesn't eat or grab rocks (it makes its own cannonballs), so keep its arena sparse —
-    // a full field just clutters the fight. The Warden (shield) and Devourer (food) DO use rocks, so
-    // they keep the normal count.
+    // a full field just clutters the fight (NG+ included: the fight's design, not its difficulty).
+    // The Warden (shield) and Devourer (food) DO use rocks, so they keep the normal count.
     if is_slinger_wave(level) {
         return SLINGER_WAVE_ROCKS;
     }
-    (POP_BASE + level).min(POP_CAP)
+    // NG+ adds its bonus PAST the cap — the whole curve shifts up, wave 1 through the finale
+    (POP_BASE + level).min(POP_CAP) + if plus { NGP_POP_BONUS } else { 0 }
 }
 
 /// Elastic collision between two circular bodies: separate out of overlap
@@ -1319,6 +1320,7 @@ struct Hud; // HUD roots — hidden on the menu screens
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MenuAction {
     Play,
+    PlayPlus, // NEW GAME+ — the button exists only once the game has been beaten (stats.phantom)
     Achievements,
     Controls, // main menu → the controls / input-rebinding screen
     Briefing,
@@ -1428,6 +1430,27 @@ struct Wave {
     level: i32,
     timer: f32,
     calm: f32, // > 0 during the post-boss calm — pauses spawns + the wave timer
+}
+
+// NEW GAME+ — the second lap, for players who've beaten the game (the menu button exists only once
+// `stats.phantom` is set). Same 30-wave arc, harder at the SOURCE (never via player nerfs): a denser
+// field from wave 1 (mobs and mines scale with it automatically — they're capped as fractions of
+// the rock count), boss cores half again as tough, and the Belt is ALREADY corrupted when you
+// arrive — the music starts at tier 1 and climbs from there. Selected per-run from the menu;
+// restarting a run keeps the mode, launching normal PLAY clears it.
+#[derive(Resource, Default, Clone, Copy)]
+struct NewGamePlus(bool);
+const NGP_POP_BONUS: i32 = 6; // extra rocks over the normal curve, every wave (the density dial)
+const NGP_BOSS_HP_MULT: f32 = 1.5; // boss cores half again as tough
+// The WARDEN+ (NG+ boss 1): the old kit at a meaner cadence, plus a new trick — every rock it
+// hurls is PRIMED (a live bomb on a fuse): shoot it out of the air or clear the blast radius.
+const NGP_WARDEN_RATE: f32 = 0.65; // throw + regrab cadence multiplier (lower = faster)
+const NGP_WARDEN_VOLLEY: usize = 2; // rocks hurled per throw (a spread, not a single lob)
+const NGP_WARDEN_FUSE: f32 = 1.7; // the primed throw's fuse — ~475px of flight, then the blast
+
+// A boss core's spawn HP for the current mode.
+fn scaled_hp(base: i32, plus: bool) -> i32 {
+    if plus { (base as f32 * NGP_BOSS_HP_MULT).round() as i32 } else { base }
 }
 
 // The Pacifist streak (clear 2 straight waves breaking nothing — dying is FINE, this is about
@@ -2056,7 +2079,13 @@ enum RockKind {
 
 // Which flavor should a rock spawned for `level` be? One roll shared by every edge-spawn caller,
 // so a wave's whole rock mix is defined here. Fractions are the tuning knobs for wave feel.
-fn roll_rock_kind(level: i32, rng: &mut impl Rng) -> RockKind {
+fn roll_rock_kind(level: i32, plus: bool, rng: &mut impl Rng) -> RockKind {
+    // NG+ ACT I (waves 1-5): the pilot has already seen everything, so the second lap OPENS on the
+    // finale's all-types mix — no teaching rosters on a lap that assumes mastery. From wave 6 on,
+    // the act arcs resume as authored (the corruption story still needs its shape).
+    if plus && content_wave(level) <= 5 {
+        return roll_finale_kind(rng);
+    }
     let cw = content_wave(level);
     // Beacon (aura warden) — RARE, rolled first so nothing eats its slice. Debuts w23 (target-order
     // pressure right as green's tankiness retires), a fixture through the late act.
@@ -3492,6 +3521,7 @@ fn wave_timer(
     mut banner: ResMut<WaveBanner>,
     mut commands: Commands,
     arena: Res<Arena>,
+    plus: Res<NewGamePlus>,
     asteroids: Query<(), With<Asteroid>>,
     mut stats: Option<ResMut<Stats>>, // optional so headless tests needn't insert it
     run: Option<Res<Run>>,
@@ -3527,11 +3557,11 @@ fn wave_timer(
             w.primed_at_level = wave.level;
         }
     }
-    let target = population_target(wave.level);
+    let target = population_target(wave.level, plus.0);
     let have = asteroids.iter().count() as i32;
     let mut rng = rand::thread_rng();
     for _ in 0..(target - have).max(0) {
-        let kind = roll_rock_kind(wave.level, &mut rng);
+        let kind = roll_rock_kind(wave.level, plus.0, &mut rng);
         spawn_edge_asteroid(&mut commands, arena.half, &mut rng, kind, false);
     }
 }
@@ -3565,6 +3595,7 @@ fn top_up_asteroids(
     mut clock: ResMut<SpawnClock>,
     wave: Res<Wave>,
     arena: Res<Arena>,
+    plus: Res<NewGamePlus>,
     mut commands: Commands,
     asteroids: Query<&Asteroid, Without<Gold>>, // EXCLUDE the gold 1UP — a lingering gold must not eat
 ) {                                             // into the finale's field cap (or stall the trickle)
@@ -3581,7 +3612,8 @@ fn top_up_asteroids(
     //    `roll_finale_kind`), TRICKLED in one at a time at the same gentle rate as before, against a
     //    modest field cap — variety without ever becoming a wall of rocks. ──
     if content_wave(wave.level) == 30 {
-        if count < FINALE_FIELD_CAP {
+        let cap = FINALE_FIELD_CAP + if plus.0 { NGP_POP_BONUS / 2 } else { 0 }; // NG+ finale: denser, still a trickle
+        if count < cap {
             let mut rng = rand::thread_rng();
             let kind = roll_finale_kind(&mut rng);
             spawn_edge_asteroid(&mut commands, arena.half, &mut rng, kind, false);
@@ -3595,9 +3627,9 @@ fn top_up_asteroids(
     let bigs = asteroids.iter().filter(|a| a.size == 3).count() as i32;
     // refill toward the count target, AND separately keep big rocks above the floor even at the
     // cap — otherwise breaking large rocks leaves the field as nothing but small debris.
-    if count < population_target(wave.level) || bigs < BIG_FLOOR {
+    if count < population_target(wave.level, plus.0) || bigs < BIG_FLOOR {
         let mut rng = rand::thread_rng();
-        let kind = roll_rock_kind(wave.level, &mut rng);
+        let kind = roll_rock_kind(wave.level, plus.0, &mut rng);
         spawn_edge_asteroid(&mut commands, arena.half, &mut rng, kind, bigs < BIG_FLOOR);
         clock.0 = SPAWN_INTERVAL;
     } else {
@@ -4156,6 +4188,7 @@ fn boss_director(
     mut commands: Commands,
     wave: Res<Wave>,
     arena: Res<Arena>,
+    plus: Res<NewGamePlus>,
     mut state: ResMut<BossState>,
     mut enemies: Query<&mut Enemy>,
     field: Query<(Entity, &Transform), (With<Asteroid>, Without<Cannonball>, Without<Gold>)>, // slate-wipe spares the gold 1UP (else its lineage vanishing reads as "cleared" → a free life)
@@ -4165,10 +4198,11 @@ fn boss_director(
     }
     let mut rng = rand::thread_rng();
     state.fought = wave.level;
+    let hp = |base: i32| scaled_hp(base, plus.0); // NG+: every core spawns half again as tough
     if is_devourer_wave(wave.level) {
         // Boss 2: the devourer starts small in the upper arena and hunts free rocks to grow.
         commands.spawn((
-            Devourer { hp: DEVOURER_HP, grow: 0.0, fed: 0, dying: 0.0, pulse: 0.0 },
+            Devourer { hp: hp(DEVOURER_HP), grow: 0.0, fed: 0, dying: 0.0, pulse: 0.0 },
             Transform::from_xyz(0.0, arena.half.y * 0.55, 0.0),
         ));
     } else if is_slinger_wave(wave.level) {
@@ -4181,21 +4215,21 @@ fn boss_director(
             commands.entity(a).despawn();
         }
         commands.spawn((
-            Slinger { hp: SLINGER_HP, entered: false, charge: SLINGER_INTRO, cool: SLINGER_COOL, load: 0.0, ammo: None, pulse: 0.0, recoil: 0.0, dying: 0.0 },
+            Slinger { hp: hp(SLINGER_HP), entered: false, charge: SLINGER_INTRO, cool: SLINGER_COOL, load: 0.0, ammo: None, pulse: 0.0, recoil: 0.0, dying: 0.0 },
             Transform::from_xyz(0.0, arena.half.y + SLINGER_R, 0.0),
         ));
     } else if is_detonator_wave(wave.level) {
         // Boss 4: the Detonator glides in from the top. The field is left INTACT — its orange rocks are
         // the bombs it primes, and shooting those (near it, during a priming window) is how you hurt it.
         commands.spawn((
-            Detonator { hp: DETONATOR_HP, entered: false, charge: DETONATOR_INTRO, cool: DETONATOR_COOL, prime: 0.0, target: None, pulse: 0.0, dying: 0.0 },
+            Detonator { hp: hp(DETONATOR_HP), entered: false, charge: DETONATOR_INTRO, cool: DETONATOR_COOL, prime: 0.0, target: None, pulse: 0.0, dying: 0.0 },
             Transform::from_xyz(0.0, arena.half.y + DETONATOR_R, 0.0),
         ));
     } else if is_pulsar_wave(wave.level) {
         // Boss 5: the Pulsar glides in, pulses lit (invulnerable) / dark (open), and shockwaves the field
         // outward on a beat. Its wave (25) is pulser-heavy, so the field is already a timing gauntlet.
         commands.spawn((
-            Pulsar { hp: PULSAR_HP, entered: false, charge: PULSAR_INTRO, phase: 0.0, shock_cool: PULSAR_SHOCK_EVERY, pulse: 0.0, dying: 0.0 },
+            Pulsar { hp: hp(PULSAR_HP), entered: false, charge: PULSAR_INTRO, phase: 0.0, shock_cool: PULSAR_SHOCK_EVERY, pulse: 0.0, dying: 0.0 },
             Transform::from_xyz(0.0, arena.half.y + PULSAR_R, 0.0),
         ));
     } else if is_phantom_wave(wave.level) {
@@ -4206,14 +4240,14 @@ fn boss_director(
             commands.entity(a).despawn();
         }
         commands.spawn((
-            Phantom::new(PHANTOM_PHASE_HP, false, PHANTOM_INTRO),
+            Phantom::new(hp(PHANTOM_PHASE_HP), false, PHANTOM_INTRO),
             Transform::from_xyz(0.0, arena.half.y + PHANTOM_R, 0.0),
         ));
     } else {
         // Boss 1: the shield-shaman glides in from the top.
         commands.spawn((
             Boss {
-                hp: BOSS_HP,
+                hp: hp(BOSS_HP),
                 rot: 0.0,
                 pulse: 0.0,
                 entered: false,
@@ -4482,6 +4516,7 @@ fn boss_shield(
     time: Res<Time>,
     mut commands: Commands,
     arena: Res<Arena>,
+    plus: Res<NewGamePlus>,
     ships: Query<&Transform, (With<Ship>, Without<Boss>, Without<Asteroid>)>,
     mut bosses: Query<(&Transform, &mut Boss)>,
     mut shielded: Query<(Entity, &mut Transform, &mut Velocity, &Asteroid, &mut Shielded), Without<Boss>>,
@@ -4526,22 +4561,40 @@ fn boss_shield(
         }
 
         // throw FIRST: fling a held smallest-size rock at the ship (frees an arm)…
+        // THE WARDEN+ (NG+): meaner cadence, a TWO-rock spread per throw, and every hurled rock is
+        // PRIMED — a live bomb on a short fuse. Shoot it out of the air or clear the blast radius.
+        let (fire_every, capture_every) = if plus.0 {
+            (BOSS_FIRE_EVERY * NGP_WARDEN_RATE, BOSS_CAPTURE_EVERY * NGP_WARDEN_RATE)
+        } else {
+            (BOSS_FIRE_EVERY, BOSS_CAPTURE_EVERY)
+        };
+        let volley = if plus.0 { NGP_WARDEN_VOLLEY } else { 1 };
         boss.fire -= dt;
         if boss.fire <= 0.0 {
-            boss.fire = BOSS_FIRE_EVERY + rng.gen_range(0.0..BOSS_FIRE_JITTER);
+            boss.fire = fire_every + rng.gen_range(0.0..BOSS_FIRE_JITTER);
             if let Some(sp) = ship {
+                let mut hurled = 0usize;
                 for (se, st, mut sv, a, sh) in &mut shielded {
                     if a.size == 1 {
-                        let dir = (sp - st.translation.truncate()).normalize_or_zero();
+                        // spread the volley: the 2nd rock leads/trails the aim a touch so a NG+ pair
+                        // can't be dodged as one object
+                        let jink = (hurled as f32 - (volley as f32 - 1.0) * 0.5) * 0.22;
+                        let dir = Vec2::from_angle(jink).rotate((sp - st.translation.truncate()).normalize_or_zero());
                         if dir != Vec2::ZERO {
                             sv.0 = dir * BOSS_THROW_SPEED;
                             commands.entity(se).remove::<Shielded>();
                             commands.entity(se).insert(Thrown(2.0));
+                            if plus.0 {
+                                commands.entity(se).insert(Detonating { fuse: NGP_WARDEN_FUSE, friendly: false });
+                            }
                             if sh.slot < BOSS_ARMS {
                                 used[sh.slot] = false; // that arm is now free to refill
                             }
+                            hurled += 1;
                         }
-                        break;
+                        if hurled >= volley {
+                            break;
+                        }
                     }
                 }
             }
@@ -4550,7 +4603,7 @@ fn boss_shield(
         // …THEN grab another rock into an empty arm, biggest first (better shield)
         boss.capture -= dt;
         if boss.capture <= 0.0 {
-            boss.capture = BOSS_CAPTURE_EVERY;
+            boss.capture = capture_every;
             let held = used.iter().filter(|u| **u).count();
             if held < BOSS_ARMS {
                 let mut best: Option<(Entity, u8, f32)> = None; // biggest reachable rock (size >= 2)
@@ -5021,13 +5074,15 @@ fn update_ui_scale(mut ui: ResMut<UiScale>, windows: Query<&Window>) {
     }
 }
 
-fn update_wave_text(wave: Res<Wave>, mut q: Query<&mut Text, With<WaveText>>) {
+fn update_wave_text(wave: Res<Wave>, plus: Res<NewGamePlus>, mut q: Query<&mut Text, With<WaveText>>) {
     let secs = wave.timer.max(0.0) as i32;
+    let tag = if plus.0 { "NG+  " } else { "" }; // the second lap says so, quietly, all run long
+    let name_plus = if plus.0 { "+" } else { "" }; // …and its bosses carry the mark: THE WARDEN+
     for mut t in &mut q {
         t.0 = if is_boss_wave(wave.level) {
-            format!("WAVE {}    {}", wave.level, boss_kind_name(boss_kind(wave.level)))
+            format!("{tag}WAVE {}    {}{name_plus}", wave.level, boss_kind_name(boss_kind(wave.level)))
         } else {
-            format!("WAVE {}    {}:{:02}", wave.level, secs / 60, secs % 60)
+            format!("{tag}WAVE {}    {}:{:02}", wave.level, secs / 60, secs % 60)
         };
     }
 }
@@ -5091,6 +5146,7 @@ fn calm_countdown_update(wave: Res<Wave>, mut q: Query<(&mut Text, &mut TextColo
 // wave nears (`prog`); the name eases in and stays readable while the flash strobes 0→peak.
 fn boss_warning_update(
     wave: Res<Wave>,
+    plus: Res<NewGamePlus>,
     mut text_q: Query<(&mut Text, &mut TextColor), With<BossWarnText>>,
     mut flash_q: Query<&mut BackgroundColor, With<BossWarnFlash>>,
 ) {
@@ -5105,7 +5161,9 @@ fn boss_warning_update(
     let fade_in = (prog / 0.04).clamp(0.0, 1.0); // ease the name in over the first ~0.4s
     for (mut text, mut color) in &mut text_q {
         if on {
-            text.0 = format!("WARNING:  {} INCOMING", boss_kind_name(kind));
+            // in NG+ every boss carries the mark — THE WARDEN+ is a different fight and says so
+            let name_plus = if plus.0 { "+" } else { "" };
+            text.0 = format!("WARNING:  {}{} INCOMING", boss_kind_name(kind), name_plus);
         }
         // dim() tones the HDR boss colour into UI range (else it clamps to white); readable, gentle pulse
         let a = if on { fade_in * (0.78 + 0.22 * pulse) } else { 0.0 };
@@ -7717,7 +7775,7 @@ fn menu_start(
     mut wave: ResMut<Wave>,
     mut banner: ResMut<WaveBanner>,
     mut warp: ResMut<Warp>,
-    mut progress: (ResMut<BossState>, ResMut<Chain>, ResMut<MassShot>, ResMut<RunFlags>, ResMut<GoldRush>, ResMut<Warhead>, ResMut<Stats>, ResMut<PacifistWatch>), // bundled (16-param limit)
+    mut progress: (ResMut<BossState>, ResMut<Chain>, ResMut<MassShot>, ResMut<RunFlags>, ResMut<GoldRush>, ResMut<Warhead>, ResMut<Stats>, ResMut<PacifistWatch>, ResMut<NewGamePlus>), // bundled (16-param limit)
     mut clicks: EventReader<MenuClick>,
 ) {
     let actions: Vec<MenuAction> = clicks.read().map(|c| c.0).collect(); // read once, then test
@@ -7738,10 +7796,13 @@ fn menu_start(
         next.set(GameState::Lore);
         return;
     }
-    // Play: Enter/Space or the button
-    if !(keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) || actions.contains(&MenuAction::Play)) {
+    // Play: Enter/Space or the button. NEW GAME+ is BUTTON-ONLY (no shortcut) — deliberate friction:
+    // the second lap is chosen, never stumbled into. Keyboard launch is always a normal run.
+    let play_plus = actions.contains(&MenuAction::PlayPlus);
+    if !(keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) || actions.contains(&MenuAction::Play) || play_plus) {
         return;
     }
+    progress.8 .0 = play_plus; // the mode holds for the whole run (restarts included); normal PLAY clears it
     reset_run(&mut commands, &mut run, &mut score, &mut wave, &mut banner, &mut warp, &mut progress.0, &mut progress.1, &mut progress.2, &mut progress.5, &mut progress.3, &mut progress.4, &mut progress.6, &mut progress.7);
     next.set(GameState::Playing);
 }
@@ -7815,6 +7876,11 @@ fn spawn_menu_ui(mut commands: Commands, achieved: Res<Achievements>, stats: Res
         p.spawn((ImageNode::new(logo.0.clone()), Node { width: Val::Px(180.0), height: Val::Px(180.0), margin: UiRect::bottom(Val::Px(-18.0)), ..default() }));
         p.spawn((MenuTitle { age: title_age }, text_f(f, 82.0, title_color(), "VIOLET EDGE")));
         menu_button(p, f, MenuAction::Play, "PLAY");
+        if stats.phantom {
+            // the second lap exists only for pilots who've finished the first — beat the game once
+            // (ever, any run) and NEW GAME+ is on the menu forever
+            menu_button(p, f, MenuAction::PlayPlus, "NEW GAME+");
+        }
         menu_button(p, f, MenuAction::Controls, "CONTROLS");
         menu_button(p, f, MenuAction::Briefing, "BRIEFING");
         menu_button(p, f, MenuAction::Lore, &format!("PILOT LOG  ({lore_n} / 8)"));
@@ -8725,6 +8791,7 @@ fn music_director(
     input: Res<ActionState>,
     wave: Res<Wave>,
     state: Res<State<GameState>>,
+    plus: Res<NewGamePlus>,
     mut dir: ResMut<MusicDirector>,
     mut commands: Commands,
     music: Query<Entity, With<Music>>,
@@ -8748,7 +8815,8 @@ fn music_director(
     // silent too: the Baz sting owns the boot moment, and the menu track starting is the handoff.
     // Corruption tier = bosses down this run (wave 1-5 → 0 … 26-30 → 5). Off-run screens play the
     // CLEAN tier — including Victory: beating the Phantom hands the uncorrupted track back.
-    let tier = (((wave.level - 1) / 5).clamp(0, 5)) as u8;
+    // NEW GAME+: the Belt is ALREADY wrong when you arrive — the floor is tier 1, climbing from there.
+    let tier = (((wave.level - 1) / 5).clamp(0, 5) as u8).max(if plus.0 { 1 } else { 0 });
     let desired = if *state.get() != GameState::Playing {
         match *state.get() {
             GameState::GameOver => MusicCue::GameOver, // its own somber track — a run ending SOUNDS different from playing one
@@ -9101,6 +9169,7 @@ fn main() {
         .insert_resource(Achievements::default())
         .insert_resource(LoreSeen::default())
         .insert_resource(SplashClock::default())
+        .insert_resource(NewGamePlus::default())
         .insert_resource(PacifistWatch::default())
         .insert_resource(RunFlags::default())
         .insert_resource(GoldRush::default())
@@ -10137,6 +10206,7 @@ mod tests {
     #[test]
     fn wave_advances_when_timer_expires() {
         let mut app = App::new();
+        app.insert_resource(NewGamePlus::default());
         app.add_plugins(MinimalPlugins);
         app.add_event::<SoundFx>();
         app.insert_resource(Stats::default());
@@ -10152,6 +10222,7 @@ mod tests {
     #[test]
     fn boss_warning_names_and_flashes_during_the_runup() {
         let mut app = App::new();
+        app.insert_resource(NewGamePlus::default());
         app.add_plugins(MinimalPlugins);
         // run-up to wave 5 (the Warden): one below a boss wave, inside the cameo window, no calm
         app.insert_resource(Wave { level: 4, timer: 5.0, calm: 0.0 });
@@ -10168,6 +10239,7 @@ mod tests {
     #[test]
     fn boss_warning_hidden_when_no_boss_imminent() {
         let mut app = App::new();
+        app.insert_resource(NewGamePlus::default());
         app.add_plugins(MinimalPlugins);
         // an ordinary wave with a non-boss wave next → no warning
         app.insert_resource(Wave { level: 2, timer: 5.0, calm: 0.0 });
@@ -10191,6 +10263,7 @@ mod tests {
     #[test]
     fn boss_wave_hud_shows_the_boss_name() {
         let mut app = App::new();
+        app.insert_resource(NewGamePlus::default());
         app.add_plugins(MinimalPlugins);
         app.insert_resource(Wave { level: 10, timer: WAVE_SECS, calm: 0.0 });
         let e = app.world_mut().spawn((WaveText, Text::new(""))).id();
@@ -10207,7 +10280,7 @@ mod tests {
     fn act_iii_introduces_red_asteroids() {
         fn reds(level: i32, n: usize) -> usize {
             let mut rng = rand::thread_rng();
-            (0..n).filter(|_| matches!(roll_rock_kind(level, &mut rng), RockKind::Red)).count()
+            (0..n).filter(|_| matches!(roll_rock_kind(level, false, &mut rng), RockKind::Red)).count()
         }
         assert!(reds(23, 600) > 0, "wave 23 (Act III) spawns red growing asteroids");
         assert_eq!(reds(12, 600), 0, "no red asteroids before wave 21");
@@ -10419,6 +10492,7 @@ mod tests {
     #[test]
     fn pulsar_wave_spawns_the_fifth_boss() {
         let mut app = App::new();
+        app.insert_resource(NewGamePlus::default());
         app.add_plugins(MinimalPlugins);
         app.insert_resource(Wave { level: 25, timer: WAVE_SECS, calm: 0.0 });
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
@@ -10457,6 +10531,7 @@ mod tests {
     #[test]
     fn phantom_wave_spawns_the_final_boss() {
         let mut app = App::new();
+        app.insert_resource(NewGamePlus::default());
         app.add_plugins(MinimalPlugins);
         app.insert_resource(Wave { level: 30, timer: WAVE_SECS, calm: 0.0 });
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
@@ -10760,6 +10835,7 @@ mod tests {
     #[test]
     fn two_clean_waves_unlock_pacifist_and_breaks_reset_the_streak() {
         let mut app = App::new();
+        app.insert_resource(NewGamePlus::default());
         app.add_plugins(MinimalPlugins);
         app.insert_resource(Wave { level: 1, timer: 0.0, calm: 0.0 });
         app.insert_resource(WaveBanner::default());
@@ -11196,6 +11272,7 @@ mod tests {
     #[test]
     fn top_up_streams_rocks_when_below_target() {
         let mut app = App::new();
+        app.insert_resource(NewGamePlus::default());
         app.add_plugins(MinimalPlugins);
         app.add_event::<SoundFx>();
         app.insert_resource(Stats::default());
@@ -11212,6 +11289,7 @@ mod tests {
     #[test]
     fn no_top_up_during_calm() {
         let mut app = App::new();
+        app.insert_resource(NewGamePlus::default());
         app.add_plugins(MinimalPlugins);
         app.add_event::<SoundFx>();
         app.insert_resource(Stats::default());
@@ -11229,6 +11307,7 @@ mod tests {
     fn finale_field_trickles_in_not_all_at_once() {
         // wave 30 streams RANDOM-type rocks in one at a time, up to its field cap — never a wall
         let mut app = App::new();
+        app.insert_resource(NewGamePlus::default());
         app.add_plugins(MinimalPlugins);
         app.insert_resource(Wave { level: 30, timer: WAVE_SECS, calm: 0.0 });
         app.insert_resource(SpawnClock(0.0));
@@ -11254,6 +11333,7 @@ mod tests {
         // a gold 1UP rock is an Asteroid too; it must NOT count against the finale's field cap
         // (regression: no asteroids spawned while a gold lingered)
         let mut app = App::new();
+        app.insert_resource(NewGamePlus::default());
         app.add_plugins(MinimalPlugins);
         app.insert_resource(Wave { level: 30, timer: WAVE_SECS, calm: 0.0 });
         app.insert_resource(SpawnClock(0.0));
@@ -11275,11 +11355,11 @@ mod tests {
     fn act_iii_late_waves_roll_the_new_types() {
         let mut rng = rand::thread_rng();
         let n = 600;
-        let beacons23 = (0..n).filter(|_| matches!(roll_rock_kind(23, &mut rng), RockKind::Beacon)).count();
+        let beacons23 = (0..n).filter(|_| matches!(roll_rock_kind(23, false, &mut rng), RockKind::Beacon)).count();
         assert!(beacons23 > 0, "wave 23 debuts the beacon");
-        let clusters26 = (0..n).filter(|_| matches!(roll_rock_kind(26, &mut rng), RockKind::Cluster)).count();
+        let clusters26 = (0..n).filter(|_| matches!(roll_rock_kind(26, false, &mut rng), RockKind::Cluster)).count();
         assert!(clusters26 > 0, "wave 26 debuts the cluster");
-        let early = (0..n).filter(|_| matches!(roll_rock_kind(21, &mut rng), RockKind::Cluster | RockKind::Beacon)).count();
+        let early = (0..n).filter(|_| matches!(roll_rock_kind(21, false, &mut rng), RockKind::Cluster | RockKind::Beacon)).count();
         assert_eq!(early, 0, "waves before 23 roll neither new type");
     }
 
@@ -11311,7 +11391,7 @@ mod tests {
         fn sample(level: i32, n: usize, rng: &mut rand::rngs::ThreadRng) -> (i32, i32, i32, i32) {
             let (mut blue, mut green, mut orange, mut pulser) = (0, 0, 0, 0);
             for _ in 0..n {
-                match roll_rock_kind(level, rng) {
+                match roll_rock_kind(level, false, rng) {
                     RockKind::Blue => blue += 1,
                     RockKind::Green => green += 1,
                     RockKind::Orange => orange += 1,
@@ -11373,9 +11453,35 @@ mod tests {
 
     #[test]
     fn slinger_wave_keeps_a_sparse_field() {
-        assert_eq!(population_target(15), SLINGER_WAVE_ROCKS, "the Slinger wave stays sparse (it makes its own ammo)");
-        assert_eq!(population_target(14), POP_CAP, "the all-orange wave 14 keeps the full field");
-        assert_eq!(population_target(45), SLINGER_WAVE_ROCKS, "the looped Slinger wave (content 15 = wave 45) is sparse too");
+        assert_eq!(population_target(15, false), SLINGER_WAVE_ROCKS, "the Slinger wave stays sparse (it makes its own ammo)");
+        assert_eq!(population_target(14, false), POP_CAP, "the all-orange wave 14 keeps the full field");
+        assert_eq!(population_target(45, false), SLINGER_WAVE_ROCKS, "the looped Slinger wave (content 15 = wave 45) is sparse too");
+    }
+
+    #[test]
+    fn new_game_plus_scales_at_the_source() {
+        // the density dial: every wave gains the bonus, past the cap included — except the Slinger
+        // arena, which stays sparse by fight DESIGN, not difficulty
+        assert_eq!(population_target(3, true), population_target(3, false) + NGP_POP_BONUS, "NG+ densifies wave 3");
+        assert_eq!(population_target(14, true), POP_CAP + NGP_POP_BONUS, "NG+ shifts the whole curve past the cap");
+        assert_eq!(population_target(15, true), SLINGER_WAVE_ROCKS, "the Slinger arena stays sparse even in NG+");
+        // boss cores: half again as tough, and untouched in a normal run
+        assert_eq!(scaled_hp(DETONATOR_HP, false), DETONATOR_HP, "normal runs keep base boss HP");
+        assert_eq!(scaled_hp(46, true), 69, "NG+ cores are 1.5x (rounded)");
+        // NG+ Act I: waves 1-5 roll the FULL roster (the finale mix) — the lap assumes mastery
+        let mut rng = rand::thread_rng();
+        let n = 4000;
+        let (mut red, mut cluster, mut beacon) = (0, 0, 0);
+        for _ in 0..n {
+            match roll_rock_kind(2, true, &mut rng) {
+                RockKind::Red => red += 1,
+                RockKind::Cluster => cluster += 1,
+                RockKind::Beacon => beacon += 1,
+                _ => {}
+            }
+        }
+        assert!(red > 0 && cluster > 0 && beacon > 0, "NG+ wave 2 already shows the late-game rocks (red {red}, cluster {cluster}, beacon {beacon})");
+        assert!(matches!(roll_rock_kind(2, false, &mut rng), RockKind::Blue), "a NORMAL wave 2 is still all-blue");
     }
 
     #[test]
@@ -11602,6 +11708,7 @@ mod tests {
     #[test]
     fn devourer_wave_spawns_the_second_boss() {
         let mut app = App::new();
+        app.insert_resource(NewGamePlus::default());
         app.add_plugins(MinimalPlugins);
         app.insert_resource(Wave { level: 10, timer: WAVE_SECS, calm: 0.0 });
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
@@ -11615,6 +11722,7 @@ mod tests {
     #[test]
     fn slinger_wave_spawns_the_third_boss() {
         let mut app = App::new();
+        app.insert_resource(NewGamePlus::default());
         app.add_plugins(MinimalPlugins);
         app.insert_resource(Wave { level: 15, timer: WAVE_SECS, calm: 0.0 });
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
@@ -11648,6 +11756,7 @@ mod tests {
     #[test]
     fn detonator_wave_spawns_the_fourth_boss() {
         let mut app = App::new();
+        app.insert_resource(NewGamePlus::default());
         app.add_plugins(MinimalPlugins);
         app.insert_resource(Wave { level: 20, timer: WAVE_SECS, calm: 0.0 });
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
@@ -11921,6 +12030,7 @@ mod tests {
     #[test]
     fn menu_start_resets_and_spawns_a_ship() {
         let mut app = App::new();
+        app.insert_resource(NewGamePlus::default());
         app.add_plugins(MinimalPlugins);
         app.add_event::<MenuClick>();
         app.insert_resource(NextState::<GameState>::default());
@@ -11953,6 +12063,18 @@ mod tests {
         assert!(!app.world().resource::<GoldRush>().active, "Start clears any stale gold hunt");
         assert_eq!(app.world().resource::<Stats>().runs, 10, "every Start counts a lifetime run (the restart ladder)");
         assert_eq!(app.world_mut().query::<&Ship>().iter(app.world()).count(), 1, "a fresh ship spawns");
+        assert!(!app.world().resource::<NewGamePlus>().0, "keyboard launch is always a NORMAL run");
+        // the NEW GAME+ button sets the mode — and it's still "essentially a new game": the same
+        // reset_run wipes score/powerups/lives, only the difficulty dials differ
+        app.world_mut().send_event(MenuClick(MenuAction::PlayPlus));
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().clear(); // no Enter this time
+        app.update();
+        assert!(app.world().resource::<NewGamePlus>().0, "the NG+ button arms the mode");
+        assert_eq!(app.world().resource::<Score>().0, 0, "and still starts a clean run");
+        // quitting back and launching normally clears it
+        app.world_mut().send_event(MenuClick(MenuAction::Play));
+        app.update();
+        assert!(!app.world().resource::<NewGamePlus>().0, "a normal PLAY clears the mode");
     }
 
     #[test]
@@ -12105,6 +12227,7 @@ mod tests {
     #[test]
     fn boss_spawns_and_enemies_flee_on_boss_wave() {
         let mut app = App::new();
+        app.insert_resource(NewGamePlus::default());
         app.add_plugins(MinimalPlugins);
         app.add_event::<SoundFx>();
         app.insert_resource(Stats::default());
@@ -12159,6 +12282,7 @@ mod tests {
     #[test]
     fn boss_captures_a_free_rock() {
         let mut app = App::new();
+        app.insert_resource(NewGamePlus::default());
         app.add_plugins(MinimalPlugins);
         app.add_event::<SoundFx>();
         app.insert_resource(Stats::default());
@@ -12193,6 +12317,7 @@ mod tests {
     #[test]
     fn boss_throws_a_smallest_shield_rock_at_the_ship() {
         let mut app = App::new();
+        app.insert_resource(NewGamePlus::default());
         app.add_plugins(MinimalPlugins);
         app.add_event::<SoundFx>();
         app.insert_resource(Stats::default());
@@ -12213,8 +12338,37 @@ mod tests {
         app.update();
         assert!(app.world().entity(rock).get::<Shielded>().is_none(), "the size-1 rock is released");
         assert!(app.world().entity(rock).get::<Thrown>().is_some(), "and flagged as just-thrown");
+        assert!(app.world().entity(rock).get::<Detonating>().is_none(), "a NORMAL Warden's throws are plain rocks");
         let v = app.world().entity(rock).get::<Velocity>().unwrap().0;
         assert!(v.length() > 1.0 && v.y < 0.0, "flung toward the ship (which is below it)");
+    }
+
+    #[test]
+    fn the_warden_plus_hurls_a_primed_two_rock_volley() {
+        // NG+ boss 1: the old throw, meaner — TWO rocks per cadence, and both are LIVE BOMBS
+        let mut app = App::new();
+        app.insert_resource(NewGamePlus(true));
+        app.add_plugins(MinimalPlugins);
+        app.add_event::<SoundFx>();
+        app.insert_resource(Stats::default());
+        app.insert_resource(RunFlags::default());
+        app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
+        app.world_mut().spawn((Ship { angle: 0.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, -200.0, 0.0)));
+        app.world_mut().spawn((Boss { hp: BOSS_HP, rot: 0.0, pulse: 0.0, entered: true, charge: 0.0, fire: 0.0, capture: 5.0, dying: 0.0 }, Transform::from_xyz(0.0, 200.0, 0.0)));
+        for slot in 0..2 {
+            app.world_mut().spawn((
+                Asteroid { size: 1, verts: vec![Vec2::X * 20.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+                Velocity(Vec2::ZERO),
+                Transform::from_xyz(slot as f32 * 30.0, 250.0, 0.0),
+                Shielded { slot, grab: 1.0 },
+            ));
+        }
+        app.add_systems(Update, boss_shield);
+        app.update();
+        let mut q = app.world_mut().query::<(&Asteroid, Option<&Thrown>, Option<&Detonating>)>();
+        let thrown: Vec<bool> = q.iter(app.world()).filter(|(_, t, _)| t.is_some()).map(|(.., d)| d.is_some()).collect();
+        assert_eq!(thrown.len(), NGP_WARDEN_VOLLEY, "the Warden+ hurls a full volley in one throw");
+        assert!(thrown.iter().all(|primed| *primed), "and every hurled rock is PRIMED (a live bomb)");
     }
 
     #[test]
@@ -12288,6 +12442,7 @@ mod tests {
     #[test]
     fn boss_grabs_the_biggest_rock_first() {
         let mut app = App::new();
+        app.insert_resource(NewGamePlus::default());
         app.add_plugins(MinimalPlugins);
         app.add_event::<SoundFx>();
         app.insert_resource(Stats::default());
@@ -12486,6 +12641,7 @@ mod tests {
     #[test]
     fn music_cues_follow_the_boss_cycle() {
         let mut app = App::new();
+        app.insert_resource(NewGamePlus::default());
         app.add_plugins(MinimalPlugins);
         app.insert_resource(ActionState::default());
         app.insert_resource(Wave { level: 1, timer: WAVE_SECS, calm: 0.0 });
@@ -12547,6 +12703,18 @@ mod tests {
         app.insert_resource(State::new(GameState::Splash));
         app.update();
         assert_eq!(app.world().resource::<MusicDirector>().cue, Some(MusicCue::Silence), "the splash holds silence");
+
+        // NEW GAME+: the Belt is already wrong on arrival — wave 1 plays tier 1, never tier 0
+        app.insert_resource(State::new(GameState::Playing));
+        app.insert_resource(NewGamePlus(true));
+        {
+            let mut w = app.world_mut().resource_mut::<Wave>();
+            w.level = 1;
+            w.timer = WAVE_SECS;
+            w.calm = 0.0;
+        }
+        app.update();
+        assert_eq!(app.world().resource::<MusicDirector>().cue, Some(MusicCue::Main(1)), "NG+ starts a tier deep in the corruption");
     }
 
     #[test]
