@@ -323,6 +323,55 @@ pub fn boss_buildup_wav() -> Vec<u8> {
     master(&buf)
 }
 
+/// The GAME OVER track — the anti-club: ~70 BPM, sparse and somber where the main track is a
+/// driving rave and the boss a pound. A funeral-pulse kick on the downbeat, a slow Am↔F pad bed,
+/// and a lonely descending glass-tone line (one note per bar, falling through the minor scale).
+/// An 8-bar seamless loop (~27s) that can sit under the Game Over screen without grating.
+pub fn gameover_track_wav() -> Vec<u8> {
+    let bpm = 70.0;
+    let bars = 8usize;
+    let step = 60.0 / bpm / 4.0;
+    let steps = bars * 16;
+    let ssamp = step * SR;
+    let n = (steps as f32 * ssamp).round() as usize;
+    let mut buf = vec![0f32; n];
+
+    // Am ↔ F, one chord per 2-bar phrase, an octave DOWN from the main track's roots (gravity)
+    let prog = [55.00f32, 43.65];
+    // the dirge line: one note per bar, descending A-minor with the darkening ♭6
+    let line = [12i32, 8, 7, 3, 12, 8, 5, 0];
+
+    for s in 0..steps {
+        let start = (s as f32 * ssamp) as usize;
+        let bar = s / 16;
+        let bp = s % 16;
+        let root = prog[(bar / 2) % 2];
+
+        // funeral pulse: a soft kick on each downbeat only — a heartbeat, not a beat
+        if bp == 0 {
+            add_voice(&mut buf, start, 0.34, 0.4, |t, _| kick(t));
+        }
+        // the pad bed: root + minor third + fifth, held across the 2-bar phrase
+        if s.is_multiple_of(32) {
+            let base = root * 2.0;
+            for semi in [0.0f32, 3.0, 7.0] {
+                let f = base * 2f32.powf(semi / 12.0);
+                add_voice(&mut buf, start, step * 32.0, 0.6, move |t, _| pad_voice(t, f));
+            }
+        }
+        // the lonely line: one mellow glass tone per bar, on the downbeat
+        if bp == 0 {
+            let f = root * 4.0 * 2f32.powf(line[bar % 8] as f32 / 12.0);
+            add_voice(&mut buf, start, step * 12.0, 0.5, move |t, _| {
+                let env = (1.0 - (-t * 9.0).exp()) * (-t * 1.3).exp(); // soft attack, long sigh
+                ((TAU * f * t).sin() + 0.25 * (TAU * f * 2.0 * t).sin()) * 0.2 * env
+            });
+        }
+    }
+
+    master(&buf)
+}
+
 // Minimal 16-bit mono PCM WAV container.
 fn wav_bytes(samples: &[i16], sr: u32) -> Vec<u8> {
     let data_len = (samples.len() * 2) as u32;
@@ -611,8 +660,8 @@ mod tests {
 
     #[test]
     fn tracks_are_wav_and_nonsilent() {
-        // the main track + the boss track must both be valid, audible loops
-        for wav in [main_track_wav(), boss_track_wav()] {
+        // the main, boss, and game-over tracks must all be valid, audible loops
+        for wav in [main_track_wav(), boss_track_wav(), gameover_track_wav()] {
             assert_eq!(&wav[0..4], b"RIFF", "starts with a RIFF header");
             assert_eq!(&wav[8..12], b"WAVE", "is a WAVE file");
             // enough audio for a full loop (main ~2 min, boss ~25 s at 44.1 kHz mono 16-bit)

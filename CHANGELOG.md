@@ -5,6 +5,11 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
+- **Game Over has its own music.** A somber ~70 BPM dirge — funeral-pulse kick, slow Am↔F pad bed,
+  a lonely descending glass-tone line — looping under the Game Over screen. A run ending now
+  *sounds* different from playing one (it used to be silence). Synthesized like every other track.
+- **Light ribbon extended again** (46 → 72 points, ~1.2s of motion) — the Tron trail reads as a
+  real presence behind the ship now.
 - **Baz Studios boot splash.** The game now opens on the studio card — black screen, the BAZ
   STUDIOS logo fading in with the logo sting (the same logo + sound Wingman ships, embedded so the
   exe stays self-contained). Auto-dismisses into the menu at ~3.5s; any key/click/pad press skips

@@ -330,7 +330,7 @@ const HUD_STRIP_Y: f32 = 92.0; // the glyph row (world y = h.y - this), under it
 const SHOT_MODE_SHOW: f32 = 1.4; // s the "MASS/STANDARD SHOT" label lingers after a toggle
 const SPAWN_INVULN: f32 = 2.0; // s of blink-invulnerability on (re)spawn
 const TRAIL_LEN: usize = 10; // bullet trail points kept
-const SHIP_TRAIL_LEN: usize = 46; // ship light-ribbon points kept (~3/4s of motion — extended twice per playtest; still shy of a full Tron wall)
+const SHIP_TRAIL_LEN: usize = 72; // ship light-ribbon points kept (~1.2s of motion — extended THREE times per playtest; the user wants a real Tron presence)
 const STAR_COUNT: usize = 90;
 // The game renders at a fixed DESIGN height, scale-to-fit to the window: on ANY monitor the camera
 // magnifies so DESIGN_H world-units fill the window height (a bigger screen magnifies — it does NOT reveal
@@ -8628,10 +8628,11 @@ const MUSIC_VOLUME: f32 = 0.55;
 // What the soundtrack should be playing right now.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum MusicCue {
-    Main,    // the full-length main track (loops)
-    Buildup, // the ~10 s riser in the run-up to a boss (one-shot)
-    Boss,    // the boss track (loops)
-    Silence, // the post-boss calm — a deliberate breather, no music
+    Main,     // the full-length main track (loops)
+    Buildup,  // the ~10 s riser in the run-up to a boss (one-shot)
+    Boss,     // the boss track (loops)
+    GameOver, // the somber ~70 BPM dirge under the Game Over screen (loops)
+    Silence,  // the post-boss calm — a deliberate breather, no music
 }
 
 // The soundtrack director. Normal play loops the main track; the last 10 s before a boss play a
@@ -8641,6 +8642,7 @@ struct MusicDirector {
     main: Handle<AudioSource>,
     boss: Handle<AudioSource>,
     buildup: Handle<AudioSource>,
+    gameover: Handle<AudioSource>,
     cue: Option<MusicCue>, // what's live (None = nothing spawned yet)
     muted: bool,
 }
@@ -8651,7 +8653,8 @@ fn start_music(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>)
     let main = sources.add(AudioSource { bytes: audio::main_track_wav().into() });
     let boss = sources.add(AudioSource { bytes: audio::boss_track_wav().into() });
     let buildup = sources.add(AudioSource { bytes: audio::boss_buildup_wav().into() });
-    commands.insert_resource(MusicDirector { main, boss, buildup, cue: None, muted: false });
+    let gameover = sources.add(AudioSource { bytes: audio::gameover_track_wav().into() });
+    commands.insert_resource(MusicDirector { main, boss, buildup, gameover, cue: None, muted: false });
 }
 
 // Spawn a Music player. Loops for the main/boss tracks; one-shot (Despawn) for the buildup riser.
@@ -8694,7 +8697,11 @@ fn music_director(
     // never leave the boss loop running over the Victory or menu screens after a win. The SPLASH is
     // silent too: the Baz sting owns the boot moment, and the menu track starting is the handoff.
     let desired = if *state.get() != GameState::Playing {
-        if matches!(*state.get(), GameState::GameOver | GameState::Splash) { MusicCue::Silence } else { MusicCue::Main }
+        match *state.get() {
+            GameState::GameOver => MusicCue::GameOver, // its own somber track — a run ending SOUNDS different from playing one
+            GameState::Splash => MusicCue::Silence,
+            _ => MusicCue::Main,
+        }
     } else if wave.calm > 0.0 {
         MusicCue::Silence // post-boss breather — let it be quiet, don't slam the track back on
     } else if is_boss_wave(wave.level) {
@@ -8722,6 +8729,10 @@ fn music_director(
             MusicCue::Buildup => {
                 let h = dir.buildup.clone();
                 play_track(&mut commands, h, dir.muted, false);
+            }
+            MusicCue::GameOver => {
+                let h = dir.gameover.clone();
+                play_track(&mut commands, h, dir.muted, true);
             }
         }
         dir.cue = Some(desired);
@@ -12298,6 +12309,7 @@ mod tests {
             main: Handle::default(),
             boss: Handle::default(),
             buildup: Handle::default(),
+            gameover: Handle::default(),
             cue: None,
             muted: false,
         });
@@ -12337,6 +12349,16 @@ mod tests {
         app.world_mut().resource_mut::<Wave>().calm = 0.0;
         app.update();
         assert_eq!(app.world().resource::<MusicDirector>().cue, Some(MusicCue::Main), "the main track resumes after the calm");
+
+        // the Game Over screen → its own somber track, not silence and not the main loop
+        app.insert_resource(State::new(GameState::GameOver));
+        app.update();
+        assert_eq!(app.world().resource::<MusicDirector>().cue, Some(MusicCue::GameOver), "game over plays the dirge");
+
+        // and the boot splash stays silent — the Baz sting owns that moment
+        app.insert_resource(State::new(GameState::Splash));
+        app.update();
+        assert_eq!(app.world().resource::<MusicDirector>().cue, Some(MusicCue::Silence), "the splash holds silence");
     }
 
     #[test]
