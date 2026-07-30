@@ -102,7 +102,6 @@ const MINE_SPEED: f32 = 62.0; // px/s drift
 const MINE_TRIGGER_R: f32 = 92.0; // ship within → the mine arms (blinks)
 const MINE_BLAST_R: f32 = 52.0; // armed + ship within → detonate (kills the ship)
 const MINE_FUSE: f32 = 0.6; // arming time before it can detonate (time to escape)
-const MINE_SCORE: u32 = 150;
 const WARP_ROCK_SCORE: u32 = 25; // a rock swallowed by the warp scores a low flat value (no farming)
 const MINE_SPAWN_INTERVAL: f32 = 2.6;
 const MINE_CHUNK_MULT: f32 = 1.9; // HIDDEN: rocks shattered by a mine blast fling chunks this much faster
@@ -2463,7 +2462,6 @@ fn detonate(
             if c.distance_squared(mt.translation.truncate()) < rr * rr {
                 burst(&mut commands, mt.translation.truncate(), mine_color(), 18, 300.0, &mut rng);
                 commands.entity(me).despawn();
-                score.0 += MINE_SCORE;
                 stats.mines += 1; // your blast chain popped it — player-credited
             }
         }
@@ -3243,7 +3241,6 @@ fn collisions(
                 dead_m.insert(me);
                 commands.entity(be).despawn();
                 commands.entity(me).despawn();
-                score.0 += MINE_SCORE;
                 stats.mines += 1; // shot it down
                 let mp = mt.translation.truncate();
                 burst(&mut commands, mp, mine_color(), 24, 320.0, &mut rng);
@@ -4696,7 +4693,6 @@ fn chain_update(
             if seg_dist2(mp, a, b) < rr * rr {
                 dead.insert(me);
                 commands.entity(me).despawn();
-                score.0 += MINE_SCORE;
                 stats.mines += 1; // the chain beam sheared it
                 burst(&mut commands, mp, mine_color(), 20, 320.0, &mut rng);
                 sfx.write(SoundFx::Mine);
@@ -4898,7 +4894,6 @@ fn black_hole_update(
         for (me, mt, mut mv) in &mut mines {
             let mp = mt.translation.truncate();
             if mp.distance(hp) < WARP_CONSUME_R + MINE_R {
-                score.0 += MINE_SCORE;
                 if let Some(s) = stats.as_mut() {
                     s.mines += 1; // your warp swallowed it — player-credited
                 }
