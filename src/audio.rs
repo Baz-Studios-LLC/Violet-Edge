@@ -800,6 +800,15 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // dev TOOL: renders the FULL tracks (for reference handoffs, e.g. music-gen prompting).
+              // Run: cargo test render_full_tracks -- --ignored
+    fn render_full_tracks() {
+        std::fs::write("target/violet-edge-main-clean.wav", main_track_wav()).unwrap();
+        std::fs::write("target/violet-edge-boss.wav", boss_track_wav()).unwrap();
+        std::fs::write("target/violet-edge-gameover.wav", gameover_track_wav()).unwrap();
+    }
+
+    #[test]
     fn corruption_tiers_differ_and_stay_valid() {
         // every tier is a real WAV, and the corruption is CONTENT, not just mastering: tier 1
         // already differs (wobble + tritone drone), and full grit differs from both
