@@ -53,7 +53,7 @@ const MASS_POWER: i32 = 3;
 const MASS_BOSS_POWER: i32 = 2;
 
 const GRID_CELL: f32 = 52.0;
-const WAVE_SECS: f32 = 120.0; // 2-minute waves — survive the timer to advance (was 180; shortened so reaching wave 15 is achievable in one sitting)
+const WAVE_SECS: f32 = 60.0; // 1-minute waves — survive the timer to advance. 2026-07-30: cut from 120 for an OLD-SCHOOL ARCADE run length (~35-40 min full clear with the heavier bosses, vs ~an hour before); the pressure is constant, the commitment isn't
 const POP_BASE: i32 = 5; // asteroids on screen = POP_BASE + wave...
 const POP_CAP: i32 = 18; // ...capped so the field never becomes an unavoidable wall
 const SLINGER_WAVE_ROCKS: i32 = 6; // sparse field on the Slinger wave — it spawns its own cannonballs and
@@ -149,7 +149,7 @@ const ENEMY_SPAWN_INTERVAL: f32 = 3.0;
 // rotating orbital shield (its "arms") and hurls the smallest held rocks at the ship.
 const BOSS_WAVE_INTERVAL: i32 = 5; // waves 5, 10, 15, … are boss waves
 const BOSS_R: f32 = 38.0;
-const BOSS_HP: i32 = 26; // core hits to kill (the shield blocks most shots) — base of the ascending boss-HP ramp
+const BOSS_HP: i32 = 50; // core hits to kill (the shield blocks most shots) — base of the ascending boss-HP ramp (2026-07-30 pass: whole ramp ~doubled, bosses were burning down too fast)
 const BOSS_ARMS: usize = 6; // asteroids it can hold at once
 const BOSS_ORBIT_R: f32 = 132.0; // arm length — how far the shield orbits
 const BOSS_SPIN: f32 = 0.85; // rad/s shield rotation
@@ -170,7 +170,7 @@ const BOSS_CAMEO_SECS: f32 = 10.0; // boss drifts by in the background this long
 // green (dense) rocks, so a grabbed round takes several hits to break — you can't just spam it away;
 // dodge the fast shots and chip its exposed core. Grabs refill from the field (top_up), so it never
 // runs dry. Drops the Drone (wired when the pickup is built).
-const SLINGER_HP: i32 = 40; // core hits to kill (no shield — survive the barrage while you chip it). Ascending ramp: > Glutton
+const SLINGER_HP: i32 = 85; // core hits to kill (no shield — survive the barrage while you chip it). Ascending ramp: > Glutton; biggest bump of the 2026-07-30 pass because its core is exposed the WHOLE fight (it was the most burnable)
 const SLINGER_R: f32 = 40.0; // a big ship — a decent target
 const SLINGER_SPEED: f32 = 155.0; // hover reposition speed (stays high, mirroring the ship's x)
 const SLINGER_ENTER_SPEED: f32 = 340.0; // glide-in from the top
@@ -184,7 +184,7 @@ const SLINGER_DEATH_SECS: f32 = 2.2; // slow death animation before it despawns
 // The Detonator (boss 4, wave 20): ARMORED except while it primes a rock — that channel is your only
 // damage window. It halts, beams a nearby rock, and when the channel completes that rock becomes a live
 // bomb (a `Detonating` rock on a fuse). Drops the Warhead-rounds powerup.
-const DETONATOR_HP: i32 = 46; // core hits — kept modest for its size in the ramp because it's landable only during priming windows
+const DETONATOR_HP: i32 = 72; // core hits — still the smallest bump of the ramp because it's landable only during priming windows (doubling here would double the whole fight's length)
 const DETONATOR_R: f32 = 42.0;
 const DETONATOR_ENTER_SPEED: f32 = 320.0; // glide-in from the top
 const DETONATOR_INTRO: f32 = 1.2; // invulnerable power-up after entering
@@ -203,7 +203,7 @@ const RED_ABSORB_EVERY: f32 = 2.6; // s between absorptions (also a fresh/child 
 // The Pulsar (boss 5, wave 25): invulnerable while LIT (its pulse beat), vulnerable while DARK, and it
 // periodically emits a shockwave that FLINGS every rock + the ship outward. Counter: shoot it on the
 // dark beat; don't get pinned to a wall by the shove. Reuses `pulser_lit` (the beat) + `Shockwave`.
-const PULSAR_HP: i32 = 52; // kept modest for its size because it's landable only on the DARK beat
+const PULSAR_HP: i32 = 90; // scaled with the beat in mind — it's landable only on the DARK half, so this plays like ~half the number
 const PULSAR_R: f32 = 40.0;
 const PULSAR_ENTER_SPEED: f32 = 320.0; // glide-in from the top
 const PULSAR_INTRO: f32 = 1.2;         // invulnerable power-up after entering
@@ -220,7 +220,7 @@ const PULSAR_DEATH_SECS: f32 = 2.2;
 // VULNERABLE for a short window right after it fires the ray (it has to SURFACE to attack; that's your only
 // opening). PHASE 2 POSSESSES a homing rock it hides in (break the vessel to rip it out); PHASE 3 it turns solid and CHARGES,
 // leaving a lethal trail. It ROAMS, holding still while a beam is live or while surfaced. Clear phase 3 → WIN.
-const PHANTOM_PHASE_HP: i32 = 30; // health PER PHASE (refills on each reset) — 3 phases; deplete → reset → next
+const PHANTOM_PHASE_HP: i32 = 50; // health PER PHASE (refills on each reset) — 3 phases; deplete → reset → next (150 total: the finale should be EARNED)
 const PHANTOM_R: f32 = 46.0;      // a big, imposing core (the finale centrepiece)
 const PHANTOM_ENTER_SPEED: f32 = 300.0;
 const PHANTOM_INTRO: f32 = 1.4;         // invulnerable power-up after entering
@@ -259,7 +259,7 @@ const PHANTOM_SHARD_RAMP: f32 = 2.1;        // seconds for the fleeing core to r
 const SHIP_DEPART_SPEED: f32 = 460.0;       // the hero's ship warps off east after the shard has left
 
 // Boss 2 — the devourer (wave 10): a red seeker that eats rocks to grow + heal.
-const DEVOURER_HP: i32 = 34; // core HP; it STARTS full and HEALS toward it, so it plays tankier than this raw number (ramp: > Warden). Reduced from 70 to fit the ascending ladder
+const DEVOURER_HP: i32 = 60; // core HP; it STARTS full and HEALS toward it, so it plays tankier than this raw number (ramp: > Warden)
 const DEVOURER_HP_MAX: i32 = DEVOURER_HP; // heal cap == starting HP: eating heals DAMAGE back toward full, never past it (it grows in SIZE, not in max HP)
 const DEVOURER_BASE_R: f32 = 42.0; // fully-shrunk floor (was 22 — too small to keep hitting once you clawed it down)
 const DEVOURER_MAX_R: f32 = 200.0; // fully gorged — swells huge, then OVERLOADS and bursts (see devourer_update)
@@ -304,7 +304,7 @@ const FRAGMENT_GRACE: f32 = 1.8; // s a freshly-broken fragment is protected fro
 const GOLD_GRACE: f32 = 6.0; // gold fragments get a longer window (recycle, not culled) — a fair chance to catch them before one can drift off and forfeit the life
 const ORANGE_BLAST_R: f32 = 250.0; // explosive-asteroid kill/chain radius (+ the victim's own radius). Was 150 — too small on big screens, so it looked huge (the particle burst throws to ~440) but barely caught neighbours. Now the reach matches the visual.
 const WARHEAD_BLAST_R: f32 = 110.0; // the Warhead's blast radius — REAL AoE since the on-impact rework: everything inside dies with the struck rock (the ring Shockwave draws exactly this reach)
-const WARHEAD_COOLDOWN: f32 = 0.28; // s between Warhead rounds — slower than standard, faster than mass (it's a piercing destroy-shot)
+const WARHEAD_COOLDOWN: f32 = 1.3; // s between Warhead rounds — VERY slow on purpose: since the on-impact AoE rework each round clears a 110px disk, so it's a toggled siege weapon (Q-cycle), not a machine gun. Aim, fire, wait.
 const ORANGE_FUSE: f32 = 0.09; // brief lit flash after a lethal hit before it detonates (a visible "pop")
 
 // Pulser (waves 16+): a rock that pulses LIT (bright white, invulnerable) ↔ DARK (dim, vulnerable) on
@@ -340,14 +340,14 @@ const DESIGN_HALF_H: f32 = DESIGN_H * 0.5;
 const START_LIVES: i32 = 3;
 const LIFE_CAP: i32 = START_LIVES; // gold restores a LOST life only — never above the starting count
 // The gold 1UP rock drifts in at a randomized time during play (a countdown), not at wave starts.
-const GOLD_INITIAL_DELAY: f32 = 45.0; // grace before the first gold rock can appear in a run
+const GOLD_INITIAL_DELAY: f32 = 30.0; // grace before the first gold rock can appear in a run (scaled with the 60s waves)
 // Gap from when a gold rock APPEARS to the earliest the next one may. WAVE-DEPENDENT: short (frequent
 // life rocks) through the early game — a spare life is most useful then — tapering LONG (rare) by the
 // wave-30 finale. A fresh random value in the wave's [min..max] is rolled on each spawn.
-const GOLD_GAP_EARLY_MIN: f32 = 120.0; // waves ≤ GOLD_TAPER_START: ~one per (3-min) wave, sometimes two
-const GOLD_GAP_EARLY_MAX: f32 = 185.0;
-const GOLD_GAP_LATE_MIN: f32 = 265.0; // by wave 30: back to rare (~4-6 min, the old cadence)
-const GOLD_GAP_LATE_MAX: f32 = 360.0;
+const GOLD_GAP_EARLY_MIN: f32 = 70.0; // waves ≤ GOLD_TAPER_START: ~one per wave-and-a-bit (halved with the 60s waves so lives-per-WAVE stays what it was)
+const GOLD_GAP_EARLY_MAX: f32 = 110.0;
+const GOLD_GAP_LATE_MIN: f32 = 160.0; // by wave 30: rare (~2.5-3.5 min — same waves-between-golds as the old 120s tuning)
+const GOLD_GAP_LATE_MAX: f32 = 220.0;
 const GOLD_TAPER_START: i32 = 16; // gap stays "early/frequent" through this wave…
 const GOLD_TAPER_END: i32 = 30; // …then ramps linearly to "late/rare" by this wave
 const WAVE_BANNER_SECS: f32 = 2.4; // how long the big "WAVE n" flash lingers

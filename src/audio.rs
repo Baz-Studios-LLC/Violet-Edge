@@ -96,17 +96,25 @@ fn clang(t: f32, f: f32) -> f32 {
     let p = |m: f32, g: f32| (TAU * f * m * t).sin() * g;
     (p(1.0, 0.5) + p(2.41, 0.3) + p(3.76, 0.2) + p(5.5, 0.1)) * (1.0 - (-t * 400.0).exp()) * (-t * 9.0).exp()
 }
-// The open VORTEX — the black hole's own voice for its life: a deepening drone under a band-swept
-// swirl whose churn ACCELERATES as it feeds, collapsing into a deep thump as the hole snaps shut.
+// The open VORTEX — the black hole's own voice for its life. v2: the first cut pulsed the noise
+// with a 2-9 Hz tremolo and read as "a dog sniffing" (user) — so NO rhythmic pulsing at all now.
+// A CONTINUOUS suction: filtered noise whose cutoff sweeps DOWN (a deepening roar), a falling air
+// whistle, a low drone — one unbroken inhale, collapsing into the deep thump as the hole shuts.
 // Rendered to match WARP_HOLE_LIFE (2.6s) + a short tail, so one shot covers the hole exactly.
 pub fn vortex_sfx_wav() -> Vec<u8> {
-    render_sfx(2.9, |t, i| {
+    let mut lp = 0.0f32;
+    render_sfx(2.9, move |t, i| {
         let p = (t / 2.6).min(1.0);
-        let f = 95.0 - 40.0 * p; // the drone deepens as it feeds
-        let drone = (TAU * f * t).sin() * 0.35 * (1.0 - (-t * 6.0).exp());
-        let churn = 0.5 + 0.5 * (TAU * (2.0 + 7.0 * p) * t).sin(); // swirl tremolo, 2 → 9 Hz
-        let swirl = (noise(i) - noise(i + 9)) * 0.5 * 0.32 * churn * (1.0 - (-t * 4.0).exp());
-        let body_fade = 1.0 - ((t - 2.45) / 0.45).clamp(0.0, 1.0);
+        let swell = (t / 0.35).min(1.0) * (1.0 - ((t - 2.35) / 0.55).clamp(0.0, 1.0));
+        // suction roar: one-pole lowpassed noise, cutoff sweeping 2800 → 350 Hz (deepening, never pulsing)
+        let fc = 2800.0 * (350.0f32 / 2800.0).powf(p);
+        lp += (1.0 - (-TAU * fc / SR).exp()) * (noise(i) - lp);
+        let roar = lp * 0.55 * swell;
+        // falling air whistle — the "rushing in" read, fading as the roar takes over
+        let wf = 1400.0 * (300.0f32 / 1400.0).powf(p);
+        let whistle = (TAU * wf * t).sin() * 0.06 * swell * (1.0 - p * 0.6);
+        // low drone deepening 90 → 50 Hz under it all
+        let drone = (TAU * (90.0 - 40.0 * p) * t).sin() * 0.3 * swell;
         // the collapse: a fast swell into a deep falling thump right as the hole closes
         let coll = if t > 2.35 {
             let k = ((t - 2.35) / 0.25).min(1.0);
@@ -114,7 +122,7 @@ pub fn vortex_sfx_wav() -> Vec<u8> {
         } else {
             0.0
         };
-        (drone + swirl) * body_fade + coll
+        roar + whistle + drone + coll
     })
 }
 
