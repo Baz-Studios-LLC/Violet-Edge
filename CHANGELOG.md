@@ -5,6 +5,12 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
+- **The warp hole has a voice.** The vortex itself now sounds — a deepening drone under a swirl
+  that churns faster as it feeds, collapsing into a deep thump exactly as the hole snaps shut
+  (rendered to the hole's 2.6s life; the launch whoosh is unchanged and layers over it).
+- **Small rocks trimmed** (radius 30 → 26). The hittability bump overshot — the smallest debris was
+  eating too much screen. 26 keeps them an easy target while reading as debris again. (Balance
+  audit follow-ups tracked separately.)
 - **NEW GAME+.** Beat the game once (ever) and a `NEW GAME+` button appears on the menu — forever.
   It's essentially a new game: same fresh start, nothing carried over, every achievement still
   counts. What changes is the Belt: a denser field from wave 1 (+6 rocks over the whole curve,

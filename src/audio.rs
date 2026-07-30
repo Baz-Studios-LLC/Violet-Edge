@@ -96,6 +96,28 @@ fn clang(t: f32, f: f32) -> f32 {
     let p = |m: f32, g: f32| (TAU * f * m * t).sin() * g;
     (p(1.0, 0.5) + p(2.41, 0.3) + p(3.76, 0.2) + p(5.5, 0.1)) * (1.0 - (-t * 400.0).exp()) * (-t * 9.0).exp()
 }
+// The open VORTEX — the black hole's own voice for its life: a deepening drone under a band-swept
+// swirl whose churn ACCELERATES as it feeds, collapsing into a deep thump as the hole snaps shut.
+// Rendered to match WARP_HOLE_LIFE (2.6s) + a short tail, so one shot covers the hole exactly.
+pub fn vortex_sfx_wav() -> Vec<u8> {
+    render_sfx(2.9, |t, i| {
+        let p = (t / 2.6).min(1.0);
+        let f = 95.0 - 40.0 * p; // the drone deepens as it feeds
+        let drone = (TAU * f * t).sin() * 0.35 * (1.0 - (-t * 6.0).exp());
+        let churn = 0.5 + 0.5 * (TAU * (2.0 + 7.0 * p) * t).sin(); // swirl tremolo, 2 → 9 Hz
+        let swirl = (noise(i) - noise(i + 9)) * 0.5 * 0.32 * churn * (1.0 - (-t * 4.0).exp());
+        let body_fade = 1.0 - ((t - 2.45) / 0.45).clamp(0.0, 1.0);
+        // the collapse: a fast swell into a deep falling thump right as the hole closes
+        let coll = if t > 2.35 {
+            let k = ((t - 2.35) / 0.25).min(1.0);
+            (TAU * (48.0 - 20.0 * k) * t).sin() * k * 0.8 * (1.0 - ((t - 2.6) / 0.3).clamp(0.0, 1.0))
+        } else {
+            0.0
+        };
+        (drone + swirl) * body_fade + coll
+    })
+}
+
 // ACID SQUELCH — a saw whose pitch DROPS into each note (303-ish bite). The mid-acts' lead voice.
 fn acid(t: f32, f: f32) -> f32 {
     let sweep = 1.0 + 0.35 * (-t * 28.0).exp(); // fast pitch fall into the note
@@ -765,6 +787,8 @@ mod tests {
             buf.truncate((secs * SR) as usize);
             std::fs::write(format!("target/tier{k}_preview.wav"), master(&buf)).unwrap();
         }
+        // one-shot sfx worth auditioning ride along
+        std::fs::write("target/vortex_preview.wav", vortex_sfx_wav()).unwrap();
     }
 
     #[test]
@@ -815,6 +839,7 @@ mod tests {
             nova_up_sfx_wav(),
             log_sfx_wav(),
             boss_down_sfx_wav(),
+            vortex_sfx_wav(),
         ] {
             assert_eq!(&wav[0..4], b"RIFF", "sfx starts with a RIFF header");
             assert_eq!(&wav[8..12], b"WAVE", "sfx is a WAVE file");

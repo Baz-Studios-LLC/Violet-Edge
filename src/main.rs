@@ -303,7 +303,7 @@ const MIN_DRIFT: f32 = 30.0; // px/s — rocks never fully stop (elastic hits ca
 const FRAGMENT_GRACE: f32 = 1.8; // s a freshly-broken fragment is protected from off-screen culling
 const GOLD_GRACE: f32 = 6.0; // gold fragments get a longer window (recycle, not culled) — a fair chance to catch them before one can drift off and forfeit the life
 const ORANGE_BLAST_R: f32 = 250.0; // explosive-asteroid kill/chain radius (+ the victim's own radius). Was 150 — too small on big screens, so it looked huge (the particle burst throws to ~440) but barely caught neighbours. Now the reach matches the visual.
-const WARHEAD_BLAST_R: f32 = 110.0; // the Warhead's cosmetic blast RING (a Shockwave), LOCAL and non-damaging — the kill is the pierce
+const WARHEAD_BLAST_R: f32 = 110.0; // the Warhead's blast radius — REAL AoE since the on-impact rework: everything inside dies with the struck rock (the ring Shockwave draws exactly this reach)
 const WARHEAD_COOLDOWN: f32 = 0.28; // s between Warhead rounds — slower than standard, faster than mass (it's a piercing destroy-shot)
 const ORANGE_FUSE: f32 = 0.09; // brief lit flash after a lethal hit before it detonates (a visible "pop")
 
@@ -523,7 +523,7 @@ fn asteroid_radius(size: u8) -> f32 {
     match size {
         3 => 88.0, // LARGE
         2 => 46.0, // MID
-        _ => 30.0, // SMALL — bumped from 22 so the smallest rocks are actually hittable (still a clear step below MID)
+        _ => 26.0, // SMALL — was 22 (unhittable) then 30 (ate too much screen); 26 is the playtested middle: still an easy target, visibly debris again
     }
 }
 fn body_mass(r: f32) -> f32 {
@@ -3854,6 +3854,7 @@ fn warp_missile_update(
     mut commands: Commands,
     time: Res<Time>,
     arena: Res<Arena>,
+    mut sfx: EventWriter<SoundFx>,
     mut q: Query<(Entity, &Transform, &Velocity, &mut WarpMissile)>,
     rocks: Query<(&Transform, &Asteroid)>, // gold INCLUDED: warping the 1UP is a valid player action — the
     // missile detonates on it and the hole consumes the lineage, so gold_rush_update grants the life
@@ -3877,6 +3878,7 @@ fn warp_missile_update(
             let c = Vec2::new(p.x.clamp(-h.x + margin, h.x - margin), p.y.clamp(-h.y + margin, h.y - margin));
             commands.entity(e).despawn();
             commands.spawn((BlackHole { life: WARP_HOLE_LIFE, spin: 0.0 }, Transform::from_xyz(c.x, c.y, 0.0)));
+            sfx.write(SoundFx::Vortex); // the hole's own voice — a 2.6s churn matched to its life, ending in the collapse thump
         }
     }
 }
@@ -8878,6 +8880,7 @@ enum SoundFx {
     NovaPop,   // the Nova Shield eating a hit (glassy shatter)
     NovaUp,    // the Nova Shield flickering back online (soft rising shimmer)
     BossDown,  // a boss core detonating — the biggest single kill in the game
+    Vortex,    // the warp hole OPEN — its 2.6s feeding churn + the collapse thump (launch is `Warp`)
 }
 
 // ─────────────────────────────── juice (hit-stop + screenshake) ───────
@@ -8959,6 +8962,7 @@ struct SfxBank {
     toggle: Handle<AudioSource>, // standard ↔ mass shot switch
     log: Handle<AudioSource>, // Pilot Log transmission-received blip
     boss_down: Handle<AudioSource>, // boss-core detonation boom
+    vortex: Handle<AudioSource>, // the open warp hole's churn (matched to WARP_HOLE_LIFE)
 }
 
 fn start_sfx(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
@@ -8978,6 +8982,7 @@ fn start_sfx(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
         toggle: sources.add(AudioSource { bytes: audio::toggle_sfx_wav().into() }),
         log: sources.add(AudioSource { bytes: audio::log_sfx_wav().into() }),
         boss_down: sources.add(AudioSource { bytes: audio::boss_down_sfx_wav().into() }),
+        vortex: sources.add(AudioSource { bytes: audio::vortex_sfx_wav().into() }),
     });
 }
 
@@ -8998,8 +9003,8 @@ fn play_sfx(mut commands: Commands, bank: Option<Res<SfxBank>>, mut events: Even
         events.clear();
         return;
     };
-    let (mut fire, mut mine, mut death, mut eshot, mut edie, mut warp, mut toggle, mut haunt, mut npop, mut nup, mut bdown) =
-        (false, false, false, false, false, false, false, false, false, false, false);
+    let (mut fire, mut mine, mut death, mut eshot, mut edie, mut warp, mut toggle, mut haunt, mut npop, mut nup, mut bdown, mut vortex) =
+        (false, false, false, false, false, false, false, false, false, false, false, false);
     let mut brk: Option<u8> = None; // deepest (largest) rock that broke this frame
     for e in events.read() {
         match e {
@@ -9015,6 +9020,7 @@ fn play_sfx(mut commands: Commands, bank: Option<Res<SfxBank>>, mut events: Even
             SoundFx::NovaPop => npop = true,
             SoundFx::NovaUp => nup = true,
             SoundFx::BossDown => bdown = true,
+            SoundFx::Vortex => vortex = true,
         }
     }
     if fire {
@@ -9055,6 +9061,9 @@ fn play_sfx(mut commands: Commands, bank: Option<Res<SfxBank>>, mut events: Even
     }
     if bdown {
         one_shot(&mut commands, bank.boss_down.clone(), 0.75); // the biggest kill in the game, heard as one
+    }
+    if vortex {
+        one_shot(&mut commands, bank.vortex.clone(), 0.5); // the hole's churn — present under the field, not over it
     }
 }
 
@@ -11213,6 +11222,7 @@ mod tests {
     fn warp_fired_inward_from_an_edge_keeps_flying() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
+        app.add_event::<SoundFx>();
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
         // launched from just inside the RIGHT edge, heading INWARD (left) — must NOT pop at the launch edge
         app.world_mut().spawn((
@@ -11230,6 +11240,7 @@ mod tests {
     fn warp_detonates_at_the_wall_it_heads_toward() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
+        app.add_event::<SoundFx>();
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
         // near the right edge, heading TOWARD it → opens the hole there
         app.world_mut().spawn((
