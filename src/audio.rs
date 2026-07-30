@@ -374,50 +374,34 @@ pub fn boss_down_sfx_wav() -> Vec<u8> {
     })
 }
 
-/// The GAME OVER track — the anti-club: ~70 BPM, sparse and somber where the main track is a
-/// driving rave and the boss a pound. A funeral-pulse kick on the downbeat, a slow Am↔F pad bed,
-/// and a lonely descending glass-tone line (one note per bar, falling through the minor scale).
-/// An 8-bar seamless loop (~27s) that can sit under the Game Over screen without grating.
+/// The GAME OVER track, v2 — the first cut was fairly called "the main track but slower" (same saw
+/// pads + a kick at 70 BPM). This is a different INSTRUMENT entirely: **no drums, no saws** — a
+/// two-note tolling BELL (inharmonic partials, long decay, A→E knell every 2.4s), a breathing sub
+/// drone, and a barely-there cold wind. Nothing in it appears anywhere else in the score, so a run
+/// ending sounds like its own world. A 19.2s seamless loop (drone and LFO land on whole periods).
 pub fn gameover_track_wav() -> Vec<u8> {
-    let bpm = 70.0;
-    let bars = 8usize;
-    let step = 60.0 / bpm / 4.0;
-    let steps = bars * 16;
-    let ssamp = step * SR;
-    let n = (steps as f32 * ssamp).round() as usize;
+    let toll = 2.4f32; // seconds between strikes — a funeral pace, not a tempo
+    let tolls = 8usize;
+    let dur = toll * tolls as f32; // 19.2 s; 55 Hz × 19.2 s = 1056 whole periods → silent seam
+    let n = (dur * SR) as usize;
     let mut buf = vec![0f32; n];
 
-    // Am ↔ F, one chord per 2-bar phrase, an octave DOWN from the main track's roots (gravity)
-    let prog = [55.00f32, 43.65];
-    // the dirge line: one note per bar, descending A-minor with the darkening ♭6
-    let line = [12i32, 8, 7, 3, 12, 8, 5, 0];
-
-    for s in 0..steps {
-        let start = (s as f32 * ssamp) as usize;
-        let bar = s / 16;
-        let bp = s % 16;
-        let root = prog[(bar / 2) % 2];
-
-        // funeral pulse: a soft kick on each downbeat only — a heartbeat, not a beat
-        if bp == 0 {
-            add_voice(&mut buf, start, 0.34, 0.4, |t, _| kick(t));
-        }
-        // the pad bed: root + minor third + fifth, held across the 2-bar phrase
-        if s.is_multiple_of(32) {
-            let base = root * 2.0;
-            for semi in [0.0f32, 3.0, 7.0] {
-                let f = base * 2f32.powf(semi / 12.0);
-                add_voice(&mut buf, start, step * 32.0, 0.6, move |t, _| pad_voice(t, f));
-            }
-        }
-        // the lonely line: one mellow glass tone per bar, on the downbeat
-        if bp == 0 {
-            let f = root * 4.0 * 2f32.powf(line[bar % 8] as f32 / 12.0);
-            add_voice(&mut buf, start, step * 12.0, 0.5, move |t, _| {
-                let env = (1.0 - (-t * 9.0).exp()) * (-t * 1.3).exp(); // soft attack, long sigh
-                ((TAU * f * t).sin() + 0.25 * (TAU * f * 2.0 * t).sin()) * 0.2 * env
-            });
-        }
+    // the BELL: hum/prime/tierce-ish inharmonic partials with long, uneven decays; strikes
+    // alternate A3 → E3 — a two-note knell, the answer always falling
+    for k in 0..tolls {
+        let start = (k as f32 * toll * SR) as usize;
+        let root = if k % 2 == 0 { 220.0f32 } else { 164.81 };
+        add_voice(&mut buf, start, toll * 1.9, 0.55, move |t, _| {
+            let p = |m: f32, g: f32, d: f32| (TAU * root * m * t).sin() * g * (-t * d).exp();
+            (p(0.5, 0.5, 0.9) + p(1.0, 0.35, 1.1) + p(2.76, 0.18, 1.8) + p(5.4, 0.08, 2.6)) * (1.0 - (-t * 300.0).exp())
+        });
+    }
+    // breathing sub drone (two whole LFO cycles per loop) + a whisper of cold wind
+    for (i, out) in buf.iter_mut().enumerate() {
+        let t = i as f32 / SR;
+        let breathe = 0.55 + 0.45 * (TAU * (2.0 / dur) * t).sin();
+        *out += (TAU * 55.0 * t).sin() * 0.16 * breathe;
+        *out += (noise(i) - noise(i + 5)) * 0.5 * 0.015;
     }
 
     master(&buf)

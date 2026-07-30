@@ -21,9 +21,10 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
   arrangement throughout). The menu and the post-win screens play the clean mix: beating the
   Phantom literally hands the music back. The lore does the talking — the deeper you go, the
   wronger the Belt sounds.
-- **Game Over has its own music.** A somber ~70 BPM dirge — funeral-pulse kick, slow Am↔F pad bed,
-  a lonely descending glass-tone line — looping under the Game Over screen. A run ending now
-  *sounds* different from playing one (it used to be silence). Synthesized like every other track.
+- **Game Over has its own music.** A tolling two-note bell knell (inharmonic partials, long
+  decays, one strike every 2.4s) over a breathing sub drone and a whisper of cold wind — no drums,
+  no saws, nothing shared with the rest of the score. A run ending now *sounds* like its own world
+  (it used to be silence). Synthesized like every other track.
 - **Light ribbon extended again** (46 → 72 points, ~1.2s of motion) — the Tron trail reads as a
   real presence behind the ship now.
 - **Baz Studios boot splash.** The game now opens on the studio card — black screen, the BAZ
