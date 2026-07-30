@@ -519,6 +519,31 @@ fn mine_target(level: i32, asteroids: i32) -> i32 {
     raw.min((asteroids as f32 * MINE_MAX_FRACTION) as i32).min(MINE_HARD_CAP)
 }
 
+// Split economy (2026-07-31, user design): breaking a rock no longer guarantees two children.
+// LARGE sheds 1-2 mediums; MEDIUM either shatters into 2 smalls or dies outright. Fewer smalls
+// crowd the screen over a lineage (avg ~4.4 entities per large, was always 7), and every break
+// has variance. GOLD is exempt (the 1UP hunt's lineage length is tuned economy) and so is RED
+// (splitting-and-regrowing IS its identity); CLUSTER has its own shatter rule.
+const SPLIT_LARGE_TWO_CHANCE: f64 = 0.6; // large → 2 mediums, else 1
+const SPLIT_MEDIUM_CHANCE: f64 = 0.55; // medium → 2 smalls, else destroyed clean
+
+// How many children this break sheds (0 only ever for a medium dying clean).
+fn split_children(size: u8, gold: bool, red: bool, rng: &mut impl Rng) -> usize {
+    if size <= 1 {
+        return 0; // smallest rocks always die clean
+    }
+    if gold || red {
+        return 2; // exempt lineages keep the guaranteed split (see the block comment above)
+    }
+    if size >= 3 {
+        if rng.gen_bool(SPLIT_LARGE_TWO_CHANCE) { 2 } else { 1 }
+    } else if rng.gen_bool(SPLIT_MEDIUM_CHANCE) {
+        2
+    } else {
+        0
+    }
+}
+
 fn asteroid_radius(size: u8) -> f32 {
     match size {
         3 => 88.0, // LARGE
@@ -2314,16 +2339,18 @@ fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score
         return;
     }
     if chunks && size > 1 {
-        // Split into two chunks that fly APART along a random axis. Each is spawned
-        // already clear of the other (offset past their combined radii) so the pair
-        // never overlaps — an overlapping spawn lets the collision resolver cancel
-        // their motion and leaves them oozing apart at the break point instead of
-        // shooting off. Headings get a little jitter so it isn't a rigid mirror.
-        // Children inherit density (a dense rock breaks into dense chunks).
+        // Split into chunks that fly APART along a random axis — HOW MANY is the split economy's
+        // roll (`split_children`): a large sheds 1-2 mediums, a medium sheds 2 smalls or nothing
+        // (gold/red lineages keep the guaranteed pair). Each chunk is spawned already clear of its
+        // sibling (offset past their combined radii) so the pair never overlaps — an overlapping
+        // spawn lets the collision resolver cancel their motion and leaves them oozing apart at
+        // the break point instead of shooting off. Headings get a little jitter so it isn't a
+        // rigid mirror. Children inherit density (a dense rock breaks into dense chunks).
+        let children = split_children(size, gold, red, rng);
         let axis = rng.gen_range(0.0..TAU);
         let out = Vec2::from_angle(axis);
         let offset = asteroid_radius(size - 1) + 3.0;
-        for side in [1.0f32, -1.0] {
+        for &side in [1.0f32, -1.0].iter().take(children) {
             let spd = rng.gen_range(60.0..150.0) * chunk_mult;
             let vel = Vec2::from_angle(axis + rng.gen_range(-0.35..0.35)) * (side * spd);
             let child = spawn_asteroid(commands, pos + out * (side * offset), size - 1, vel, rng, dense);
@@ -9464,9 +9491,11 @@ mod tests {
         app.insert_resource(RunFlags::default());
         app.insert_resource(Score(0));
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
-        // a dense size-2 rock = 2 hp: the first hit only cracks it
+        // a dense size-2 rock = 2 hp: the first hit only cracks it. GOLD so the final break is a
+        // GUARANTEED pair (the split economy rolls otherwise) — this test is about chip + inheritance.
         app.world_mut().spawn((
             Asteroid { size: 2, verts: vec![Vec2::X * 40.0], rot: 0.0, spin: 0.0, dense: true, hp: 2 },
+            Gold,
             Velocity(Vec2::ZERO),
             Transform::from_xyz(0.0, 0.0, 0.0),
         ));
@@ -9496,9 +9525,10 @@ mod tests {
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());
         app.insert_resource(Score(0));
-        // a size-2 rock with a bullet sitting on it
+        // a size-2 GOLD rock (guaranteed pair — this test is about the PAIR's geometry) with a bullet on it
         app.world_mut().spawn((
             Asteroid { size: 2, verts: vec![Vec2::X * 40.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+            Gold,
             Velocity(Vec2::ZERO),
             Transform::from_xyz(0.0, 0.0, 0.0),
         ));
@@ -9515,7 +9545,7 @@ mod tests {
             .iter(app.world())
             .map(|(t, v, _)| (t.translation.truncate(), v.0))
             .collect();
-        assert_eq!(chunks.len(), 2, "a size-2 rock splits into two chunks");
+        assert_eq!(chunks.len(), 2, "a split pair spawns two chunks");
         // they must spawn clear of each other, not stacked at the break point
         let sep = chunks[0].0.distance(chunks[1].0);
         assert!(sep > asteroid_radius(1) * 2.0, "chunks must spawn clear of each other, got separation {sep}");
@@ -10913,7 +10943,8 @@ mod tests {
         app.add_systems(Update, collisions);
         app.update();
         assert_eq!(app.world_mut().query::<&Shockwave>().iter(app.world()).count(), 1, "the kill leaves one pop ring");
-        assert_eq!(app.world_mut().query::<&Asteroid>().iter(app.world()).count(), 2, "and the usual two children");
+        let kids = app.world_mut().query::<&Asteroid>().iter(app.world()).count();
+        assert!(kids == 0 || kids == 2, "a medium sheds 2 smalls or dies clean (split economy), got {kids}");
     }
 
     #[test]
@@ -11463,6 +11494,34 @@ mod tests {
     }
 
     #[test]
+    fn the_split_economy_rolls_as_designed() {
+        // large → 1 or 2 mediums (never 0); medium → 2 smalls or nothing (never 1); smalls die
+        // clean; gold and red lineages always get the guaranteed pair (economy / identity exempt)
+        let mut rng = rand::thread_rng();
+        let n = 2000;
+        let (mut l1, mut l2, mut m0, mut m2) = (0, 0, 0, 0);
+        for _ in 0..n {
+            match split_children(3, false, false, &mut rng) {
+                1 => l1 += 1,
+                2 => l2 += 1,
+                k => panic!("a large shed {k} children"),
+            }
+            match split_children(2, false, false, &mut rng) {
+                0 => m0 += 1,
+                2 => m2 += 1,
+                k => panic!("a medium shed {k} children"),
+            }
+        }
+        assert!(l1 > 0 && l2 > 0, "large breaks vary between 1 and 2 mediums ({l1}/{l2})");
+        assert!(m0 > 0 && m2 > 0, "medium breaks vary between dying clean and 2 smalls ({m0}/{m2})");
+        assert_eq!(split_children(1, false, false, &mut rng), 0, "smalls always die clean");
+        for _ in 0..50 {
+            assert_eq!(split_children(2, true, false, &mut rng), 2, "GOLD keeps the guaranteed pair (hunt economy)");
+            assert_eq!(split_children(2, false, true, &mut rng), 2, "RED keeps the guaranteed pair (regrow identity)");
+        }
+    }
+
+    #[test]
     fn slinger_wave_keeps_a_sparse_field() {
         assert_eq!(population_target(15, false), SLINGER_WAVE_ROCKS, "the Slinger wave stays sparse (it makes its own ammo)");
         assert_eq!(population_target(14, false), POP_CAP, "the all-orange wave 14 keeps the full field");
@@ -11590,7 +11649,7 @@ mod tests {
         app.update();
         let rocks = app.world_mut().query::<&Asteroid>().iter(app.world()).count();
         let mines = app.world_mut().query::<&Mine>().iter(app.world()).count();
-        assert_eq!(rocks, 2, "the mine should shatter the size-2 rock into two size-1 chunks, got {rocks}");
+        assert!(rocks == 0 || rocks == 2, "the blasted medium sheds 2 smalls or dies clean (split economy), got {rocks}");
         assert_eq!(mines, 0, "the mine detonates on contact with the rock and despawns");
         assert_eq!(app.world().resource::<Run>().lives, 3, "no life is lost when a mine hits a rock");
     }
@@ -11990,7 +12049,10 @@ mod tests {
         app.add_systems(Update, collisions);
         app.update();
         let sizes: Vec<u8> = app.world_mut().query::<&Asteroid>().iter(app.world()).map(|a| a.size).collect();
-        assert_eq!(sizes, vec![2, 2], "a mass shot one-shots the dense rock (3 dmg vs 3 hp) and it splits into two size-2 chunks");
+        assert!(
+            (1..=2).contains(&sizes.len()) && sizes.iter().all(|&s| s == 2),
+            "a mass shot one-shots the dense rock (3 dmg vs 3 hp); the large sheds 1-2 mediums (split economy), got {sizes:?}"
+        );
     }
 
     #[test]
@@ -12759,7 +12821,8 @@ mod tests {
         app.world_mut().spawn((Asteroid { size: 2, verts: vec![Vec2::X * 46.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 30.0, 0.0)));
         app.add_systems(Update, chain_update);
         app.update();
-        assert_eq!(app.world_mut().query::<&Asteroid>().iter(app.world()).count(), 2, "the beam mows the size-2 rock into two size-1 chunks");
+        let kids = app.world_mut().query::<&Asteroid>().iter(app.world()).count();
+        assert!(kids == 0 || kids == 2, "the beam mows the size-2 rock down; the medium sheds 2 smalls or dies clean, got {kids}");
     }
 
     #[test]
@@ -12791,7 +12854,7 @@ mod tests {
         app.add_systems(Update, collisions);
         app.update();
         let rocks = app.world_mut().query::<&Asteroid>().iter(app.world()).count();
-        assert_eq!(rocks, 2, "the blast should shatter the size-2 rock into two size-1 chunks, got {rocks}");
+        assert!(rocks == 0 || rocks == 2, "the blast breaks the size-2 rock; the medium sheds 2 smalls or dies clean, got {rocks}");
         let mines = app.world_mut().query::<&Mine>().iter(app.world()).count();
         assert_eq!(mines, 0, "the mine detonates and despawns");
     }

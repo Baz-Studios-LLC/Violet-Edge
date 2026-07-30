@@ -5,6 +5,12 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
+- **The split economy** (user design): breaking a rock no longer guarantees two children. A large
+  sheds **1 or 2 mediums**; a medium either shatters into **2 smalls or dies outright**. A large's
+  lineage averages ~4.4 rocks instead of always 7 — small debris stops crowding the screen, and no
+  break is perfectly predictable anymore. Gold lineages and red rocks keep their guaranteed splits
+  (the 1UP hunt's length and red's regrow identity are tuned around them); clusters still shatter
+  their own way.
 - **THE BALANCE PASS — bosses earn their banners, runs fit an evening.**
   - **Boss HP roughly doubled across the ramp** (26/34/40/46/52 → 50/60/85/72/90): they were
     burning down too fast. Scaled per fight, not flatly — the Slinger (exposed core all fight)
