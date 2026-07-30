@@ -5,6 +5,22 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
+- **THE JUICE PASS — kills land now.** The feel layer the game was missing, all photosensitivity-safe
+  (freezes and smooth motion, never strobes):
+  - **Hit-stop**: the world freezes for a breath on the big moments — your death (0.12s), a boss
+    core detonating (0.14s), the Nova Shield eating a lethal hit (0.07s). Capped, never stacking.
+  - **Screenshake**: trauma-based, smooth layered sines (no jitter), a few px at most. Deaths and
+    boss kills slam; mine blasts rattle; a STREAK of big rocks stacks into a visible rumble while
+    single pops stay calm. Driven off the existing sound events — anything that sounds big feels big.
+  - **Kill pops**: every size-2+ rock death leaves a fast type-colored ring on every kill path
+    (bullet, chain, mine, warhead, blast). Small rocks skip it so the field never washes out.
+  - **Bosses finally SOUND like they die**: a deep falling-sub detonation boom on every boss kill
+    (they used to go down with particles only).
+- **The music corrupts as you descend.** After each boss, the main track comes back a tier
+  *wronger* — progressively driven, bit-crushed, and aliased (six tiers, one per act segment, same
+  arrangement throughout). The menu and the post-win screens play the clean mix: beating the
+  Phantom literally hands the music back. The lore does the talking — the deeper you go, the
+  wronger the Belt sounds.
 - **Game Over has its own music.** A somber ~70 BPM dirge — funeral-pulse kick, slow Am↔F pad bed,
   a lonely descending glass-tone line — looping under the Game Over screen. A run ending now
   *sounds* different from playing one (it used to be silence). Synthesized like every other track.

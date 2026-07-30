@@ -122,8 +122,48 @@ fn master(buf: &[f32]) -> Vec<u8> {
 
 /// The main soundtrack: a full-length (~2 min) A-minor track with a real arrangement
 /// (intro → drop → breakdown → build → 2nd drop → outro) that LOOPS seamlessly. Because it loops
-/// it is never faded — so it doesn't cut off. This is the single normal-play track.
+/// it is never faded — so it doesn't cut off. This is the clean (act-start) normal-play track;
+/// `main_track_variants` derives the corrupted tiers from the same mix.
 pub fn main_track_wav() -> Vec<u8> {
+    master(&main_track_mix())
+}
+
+// CORRUPTION: each boss down, the field's own music degrades — drive into saturation, bit depth
+// falling, sample-hold decimation creeping in. Grit 0 is the clean mix; grit 1 (the last act)
+// is hot, crushed and aliased but still musical. The lore does the talking: the deeper you go,
+// the wronger the Belt SOUNDS — and beating the Phantom hands the clean track back.
+fn corrupt(buf: &[f32], grit: f32) -> Vec<f32> {
+    if grit <= 0.0 {
+        return buf.to_vec();
+    }
+    let drive = 1.0 + 3.5 * grit; // push into tanh — warm at low grit, snarling at high
+    let levels = 2f32.powf(15.0 - 6.0 * grit); // bit depth slides ~15 → ~9 bits
+    let hold = 1 + (grit * 3.0) as usize; // sample-hold decimation 1 → 4 (aliasing sheen)
+    let mut held = 0f32;
+    buf.iter()
+        .enumerate()
+        .map(|(i, &s)| {
+            if i % hold == 0 {
+                held = s;
+            }
+            ((held * drive).tanh() * levels).round() / levels
+        })
+        .collect()
+}
+
+/// The main track at every corruption tier (0 = clean … tiers-1 = fully corrupted): ONE synthesis
+/// pass, then per-tier post-processing — the arrangement never changes, only how damaged it sounds.
+pub fn main_track_variants(tiers: usize) -> Vec<Vec<u8>> {
+    let clean = main_track_mix();
+    (0..tiers)
+        .map(|k| {
+            let grit = k as f32 / (tiers.saturating_sub(1)).max(1) as f32;
+            master(&corrupt(&clean, grit))
+        })
+        .collect()
+}
+
+fn main_track_mix() -> Vec<f32> {
     let bpm = 128.0;
     let bars = 64usize;
     let step = 60.0 / bpm / 4.0;
@@ -232,7 +272,7 @@ pub fn main_track_wav() -> Vec<u8> {
         *o = drums[i] + music[i] * pump;
     }
 
-    master(&out)
+    out
 }
 
 /// The boss track — its own beast: a relentless POUND kick (every 8th), a tritone-laced menacing
@@ -321,6 +361,17 @@ pub fn boss_buildup_wav() -> Vec<u8> {
     }
 
     master(&buf)
+}
+
+// The boss-down detonation — a deep sub thump + mid boom + long noise wash. Bosses used to die
+// with particles only; a kill this big needs a sound this big (and the juice pass keys off it).
+pub fn boss_down_sfx_wav() -> Vec<u8> {
+    render_sfx(1.2, |t, i| {
+        let sub = (TAU * (52.0 - 18.0 * t) * t).sin() * (-t * 3.2).exp() * 0.9; // pitch-falling sub
+        let boom = (TAU * 110.0 * t).sin() * (1.0 - (-t * 90.0).exp()) * (-t * 6.0).exp() * 0.5;
+        let wash = (noise(i) - noise(i + 7)) * 0.5 * (-t * 2.4).exp() * 0.35; // long tail
+        sub + boom + wash
+    })
 }
 
 /// The GAME OVER track — the anti-club: ~70 BPM, sparse and somber where the main track is a
@@ -659,6 +710,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn corruption_tiers_differ_and_stay_valid() {
+        // one synthesis, N masters: every tier is a real WAV and the grit genuinely changes the audio
+        let v = main_track_variants(3);
+        assert_eq!(v.len(), 3);
+        for wav in &v {
+            assert_eq!(&wav[0..4], b"RIFF", "every tier is a valid WAV");
+            assert!(wav.len() > 44 + 600_000, "every tier carries the whole loop");
+        }
+        assert_ne!(v[0], v[2], "full grit must not equal the clean mix");
+    }
+
+    #[test]
     fn tracks_are_wav_and_nonsilent() {
         // the main, boss, and game-over tracks must all be valid, audible loops
         for wav in [main_track_wav(), boss_track_wav(), gameover_track_wav()] {
@@ -691,6 +754,7 @@ mod tests {
             nova_pop_sfx_wav(),
             nova_up_sfx_wav(),
             log_sfx_wav(),
+            boss_down_sfx_wav(),
         ] {
             assert_eq!(&wav[0..4], b"RIFF", "sfx starts with a RIFF header");
             assert_eq!(&wav[8..12], b"WAVE", "sfx is a WAVE file");

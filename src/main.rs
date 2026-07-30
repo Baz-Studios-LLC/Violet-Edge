@@ -2260,6 +2260,15 @@ fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score
         rock_color()
     };
     burst(commands, pos, splash, 10 + size as usize * 5, 260.0, rng);
+    // KILL POP: a fast type-colored ring so every meaningful kill reads as an impact, on every kill
+    // path (bullet/chain/mine/warhead/blast — they all come through here). Size-1 rocks skip it:
+    // they die constantly, and a pop per pebble would wash the field in rings.
+    if size >= 2 {
+        commands.spawn((
+            Shockwave { age: 0.0, ttl: 0.16, max_r: asteroid_radius(size) * 1.5, color: splash },
+            Transform::from_xyz(pos.x, pos.y, 0.0),
+        ));
+    }
     // A BEACON never splits: cracking it kills the aura clean (children would re-shield the field).
     let chunks = chunks && !beacon;
     // A CLUSTER above the smallest size SHATTERS: a ring of tiny fast shards instead of two chunks.
@@ -4250,6 +4259,7 @@ fn boss_update(
                     ));
                 }
                 stats.warden = true; // achievement: defeated the Warden
+                sfx.write(SoundFx::BossDown);
                 defeat_boss(&mut score, &mut wave, &mut banner, Some(&mut stats));
             }
             continue; // no movement / contact / damage while it dies
@@ -4356,6 +4366,7 @@ fn devourer_update(
                     Transform::from_xyz(0.0, 0.0, 0.0),
                 ));
                 stats.glutton = true; // achievement: defeated the Glutton
+                sfx.write(SoundFx::BossDown);
                 defeat_boss(&mut score, &mut wave, &mut banner, Some(&mut stats));
             }
 
@@ -5672,6 +5683,7 @@ fn slinger_update(
                     Velocity(pdir * PICKUP_DRIFT),
                     Transform::from_xyz(0.0, 0.0, 0.0),
                 ));
+                sfx.write(SoundFx::BossDown);
                 defeat_boss(&mut score, &mut wave, &mut banner, stats.as_deref_mut());
             }
             continue;
@@ -6411,6 +6423,7 @@ fn pulsar_update(
                 if let Some(s) = stats.as_mut() {
                     s.pulsar = true; // achievement: defeated the Pulsar
                 }
+                sfx.write(SoundFx::BossDown);
                 defeat_boss(&mut score, &mut wave, &mut banner, stats.as_deref_mut());
             }
             continue;
@@ -6540,6 +6553,7 @@ fn detonator_update(
                     Velocity(pdir * PICKUP_DRIFT),
                     Transform::from_xyz(0.0, 0.0, 0.0),
                 ));
+                sfx.write(SoundFx::BossDown);
                 defeat_boss(&mut score, &mut wave, &mut banner, stats.as_deref_mut());
             }
             continue;
@@ -8628,7 +8642,7 @@ const MUSIC_VOLUME: f32 = 0.55;
 // What the soundtrack should be playing right now.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum MusicCue {
-    Main,     // the full-length main track (loops)
+    Main(u8), // the full-length main track at a CORRUPTION TIER (0 = clean … 5 = the last act's snarl)
     Buildup,  // the ~10 s riser in the run-up to a boss (one-shot)
     Boss,     // the boss track (loops)
     GameOver, // the somber ~70 BPM dirge under the Game Over screen (loops)
@@ -8639,7 +8653,7 @@ enum MusicCue {
 // buildup riser; boss waves loop the boss track; the post-boss calm is silent.
 #[derive(Resource)]
 struct MusicDirector {
-    main: Handle<AudioSource>,
+    mains: Vec<Handle<AudioSource>>, // the main track at every corruption tier (index = bosses down)
     boss: Handle<AudioSource>,
     buildup: Handle<AudioSource>,
     gameover: Handle<AudioSource>,
@@ -8650,11 +8664,16 @@ struct MusicDirector {
 // Synthesize the tracks up front and install the director. The first cue is spawned by
 // `music_director` on its first run.
 fn start_music(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
-    let main = sources.add(AudioSource { bytes: audio::main_track_wav().into() });
+    // ONE main-track synthesis, six masters: tier k plays after boss k falls. The corruption is the
+    // lore speaking — the deeper the run, the wronger the Belt sounds (and a win hands back tier 0).
+    let mains = audio::main_track_variants(6)
+        .into_iter()
+        .map(|wav| sources.add(AudioSource { bytes: wav.into() }))
+        .collect();
     let boss = sources.add(AudioSource { bytes: audio::boss_track_wav().into() });
     let buildup = sources.add(AudioSource { bytes: audio::boss_buildup_wav().into() });
     let gameover = sources.add(AudioSource { bytes: audio::gameover_track_wav().into() });
-    commands.insert_resource(MusicDirector { main, boss, buildup, gameover, cue: None, muted: false });
+    commands.insert_resource(MusicDirector { mains, boss, buildup, gameover, cue: None, muted: false });
 }
 
 // Spawn a Music player. Loops for the main/boss tracks; one-shot (Despawn) for the buildup riser.
@@ -8696,11 +8715,14 @@ fn music_director(
     // The wave-based cue only applies IN PLAYING. Otherwise force a screen-appropriate track — critically,
     // never leave the boss loop running over the Victory or menu screens after a win. The SPLASH is
     // silent too: the Baz sting owns the boot moment, and the menu track starting is the handoff.
+    // Corruption tier = bosses down this run (wave 1-5 → 0 … 26-30 → 5). Off-run screens play the
+    // CLEAN tier — including Victory: beating the Phantom hands the uncorrupted track back.
+    let tier = (((wave.level - 1) / 5).clamp(0, 5)) as u8;
     let desired = if *state.get() != GameState::Playing {
         match *state.get() {
             GameState::GameOver => MusicCue::GameOver, // its own somber track — a run ending SOUNDS different from playing one
             GameState::Splash => MusicCue::Silence,
-            _ => MusicCue::Main,
+            _ => MusicCue::Main(0),
         }
     } else if wave.calm > 0.0 {
         MusicCue::Silence // post-boss breather — let it be quiet, don't slam the track back on
@@ -8709,7 +8731,7 @@ fn music_director(
     } else if is_boss_wave(wave.level + 1) && wave.timer <= BOSS_CAMEO_SECS {
         MusicCue::Buildup // last 10 s before the boss wave → riser leads in
     } else {
-        MusicCue::Main
+        MusicCue::Main(tier) // each boss down, the field's own music comes back a little WRONGER
     };
 
     if dir.cue != Some(desired) {
@@ -8718,8 +8740,8 @@ fn music_director(
         }
         match desired {
             MusicCue::Silence => {}
-            MusicCue::Main => {
-                let h = dir.main.clone();
+            MusicCue::Main(t) => {
+                let h = dir.mains[(t as usize).min(dir.mains.len() - 1)].clone();
                 play_track(&mut commands, h, dir.muted, true);
             }
             MusicCue::Boss => {
@@ -8756,6 +8778,68 @@ enum SoundFx {
     Haunt,     // the Phantom's own spectral cue (ray, possession, death) — NOT the warp sound
     NovaPop,   // the Nova Shield eating a hit (glassy shatter)
     NovaUp,    // the Nova Shield flickering back online (soft rising shimmer)
+    BossDown,  // a boss core detonating — the biggest single kill in the game
+}
+
+// ─────────────────────────────── juice (hit-stop + screenshake) ───────
+// The FEEL layer: big moments freeze the world for a breath and rattle the camera. Both are driven
+// off the SoundFx events the game already emits — one director, zero flags in the kill sites (and
+// anything that SOUNDS big automatically FEELS big). Photosensitivity: hit-stop is a freeze (no
+// flash), shake is smooth multi-sine translation capped at a few px — motion, not strobe.
+const HITSTOP_MAX: f32 = 0.14; // never freeze longer than this, no stacking
+const SHAKE_MAX_PX: f32 = 14.0; // camera offset at FULL trauma (trauma² curve keeps usual shakes ~2-4 px)
+const SHAKE_DECAY: f32 = 1.8; // trauma lost per second
+
+#[derive(Resource, Default)]
+struct HitStop(f32); // seconds of world-freeze left (ticked on REAL time)
+#[derive(Resource, Default)]
+struct Shake(f32); // screenshake trauma 0..1 — sources ADD, offset scales with trauma²
+
+// Map this frame's sound events to juice. Loud = felt: the player's death and a boss core going
+// down hit hardest; blasts rattle; a single big rock barely registers but a STREAK of them stacks
+// into a visible rumble (trauma is additive, the trauma² curve hides one-offs).
+fn juice_director(mut events: EventReader<SoundFx>, mut stop: ResMut<HitStop>, mut shake: ResMut<Shake>) {
+    for e in events.read() {
+        let (freeze, trauma) = match e {
+            SoundFx::Death => (0.12, 0.55),
+            SoundFx::BossDown => (0.14, 0.55),
+            SoundFx::NovaPop => (0.07, 0.30), // the shield ate a lethal hit — a big save reads like one
+            SoundFx::Mine => (0.0, 0.28),
+            SoundFx::Warp => (0.0, 0.15),
+            SoundFx::Haunt => (0.0, 0.20),
+            SoundFx::Break(3) => (0.0, 0.10),
+            _ => (0.0, 0.0),
+        };
+        stop.0 = stop.0.max(freeze).min(HITSTOP_MAX);
+        shake.0 = (shake.0 + trauma).min(1.0);
+    }
+}
+
+// Apply the juice on REAL time (so it works while the virtual clock is the thing being frozen):
+// hold the virtual clock at zero while a hit-stop runs, decay trauma, and jiggle the camera with
+// smooth layered sines (never per-frame randomness — that reads as strobe-jitter, not impact).
+fn juice_apply(
+    real: Res<Time<Real>>,
+    mut vtime: ResMut<Time<Virtual>>,
+    mut stop: ResMut<HitStop>,
+    mut shake: ResMut<Shake>,
+    mut cams: Query<&mut Transform, With<Camera2d>>,
+) {
+    let dt = real.delta_secs();
+    if stop.0 > 0.0 {
+        stop.0 -= dt;
+        vtime.set_relative_speed(0.0);
+    } else if vtime.relative_speed() != 1.0 {
+        vtime.set_relative_speed(1.0);
+    }
+    shake.0 = (shake.0 - SHAKE_DECAY * dt).max(0.0);
+    let t = real.elapsed_secs();
+    let amp = shake.0 * shake.0 * SHAKE_MAX_PX;
+    let off = Vec2::new((t * 39.7).sin() + 0.6 * (t * 71.3).sin(), (t * 47.9).cos() + 0.6 * (t * 83.1).sin()) * (amp / 1.6);
+    for mut tf in &mut cams {
+        tf.translation.x = off.x;
+        tf.translation.y = off.y;
+    }
 }
 
 // Pre-synthesized SFX clips (see `audio.rs`), built once at startup.
@@ -8775,6 +8859,7 @@ struct SfxBank {
     life: Handle<AudioSource>, // gold-rock 1UP jingle
     toggle: Handle<AudioSource>, // standard ↔ mass shot switch
     log: Handle<AudioSource>, // Pilot Log transmission-received blip
+    boss_down: Handle<AudioSource>, // boss-core detonation boom
 }
 
 fn start_sfx(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
@@ -8793,6 +8878,7 @@ fn start_sfx(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
         life: sources.add(AudioSource { bytes: audio::life_sfx_wav().into() }),
         toggle: sources.add(AudioSource { bytes: audio::toggle_sfx_wav().into() }),
         log: sources.add(AudioSource { bytes: audio::log_sfx_wav().into() }),
+        boss_down: sources.add(AudioSource { bytes: audio::boss_down_sfx_wav().into() }),
     });
 }
 
@@ -8813,8 +8899,8 @@ fn play_sfx(mut commands: Commands, bank: Option<Res<SfxBank>>, mut events: Even
         events.clear();
         return;
     };
-    let (mut fire, mut mine, mut death, mut eshot, mut edie, mut warp, mut toggle, mut haunt, mut npop, mut nup) =
-        (false, false, false, false, false, false, false, false, false, false);
+    let (mut fire, mut mine, mut death, mut eshot, mut edie, mut warp, mut toggle, mut haunt, mut npop, mut nup, mut bdown) =
+        (false, false, false, false, false, false, false, false, false, false, false);
     let mut brk: Option<u8> = None; // deepest (largest) rock that broke this frame
     for e in events.read() {
         match e {
@@ -8829,6 +8915,7 @@ fn play_sfx(mut commands: Commands, bank: Option<Res<SfxBank>>, mut events: Even
             SoundFx::Haunt => haunt = true,
             SoundFx::NovaPop => npop = true,
             SoundFx::NovaUp => nup = true,
+            SoundFx::BossDown => bdown = true,
         }
     }
     if fire {
@@ -8866,6 +8953,9 @@ fn play_sfx(mut commands: Commands, bank: Option<Res<SfxBank>>, mut events: Even
     }
     if nup {
         one_shot(&mut commands, bank.nova_up.clone(), 0.35); // back online — soft, informative
+    }
+    if bdown {
+        one_shot(&mut commands, bank.boss_down.clone(), 0.75); // the biggest kill in the game, heard as one
     }
 }
 
@@ -9002,6 +9092,9 @@ fn main() {
         .add_systems(Update, (update_arena, update_ui_scale, pause_toggle, update_wave_text, update_score_text, wave_banner_update, calm_countdown_update, boss_warning_update).chain())
         // always: watch for achievement unlocks + age out toasts + hide the HUD off-run + menu buttons
         .add_systems(Update, (achievements, lore_watch, toast_update, hud_visibility, hud_ability_labels, button_shimmer, button_click, hud_flash_tick, shot_mode_update))
+        .insert_resource(HitStop::default())
+        .insert_resource(Shake::default())
+        .add_systems(Update, (juice_director, juice_apply).chain())
         // the neon warm-up + frame pulse is a START-MENU flourish only (not the achievements screen)
         .add_systems(Update, menu_title_fx.run_if(in_state(GameState::Menu)))
         // render in PostUpdate so it ALWAYS runs after every Update system (incl.
@@ -10670,6 +10763,44 @@ mod tests {
     }
 
     #[test]
+    fn juice_freezes_time_on_big_hits_and_pops_rings_on_kills() {
+        // director: loud events become hit-stop + trauma; apply: the virtual clock actually freezes
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_event::<SoundFx>();
+        app.insert_resource(HitStop::default());
+        app.insert_resource(Shake::default());
+        app.add_systems(Update, (juice_director, juice_apply).chain());
+        app.world_mut().send_event(SoundFx::BossDown);
+        app.update();
+        assert!(app.world().resource::<HitStop>().0 > 0.0, "a boss going down freezes the world for a beat");
+        assert!(app.world().resource::<Shake>().0 > 0.0, "and rattles the camera");
+        assert_eq!(app.world().resource::<Time<Virtual>>().relative_speed(), 0.0, "the virtual clock is held at zero");
+        // a Fire event is NOT juice — quiet frames drain the stop and give the clock back
+        app.world_mut().resource_mut::<HitStop>().0 = 0.0;
+        app.world_mut().send_event(SoundFx::Fire);
+        app.update();
+        assert_eq!(app.world().resource::<Time<Virtual>>().relative_speed(), 1.0, "normal speed returns after the stop");
+
+        // kill pop: a size-2 rock dying leaves a type-colored ring (plus its two children)
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_event::<SoundFx>();
+        app.insert_resource(Stats::default());
+        app.insert_resource(Score(0));
+        app.world_mut().spawn((
+            Asteroid { size: 2, verts: vec![Vec2::X * 40.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+        ));
+        app.world_mut().spawn((Bullet { life: 1.0, trail: Vec::new(), mass: false }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0)));
+        app.add_systems(Update, collisions);
+        app.update();
+        assert_eq!(app.world_mut().query::<&Shockwave>().iter(app.world()).count(), 1, "the kill leaves one pop ring");
+        assert_eq!(app.world_mut().query::<&Asteroid>().iter(app.world()).count(), 2, "and the usual two children");
+    }
+
+    #[test]
     fn the_splash_fades_skips_and_hands_off_to_the_menu() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
@@ -12306,7 +12437,7 @@ mod tests {
         app.insert_resource(ActionState::default());
         app.insert_resource(Wave { level: 1, timer: WAVE_SECS, calm: 0.0 });
         app.insert_resource(MusicDirector {
-            main: Handle::default(),
+            mains: vec![Handle::default(); 6],
             boss: Handle::default(),
             buildup: Handle::default(),
             gameover: Handle::default(),
@@ -12316,9 +12447,9 @@ mod tests {
         app.insert_resource(State::new(GameState::Playing)); // the wave-cue logic only runs in Playing
         app.add_systems(Update, music_director);
 
-        // normal play → the main track
+        // normal play, act I → the CLEAN main track (tier 0)
         app.update();
-        assert_eq!(app.world().resource::<MusicDirector>().cue, Some(MusicCue::Main), "normal play uses the main track");
+        assert_eq!(app.world().resource::<MusicDirector>().cue, Some(MusicCue::Main(0)), "act I plays the clean main track");
         assert_eq!(app.world_mut().query::<&Music>().iter(app.world()).count(), 1, "one track is live");
 
         // last 10 s before the boss (wave 4, timer low) → the buildup riser
@@ -12345,10 +12476,14 @@ mod tests {
         assert_eq!(app.world().resource::<MusicDirector>().cue, Some(MusicCue::Silence), "the post-boss calm is silent");
         assert_eq!(app.world_mut().query::<&Music>().iter(app.world()).count(), 0, "nothing is playing during the calm");
 
-        // calm over → back to the main track
+        // calm over (wave 6, one boss down) → the main track returns CORRUPTED one tier
         app.world_mut().resource_mut::<Wave>().calm = 0.0;
         app.update();
-        assert_eq!(app.world().resource::<MusicDirector>().cue, Some(MusicCue::Main), "the main track resumes after the calm");
+        assert_eq!(
+            app.world().resource::<MusicDirector>().cue,
+            Some(MusicCue::Main(1)),
+            "after boss 1 the main track comes back a tier wronger"
+        );
 
         // the Game Over screen → its own somber track, not silence and not the main loop
         app.insert_resource(State::new(GameState::GameOver));

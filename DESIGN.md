@@ -399,6 +399,19 @@ Considered and shelved (could layer on later): score extends, boss-clear +1, per
   entries survive every death by design. **Pillar: flying and shooting stay CLEAN — skilled play is
   the reward loop; difficulty may be merciless but the ship never is.** The release bar: the game
   ships when it can be beaten legitimately (no dev keys).
+- **The JUICE layer (2026-07-30, the AAA-bar feel pass).** Hit-stop (`HitStop`, real-time ticked,
+  freezes `Time<Virtual>`: player death 0.12s / boss down 0.14s / Nova absorb 0.07s, capped at
+  0.14, never stacking) + trauma screenshake (`Shake`, offset = trauma² × 14px max, smooth layered
+  sines — NEVER per-frame randomness, that's strobe-jitter) + kill-pop rings (type-colored
+  `Shockwave` in `break_asteroid`, size ≥ 2 only so the field can't wash out). Both driven by
+  `juice_director` off the EXISTING SoundFx events — one mapping, zero flags in kill sites, and
+  anything that sounds big automatically feels big. Boss kills got their own `SoundFx::BossDown`
+  boom (they died silently before). Photosensitivity holds: freezes + smooth motion, no strobes.
+- **Corrupted music tiers (2026-07-30).** `main_track_variants(6)`: ONE main-track synthesis, six
+  masters at rising grit (drive → tanh, bit depth 15→9, sample-hold decimation 1→4). Cue is
+  `MusicCue::Main(tier)`, tier = (wave-1)/5 — each boss down, the field's music returns a tier
+  wronger; menu/Briefing/Victory play tier 0 (a win hands the clean track back). The lore speaks
+  through the mix: the Belt sounds progressively wronger the deeper the run goes.
 - **Flight model (tuned 2026-07-29, hitbox EXPLICITLY untouched — user rule: clean maneuvering must
   never come from shrinking the ship).** `ship_control` is fully dt-correct: turn 5.2 rad/s (~300°/s,
   raised from 4.6 for gap-weaving), thrust 1000 px/s² against heavy drag (`FRICTION 0.15` retention/s,
