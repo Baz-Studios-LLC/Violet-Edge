@@ -3,7 +3,7 @@
 Patch notes for the Rust + Bevy build. Newest first. (Releases are cut to GitHub and picked up by the
 Baz Studios launcher.) **Keep this current with every change** — it's the record testers read.
 
-## Unreleased
+## v0.4.8 — NEW GAME+, the split economy, and the big balance pass (2026-07-30)
 
 - **The split economy** (user design): breaking a rock no longer guarantees two children. A large
   sheds **1 or 2 mediums**; a medium either shatters into **2 smalls or dies outright**. A large's
