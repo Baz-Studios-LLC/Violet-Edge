@@ -3,7 +3,7 @@
 Patch notes for the Rust + Bevy build. Newest first. (Releases are cut to GitHub and picked up by the
 Baz Studios launcher.) **Keep this current with every change** — it's the record testers read.
 
-## Unreleased
+## v0.5.0 — A real soundtrack (2026-07-30)
 
 - **The whole soundtrack is produced music now.** The main and boss themes join the game-over
   theme as Antigravity-generated tracks (embedded, so the exe stays self-contained): the main is a
