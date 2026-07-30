@@ -3,7 +3,7 @@
 Patch notes for the Rust + Bevy build. Newest first. (Releases are cut to GitHub and picked up by the
 Baz Studios launcher.) **Keep this current with every change** — it's the record testers read.
 
-## Unreleased
+## v0.4.6 — Cleaner flight, a sealed log, and the Pacifist run (2026-07-29)
 
 - **Mine blasts score nothing — the mine itself still pays.** Destroying a mine (shot, chain beam,
   warp, blast chain) awards its 150 as before, but the rocks its explosion shatters are now worth
