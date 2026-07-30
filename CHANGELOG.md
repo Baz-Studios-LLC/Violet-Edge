@@ -5,9 +5,10 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
-- **Mines score zero.** All four kill paths (shot, chain beam, warp swallow, blast chain) award no
-  points anymore — mines are obstacles, not prey, and points made farming them the optimal play.
-  They still count toward the Minesweeper achievement.
+- **Mine blasts score nothing — the mine itself still pays.** Destroying a mine (shot, chain beam,
+  warp, blast chain) awards its 150 as before, but the rocks its explosion shatters are now worth
+  ZERO — points come from aimed play, not from standing near a blast, so mine chains can't be
+  farmed for score. (Orange and Warhead blasts still score their rocks: the player lit those.)
 - **Drift tightened** (playtest: "the drift is too great"): drag up (`FRICTION` 0.15 → 0.10) with
   thrust raised in lockstep (1000 → 1200) so top speed stays ~520 — the glide-out after releasing
   thrust is ~20% shorter without the ship getting any slower. Still a drift game, deliberately.

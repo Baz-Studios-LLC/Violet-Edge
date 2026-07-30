@@ -101,6 +101,7 @@ const MINE_R: f32 = 18.0; // bumped from 13 — a bigger body to shoot (the leth
 const MINE_SPEED: f32 = 62.0; // px/s drift
 const MINE_TRIGGER_R: f32 = 92.0; // ship within → the mine arms (blinks)
 const MINE_BLAST_R: f32 = 52.0; // armed + ship within → detonate (kills the ship)
+const MINE_SCORE: u32 = 150; // for destroying the MINE itself — rocks its blast breaks score nothing (see blast_asteroids)
 const MINE_FUSE: f32 = 0.6; // arming time before it can detonate (time to escape)
 const WARP_ROCK_SCORE: u32 = 25; // a rock swallowed by the warp scores a low flat value (no farming)
 const MINE_SPAWN_INTERVAL: f32 = 2.6;
@@ -2312,12 +2313,15 @@ fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score
 fn blast_asteroids(
     commands: &mut Commands,
     rng: &mut impl Rng,
-    score: &mut Score,
     asteroids: &Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>), (Without<Mine>, Without<Shielded>)>,
     broken: &mut HashSet<Entity>,
     center: Vec2,
     t: f32,
 ) {
+    // A mine blast breaks rocks for FREE: the points were paid on the MINE (aimed play); rocks that
+    // happen to stand in the blast score nothing, so mine chains can't be farmed for points.
+    let mut unscored = Score(0);
+    let score = &mut unscored;
     // shared &Query → iterates read-only, so we just read size/dense/gold/explosive here
     for (ae, at, a, gold, explosive, pulser, red, cluster, beacon) in asteroids {
         if broken.contains(&ae) {
@@ -2462,6 +2466,7 @@ fn detonate(
             if c.distance_squared(mt.translation.truncate()) < rr * rr {
                 burst(&mut commands, mt.translation.truncate(), mine_color(), 18, 300.0, &mut rng);
                 commands.entity(me).despawn();
+                score.0 += MINE_SCORE;
                 stats.mines += 1; // your blast chain popped it — player-credited
             }
         }
@@ -3241,12 +3246,13 @@ fn collisions(
                 dead_m.insert(me);
                 commands.entity(be).despawn();
                 commands.entity(me).despawn();
+                score.0 += MINE_SCORE;
                 stats.mines += 1; // shot it down
                 let mp = mt.translation.truncate();
                 burst(&mut commands, mp, mine_color(), 24, 320.0, &mut rng);
                 // shooting a mine detonates it: the blast shatters rocks in range
                 // with fast chunks, same as any other detonation.
-                blast_asteroids(&mut commands, &mut rng, &mut score, &asteroids, &mut dead_a, mp, time.elapsed_secs());
+                blast_asteroids(&mut commands, &mut rng, &asteroids, &mut dead_a, mp, time.elapsed_secs());
                 sfx.write(SoundFx::Mine);
                 break;
             }
@@ -3615,7 +3621,6 @@ fn mine_update(
     arena: Res<Arena>,
     mut run: ResMut<Run>,
     mut next: ResMut<NextState<GameState>>,
-    mut score: ResMut<Score>,
     dev: Res<Dev>,
     wave: Res<Wave>,
     mut sfx: EventWriter<SoundFx>,
@@ -3683,7 +3688,7 @@ fn mine_update(
             })
         {
             burst(&mut commands, p, mine_color(), 26, 300.0, &mut rng);
-            blast_asteroids(&mut commands, &mut rng, &mut score, &asteroids, &mut broken, p, time.elapsed_secs());
+            blast_asteroids(&mut commands, &mut rng, &asteroids, &mut broken, p, time.elapsed_secs());
             sfx.write(SoundFx::Mine);
             commands.entity(me).despawn();
             continue;
@@ -3707,7 +3712,7 @@ fn mine_update(
                 let contact = d < MINE_R + SHIP_R;
                 if contact || (mine.fuse <= 0.0 && d < MINE_BLAST_R) {
                     burst(&mut commands, p, mine_color(), 26, 300.0, &mut rng);
-                    blast_asteroids(&mut commands, &mut rng, &mut score, &asteroids, &mut broken, p, time.elapsed_secs());
+                    blast_asteroids(&mut commands, &mut rng, &asteroids, &mut broken, p, time.elapsed_secs());
                     sfx.write(SoundFx::Mine);
                     commands.entity(me).despawn();
                     kill_ship(&mut commands, &mut run, &mut next, &mut sfx, se, sp, &mut rng);
@@ -4693,6 +4698,7 @@ fn chain_update(
             if seg_dist2(mp, a, b) < rr * rr {
                 dead.insert(me);
                 commands.entity(me).despawn();
+                score.0 += MINE_SCORE;
                 stats.mines += 1; // the chain beam sheared it
                 burst(&mut commands, mp, mine_color(), 20, 320.0, &mut rng);
                 sfx.write(SoundFx::Mine);
@@ -4894,6 +4900,7 @@ fn black_hole_update(
         for (me, mt, mut mv) in &mut mines {
             let mp = mt.translation.truncate();
             if mp.distance(hp) < WARP_CONSUME_R + MINE_R {
+                score.0 += MINE_SCORE;
                 if let Some(s) = stats.as_mut() {
                     s.mines += 1; // your warp swallowed it — player-credited
                 }
@@ -10095,6 +10102,31 @@ mod tests {
         app.update();
         let plain_left = app.world_mut().query_filtered::<&Asteroid, Without<Beacon>>().iter(app.world()).filter(|a| a.size == 2).count();
         assert_eq!(plain_left, 0, "with the beacon down, the rock breaks normally");
+    }
+
+    #[test]
+    fn a_shot_mine_pays_its_bounty_but_blast_rocks_are_free() {
+        // The scoring rule: destroying the MINE is aimed play and pays MINE_SCORE; the rocks its
+        // blast happens to shatter pay NOTHING (points never come from standing near an explosion).
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_event::<SoundFx>();
+        app.insert_resource(Stats::default());
+        app.insert_resource(Score(0));
+        app.world_mut().spawn((Mine { armed: false, fuse: 0.0 }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0)));
+        // a small rock inside the blast radius — it must break, for free
+        app.world_mut().spawn((
+            Asteroid { size: 1, verts: vec![Vec2::X * 22.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(MINE_BLAST_R - 12.0, 0.0, 0.0),
+        ));
+        app.world_mut().spawn((Bullet { life: 1.0, trail: Vec::new(), mass: false }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0)));
+        app.add_systems(Update, collisions);
+        app.update();
+        assert_eq!(app.world_mut().query::<&Mine>().iter(app.world()).count(), 0, "the shot pops the mine");
+        assert_eq!(app.world_mut().query::<&Asteroid>().iter(app.world()).count(), 0, "and its blast breaks the rock");
+        assert_eq!(app.world().resource::<Score>().0, MINE_SCORE, "score is the mine bounty EXACTLY — the blasted rock added nothing");
+        assert_eq!(app.world().resource::<Stats>().mines, 1, "the Minesweeper counter still ticks");
     }
 
     #[test]

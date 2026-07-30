@@ -377,7 +377,7 @@ Considered and shelved (could layer on later): score extends, boss-clear +1, per
   | Asteroid — large / mid / small | 20 / 50 / 100 |
   | Green (dense) | ×2 (40 / 100 / 200) |
   | Enemy mob | 300 |
-  | Mine | 0 — no points (2026-07-29: mines are obstacles, not prey; points made farming them optimal). Still counts toward the Minesweeper achievement. |
+  | Mine | 150 — but rocks a mine's BLAST breaks score 0 (2026-07-29: the bounty is for the aimed kill; blast collateral can't be farmed). Orange/Warhead blasts still score their rocks — the player lit those. |
   | Boss | 3000 |
   | Warden shield rock (small remnant) | 20 |
   | Rock swallowed by the warp | `WARP_ROCK_SCORE` (25, low flat — no farming) |
