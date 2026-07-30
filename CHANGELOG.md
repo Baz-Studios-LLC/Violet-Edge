@@ -6,17 +6,17 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 ## Unreleased
 
 - **THE BALANCE PASS — bosses earn their banners, runs fit an evening.**
-  - **Boss HP roughly doubled across the ramp** (26/34/40/46/52/3×30 → 50/60/85/72/90/3×50): they
-    were burning down too fast. Scaled per fight, not flatly — the Slinger (exposed core all
-    fight) takes the biggest bump; the Detonator (hittable only in priming windows) the smallest.
-    NG+'s ×1.5 stacks on top.
+  - **Boss HP roughly doubled across the ramp** (26/34/40/46/52 → 50/60/85/72/90): they were
+    burning down too fast. Scaled per fight, not flatly — the Slinger (exposed core all fight)
+    takes the biggest bump; the Detonator (hittable only in priming windows) the smallest. **The
+    Phantom's phases top the whole ramp**: 95 HP per phase (285 total, was 3×30) — no phase of the
+    finale is ever a softer fight than any boss before it. NG+'s ×1.5 stacks on top.
   - **The Warhead is a siege weapon now**: still toggled on the Q-cycle, but the rate of fire is
     VERY slow (1.3s between rounds, was 0.28). Each round clears a 110px disk — so now it's aim,
     fire, wait, not a screen-clearing machine gun.
-  - **Old-school arcade run length**: wave timers cut 120s → 60s. A full clear lands ~35-40
-    minutes instead of about an hour; a wave-25 death costs a sitting, not an evening. The gold
-    1UP cadence is rescaled to match (gaps roughly halved, first gold sooner), so lives-per-wave
-    stays what it was.
+  - **Arcade run length**: wave timers cut 120s → 100s. A full clear lands around ~50 minutes
+    with the heavier bosses; a wave-25 death costs less of an evening. The gold 1UP cadence is
+    rescaled to match (first gold at 40s), so lives-per-wave stays the original tuning.
 - **The warp hole has a voice** (v2 — the first cut's pulsing churn read as "a dog sniffing," so
   the pulse is GONE). One continuous inhale now: a filtered roar sweeping deeper as the hole
   feeds, a falling air whistle, a low drone — collapsing into the deep thump as it snaps shut

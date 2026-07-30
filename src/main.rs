@@ -53,7 +53,7 @@ const MASS_POWER: i32 = 3;
 const MASS_BOSS_POWER: i32 = 2;
 
 const GRID_CELL: f32 = 52.0;
-const WAVE_SECS: f32 = 60.0; // 1-minute waves — survive the timer to advance. 2026-07-30: cut from 120 for an OLD-SCHOOL ARCADE run length (~35-40 min full clear with the heavier bosses, vs ~an hour before); the pressure is constant, the commitment isn't
+const WAVE_SECS: f32 = 100.0; // survive the timer to advance. 2026-07-30: 120 → 60 → user settled on 100 — snappier than the original hour-plus run without feeling breathless (~50 min full clear with the heavier bosses)
 const POP_BASE: i32 = 5; // asteroids on screen = POP_BASE + wave...
 const POP_CAP: i32 = 18; // ...capped so the field never becomes an unavoidable wall
 const SLINGER_WAVE_ROCKS: i32 = 6; // sparse field on the Slinger wave — it spawns its own cannonballs and
@@ -220,7 +220,7 @@ const PULSAR_DEATH_SECS: f32 = 2.2;
 // VULNERABLE for a short window right after it fires the ray (it has to SURFACE to attack; that's your only
 // opening). PHASE 2 POSSESSES a homing rock it hides in (break the vessel to rip it out); PHASE 3 it turns solid and CHARGES,
 // leaving a lethal trail. It ROAMS, holding still while a beam is live or while surfaced. Clear phase 3 → WIN.
-const PHANTOM_PHASE_HP: i32 = 50; // health PER PHASE (refills on each reset) — 3 phases; deplete → reset → next (150 total: the finale should be EARNED)
+const PHANTOM_PHASE_HP: i32 = 95; // health PER PHASE (refills on each reset) — 3 phases. USER RULE: no phase may be the lowest-HP fight in the game, so each phase tops the whole ramp (max is the Pulsar's 90) — 285 total; the finale outlasts everything before it
 const PHANTOM_R: f32 = 46.0;      // a big, imposing core (the finale centrepiece)
 const PHANTOM_ENTER_SPEED: f32 = 300.0;
 const PHANTOM_INTRO: f32 = 1.4;         // invulnerable power-up after entering
@@ -340,14 +340,14 @@ const DESIGN_HALF_H: f32 = DESIGN_H * 0.5;
 const START_LIVES: i32 = 3;
 const LIFE_CAP: i32 = START_LIVES; // gold restores a LOST life only — never above the starting count
 // The gold 1UP rock drifts in at a randomized time during play (a countdown), not at wave starts.
-const GOLD_INITIAL_DELAY: f32 = 30.0; // grace before the first gold rock can appear in a run (scaled with the 60s waves)
+const GOLD_INITIAL_DELAY: f32 = 40.0; // grace before the first gold rock can appear in a run (scaled with the 100s waves)
 // Gap from when a gold rock APPEARS to the earliest the next one may. WAVE-DEPENDENT: short (frequent
 // life rocks) through the early game — a spare life is most useful then — tapering LONG (rare) by the
 // wave-30 finale. A fresh random value in the wave's [min..max] is rolled on each spawn.
-const GOLD_GAP_EARLY_MIN: f32 = 70.0; // waves ≤ GOLD_TAPER_START: ~one per wave-and-a-bit (halved with the 60s waves so lives-per-WAVE stays what it was)
-const GOLD_GAP_EARLY_MAX: f32 = 110.0;
-const GOLD_GAP_LATE_MIN: f32 = 160.0; // by wave 30: rare (~2.5-3.5 min — same waves-between-golds as the old 120s tuning)
-const GOLD_GAP_LATE_MAX: f32 = 220.0;
+const GOLD_GAP_EARLY_MIN: f32 = 100.0; // waves ≤ GOLD_TAPER_START: ~one per wave-and-a-bit (scaled to the 100s waves so lives-per-WAVE stays the original tuning)
+const GOLD_GAP_EARLY_MAX: f32 = 155.0;
+const GOLD_GAP_LATE_MIN: f32 = 220.0; // by wave 30: rare (~2.2-3 waves between golds — same cadence-per-wave as the original 120s tuning)
+const GOLD_GAP_LATE_MAX: f32 = 300.0;
 const GOLD_TAPER_START: i32 = 16; // gap stays "early/frequent" through this wave…
 const GOLD_TAPER_END: i32 = 30; // …then ramps linearly to "late/rare" by this wave
 const WAVE_BANNER_SECS: f32 = 2.4; // how long the big "WAVE n" flash lingers
