@@ -3,7 +3,7 @@
 Patch notes for the Rust + Bevy build. Newest first. (Releases are cut to GitHub and picked up by the
 Baz Studios launcher.) **Keep this current with every change** — it's the record testers read.
 
-## Unreleased
+## v0.4.7 — The juice pass, a corrupting score, and the studio splash (2026-07-30)
 
 - **THE JUICE PASS — kills land now.** The feel layer the game was missing, all photosensitivity-safe
   (freezes and smooth motion, never strobes):
