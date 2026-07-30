@@ -797,7 +797,6 @@ fn kill_ship(
     commands.entity(ship_e).despawn();
     run.lives -= 1;
     run.died = true; // a real death (not a Nova absorb) — forfeits Untouchable for this run
-    run.deaths += 1;
     // Even on the last life we DON'T jump straight to Game Over — set a timer so the death
     // explosion plays out; `respawn` makes the transition once it elapses (less abrupt).
     run.respawn = if run.lives <= 0 { GAMEOVER_DELAY } else { RESPAWN_DELAY };
@@ -1420,7 +1419,7 @@ struct Run {
     respawn: f32,
     nova: Nova, // the Nova Shield's per-run state (see `Nova`)
     died: bool, // any life lost this run (a Nova absorb doesn't count) — drives the deathless-win achievement
-    deaths: u32, // COUNT of lives lost this run — the Pacifist streak diffs this per wave (a bool can only catch the first)
+    powerup_fires: u32, // chain/mass/warhead activations this run — the Pacifist streak diffs this per wave (warp counts via stats.warps)
 }
 
 #[derive(Resource)]
@@ -1430,15 +1429,17 @@ struct Wave {
     calm: f32, // > 0 during the post-boss calm — pauses spawns + the wave timer
 }
 
-// The Pacifist streak (survive 2 straight waves breaking nothing): snapshots taken at each wave
-// start, diffed at its end. `primed_at_level` catches boss waves sneaking into the window — a boss
-// advance (defeat_boss) never re-primes, so the level mismatch marks the next check dirty and the
-// streak resets (a boss kill is not pacifism, even a collateral-free one).
+// The Pacifist streak (clear 2 straight waves breaking nothing — dying is FINE, this is about
+// restraint, not survival): snapshots taken at each wave start, diffed at its end. Breaking = any
+// kill (total_breaks, warp fires included) or any powerup activation (Run.powerup_fires — chain,
+// mass, warhead). `primed_at_level` catches boss waves sneaking into the window — a boss advance
+// (defeat_boss) never re-primes, so the level mismatch marks the next check dirty and the streak
+// resets (a boss kill is not pacifism, even a collateral-free one).
 #[derive(Resource, Default)]
 struct PacifistWatch {
     primed_at_level: i32,
     breaks: u64,
-    deaths: u32,
+    fires: u32,
     streak: u32,
 }
 
@@ -1591,7 +1592,7 @@ fn ach_meta(a: Ach) -> (&'static str, &'static str) {
         Ach::Runs10 => ("Back for More", "Start 10 runs"),
         Ach::Runs25 => ("Sisyphus", "Start 25 runs"),
         Ach::Runs50 => ("The Definition of Insanity", "Start 50 runs"),
-        Ach::Pacifist => ("Pacifist", "Survive two straight waves breaking nothing"),
+        Ach::Pacifist => ("Pacifist", "Clear two straight waves breaking nothing — warp and powerups included"),
         Ach::Edgelord => ("Edgelord", "Beat the game — defeat the Phantom at wave 30"),
         Ach::Untouchable => ("Untouchable", "Beat the game without losing a single life"),
         Ach::Purist => ("Purist", "Beat the game without a single powerup"),
@@ -2781,6 +2782,7 @@ fn fire(
     mut mode: ResMut<ShotModeFlash>,
     arena: Res<Arena>,
     mut sfx: EventWriter<SoundFx>,
+    mut run: ResMut<Run>,
     mut q: Query<(&mut Ship, &Transform)>,
 ) {
     let dt = time.delta_secs();
@@ -2823,6 +2825,9 @@ fn fire(
             ));
             if is_warhead {
                 b.insert(WarheadShot); // piercing destroy-round (see collisions)
+            }
+            if is_warhead || is_mass {
+                run.powerup_fires += 1; // a powerup round left the barrel — the Pacifist streak is over
             }
             sfx.write(SoundFx::Fire);
         }
@@ -3467,16 +3472,17 @@ fn wave_timer(
     banner.timer = WAVE_BANNER_SECS; // flash the new wave number
     if let Some(s) = stats.as_mut() {
         s.waves += 1; // lifetime wave tally (saved on run end / progress saves)
-        // PACIFIST: the wave that just ended is clean if nothing was broken, nobody died, and no
-        // boss advance slipped into the window since it was primed. Two clean in a row = the unlock.
+        // PACIFIST: the wave that just ended is clean if nothing was broken, no powerup was fired,
+        // and no boss advance slipped into the window since it was primed. Dying does NOT break the
+        // streak — restraint is the test, not survival. Two clean in a row = the unlock.
         if let (Some(w), Some(r)) = (watch.as_deref_mut(), run.as_deref()) {
-            let clean = total_breaks(s) == w.breaks && r.deaths == w.deaths && wave.level - 1 == w.primed_at_level;
+            let clean = total_breaks(s) == w.breaks && r.powerup_fires == w.fires && wave.level - 1 == w.primed_at_level;
             w.streak = if clean { w.streak + 1 } else { 0 };
             if w.streak >= 2 {
                 s.pacifist = true; // persisted by the `achievements` system's unlock save
             }
             w.breaks = total_breaks(s);
-            w.deaths = r.deaths;
+            w.fires = r.powerup_fires;
             w.primed_at_level = wave.level;
         }
     }
@@ -4582,6 +4588,7 @@ fn chain_fire(
     input: Res<ActionState>,
     mut commands: Commands,
     mut chain: ResMut<Chain>,
+    mut run: ResMut<Run>,
     ships: Query<(&Ship, &Transform, &Velocity)>,
 ) {
     if !chain.unlocked {
@@ -4613,6 +4620,7 @@ fn chain_fire(
         ));
         chain.charges -= 1;
         chain.cooldown = CHAIN_COOLDOWN;
+        run.powerup_fires += 1; // the beam is a powerup — firing it ends a Pacifist streak
     }
 }
 
@@ -7531,9 +7539,9 @@ fn reset_run(
     run.respawn = 0.0;
     run.nova = Nova::default(); // the Nova Shield must be re-earned (like every other pickup)
     run.died = false; // fresh deathless slate (achievement: Untouchable)
-    run.deaths = 0;
+    run.powerup_fires = 0;
     // prime the Pacifist watch on wave 1 with the CURRENT lifetime totals (streaks never span runs)
-    *watch = PacifistWatch { primed_at_level: 1, breaks: total_breaks(stats), deaths: 0, streak: 0 };
+    *watch = PacifistWatch { primed_at_level: 1, breaks: total_breaks(stats), fires: 0, streak: 0 };
     stats.runs += 1; // every launch counts — dying a lot is the expected way to play
     save_progress(stats); // persist immediately: a rage-quit mid-run still counts the attempt
     score.0 = 0;
@@ -9012,6 +9020,7 @@ mod tests {
         app.insert_resource(ShotModeFlash::default());
         app.insert_resource(FireArmed(true)); // mid-run: the gun is armed
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
+        app.insert_resource(Run { lives: 3, ..default() });
         app.insert_resource(ActionState { fire_held: true, ..default() }); // holding fire
         app.world_mut().spawn((
             Ship { angle: TAU / 4.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 },
@@ -9036,6 +9045,7 @@ mod tests {
         app.insert_resource(ShotModeFlash::default());
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
         app.insert_resource(FireArmed(false)); // just entered Playing (disarm_fire ran)
+        app.insert_resource(Run { lives: 3, ..default() });
         app.insert_resource(ActionState { fire_held: true, ..default() }); // still holding fire from the click that started the run
         app.world_mut().spawn((
             Ship { angle: TAU / 4.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 },
@@ -10523,22 +10533,31 @@ mod tests {
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
         app.insert_resource(Stats::default());
         app.insert_resource(Run { lives: 3, ..default() });
-        app.insert_resource(PacifistWatch { primed_at_level: 1, breaks: 0, deaths: 0, streak: 0 });
+        app.insert_resource(PacifistWatch { primed_at_level: 1, breaks: 0, fires: 0, streak: 0 });
         app.add_systems(Update, wave_timer);
-        app.update(); // wave 1 ends: nothing broken, nobody died → streak 1
+        // dying mid-wave does NOT matter — the test is restraint, not survival
+        app.world_mut().resource_mut::<Run>().died = true;
+        app.update(); // wave 1 ends: nothing broken → streak 1
         assert!(!app.world().resource::<Stats>().pacifist, "one clean wave isn't enough");
         app.world_mut().resource_mut::<Wave>().timer = 0.0;
-        app.update(); // wave 2 ends clean → streak 2 → the unlock
-        assert!(app.world().resource::<Stats>().pacifist, "two straight clean waves = Pacifist");
-        // now a wave where the player broke a rock: the streak resets instead of counting
+        app.update(); // wave 2 ends clean → streak 2 → the unlock (deaths and all)
+        assert!(app.world().resource::<Stats>().pacifist, "two straight clean waves = Pacifist, dying included");
+        // a wave where the player broke a rock: the streak resets instead of counting
         app.world_mut().resource_mut::<Stats>().pacifist = false;
         let breaks_now = total_breaks(app.world().resource::<Stats>());
-        *app.world_mut().resource_mut::<PacifistWatch>() = PacifistWatch { primed_at_level: 3, breaks: breaks_now, deaths: 0, streak: 1 };
+        *app.world_mut().resource_mut::<PacifistWatch>() = PacifistWatch { primed_at_level: 3, breaks: breaks_now, fires: 0, streak: 1 };
         app.world_mut().resource_mut::<Stats>().blue += 1; // a kill mid-wave
         app.world_mut().resource_mut::<Wave>().timer = 0.0;
         app.update();
         assert_eq!(app.world().resource::<PacifistWatch>().streak, 0, "breaking anything resets the streak");
         assert!(!app.world().resource::<Stats>().pacifist, "a dirty pair never unlocks it");
+        // firing a powerup (chain/mass/warhead) is also a break, even if it hits nothing
+        let breaks_now = total_breaks(app.world().resource::<Stats>());
+        *app.world_mut().resource_mut::<PacifistWatch>() = PacifistWatch { primed_at_level: 4, breaks: breaks_now, fires: 0, streak: 1 };
+        app.world_mut().resource_mut::<Run>().powerup_fires = 1; // a chain beam left the ship mid-wave
+        app.world_mut().resource_mut::<Wave>().timer = 0.0;
+        app.update();
+        assert_eq!(app.world().resource::<PacifistWatch>().streak, 0, "reaching for a powerup resets the streak too");
     }
 
     #[test]
@@ -11595,7 +11614,7 @@ mod tests {
         app.insert_resource(RunFlags { powerup_used: true });
         app.insert_resource(GoldRush { active: true, forfeited: false, cooldown: 0.0 });
         app.insert_resource(Stats { runs: 9, ..default() });
-        app.insert_resource(PacifistWatch { primed_at_level: 7, breaks: 42, deaths: 2, streak: 1 }); // stale — Start must re-prime it
+        app.insert_resource(PacifistWatch { primed_at_level: 7, breaks: 42, fires: 2, streak: 1 }); // stale — Start must re-prime it
         let mut input = ButtonInput::<KeyCode>::default();
         input.press(KeyCode::Enter);
         app.insert_resource(input);
@@ -12200,6 +12219,7 @@ mod tests {
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());
         app.insert_resource(Chain { unlocked: true, charges: 3, recharge: CHAIN_RECHARGE, cooldown: 0.0 });
+        app.insert_resource(Run { lives: 3, ..default() });
         app.insert_resource(ActionState { chain: true, ..default() });
         app.world_mut().spawn((Ship { angle: 0.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0)));
         app.add_systems(Update, chain_fire);

@@ -12,10 +12,11 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 - **Drift tightened** (playtest: "the drift is too great"): drag up (`FRICTION` 0.15 → 0.10) with
   thrust raised in lockstep (1000 → 1200) so top speed stays ~520 — the glide-out after releasing
   thrust is ~20% shorter without the ship getting any slower. Still a drift game, deliberately.
-- **PACIFIST achievement** (#24): survive two straight waves breaking *nothing* — no rocks, mines,
-  enemies, golds, and no warp fired — without dying. Tracked as a per-wave delta of the lifetime
-  kill counters (one watcher, zero flags sprinkled through kill sites); boss waves always break the
-  streak, and it never spans a restart.
+- **PACIFIST achievement** (#24): clear two straight waves breaking *nothing* — no rocks, mines,
+  enemies, or golds, no warp fired, and no powerup fired (chain beam, mass round, warhead round all
+  count, hit or miss). Dying is fine — the test is restraint, not survival. Tracked as a per-wave
+  delta of the kill counters plus a powerup-fire counter (one watcher, zero flags sprinkled through
+  kill sites); boss waves always break the streak, and it never spans a restart.
 - **Flight-feel pass** (hitbox untouched — this is handling, not forgiveness):
   - **Turn rate 4.6 → 5.2 rad/s** (~300°/s): a 180° flip lands in ~0.6s, so weaving a gap answers
     your hands instead of arriving late; taps still resolve ~5° for fine aim.

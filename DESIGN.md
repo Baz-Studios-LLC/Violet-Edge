@@ -263,7 +263,9 @@ run is perfected**.
   same moment — `Run.died` tracks real deaths, Nova absorbs don't count). One grind PER ROCK TYPE
   (`ACH_BLUE` 1000 / `ACH_GREEN` 500 / `ACH_ORANGE` 400 / `ACH_RED` 400 / `ACH_PULSER` 300 /
   `ACH_CLUSTER` 300 / `ACH_BEACON` 100 — scaled to how much of the run each type inhabits), lifetime
-  grinds (`ACH_MINES` 250 / `ACH_GOLDS` 25 / `ACH_WAVES` 250 / `ACH_WARPS` 150), and the **restart
+  grinds (`ACH_MINES` 250 / `ACH_GOLDS` 25 / `ACH_WAVES` 250 / `ACH_WARPS` 150), **PACIFIST**
+  (2 straight waves, zero breaks of any kind — warp/chain/mass/warhead fires count even on a miss;
+  dying does NOT reset it: restraint, not survival — per user call 2026-07-29), and the **restart
   ladder** (10/25/50 runs — *Back for More* / *Sisyphus* / *The Definition of Insanity*; every Start
   counts and saves immediately, celebrating the die-a-lot loop instead of punishing it). All are
   deliberately steep careers: players die a lot and stats span every run. `credit_rock_kill` is the one
