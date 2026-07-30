@@ -96,6 +96,17 @@ fn clang(t: f32, f: f32) -> f32 {
     let p = |m: f32, g: f32| (TAU * f * m * t).sin() * g;
     (p(1.0, 0.5) + p(2.41, 0.3) + p(3.76, 0.2) + p(5.5, 0.1)) * (1.0 - (-t * 400.0).exp()) * (-t * 9.0).exp()
 }
+// ACID SQUELCH — a saw whose pitch DROPS into each note (303-ish bite). The mid-acts' lead voice.
+fn acid(t: f32, f: f32) -> f32 {
+    let sweep = 1.0 + 0.35 * (-t * 28.0).exp(); // fast pitch fall into the note
+    let env = (1.0 - (-t * 160.0).exp()) * (-t * 10.0).exp();
+    (saw(f * sweep * t) + saw(f * sweep * 1.01 * t)) * 0.26 * env
+}
+// FM METAL — heavy-modulation inharmonic lead, cold and bell-metallic. The last acts' voice.
+fn metal_lead(t: f32, f: f32) -> f32 {
+    let env = (1.0 - (-t * 150.0).exp()) * (-t * 7.5).exp();
+    (TAU * f * t + 3.2 * (TAU * f * 2.33 * t).sin()).sin() * 0.3 * env
+}
 
 // Sustained detuned-saw PAD chord — a slow-swelling atmospheric bed. Tracks that use this feel
 // harmonic and spacious instead of arp-driven, which is a bigger identity change than a waveform
@@ -170,14 +181,20 @@ pub fn main_track_variants(tiers: usize) -> Vec<Vec<u8>> {
         .collect()
 }
 
-// `tier` (0..=5) = bosses down: each one ADDS a wrongness the clean mix doesn't have —
-//   1+: the arp's pitch WOBBLES (detune drift) and a ghost TRITONE drone seeps under the phrases
-//   2+: industrial metallic CLANGS join the backbeat
-//   3+: the boss track's own reese GROWL bleeds into the drops (their DNA in your music)
-//   4+: the rave stabs turn SOUR (a ♭9 jammed into every chord)
-//   5 : the arp starts hitting WRONG NOTES (tritone substitutions) and static bursts tick through
+// SAME SONG, PLAYING WRONG — the user's spec: never a new track, but each tier must not SOUND the
+// same. The composition (form, progression, arp line, drum spine) is untouched; what changes is
+// how it plays back:
+//   • TAPE-SAG: the whole track runs slower and flatter each boss (−3ish BPM and −40 cents per
+//     tier — by the last act it drags at 112 BPM, two semitones flat: a dying recording)
+//   • the LEAD is swapped for a colder instrument playing the SAME notes:
+//     supersaw → hollow square (1) → acid squelch (2-3) → FM metal (4-5)
+//   • and the wrongness layers pile on: ghost tritone drone + wobble (1+), industrial clangs (2+),
+//     the boss reese growl in the drops (3+), sour ♭9 stabs (4+), wrong notes + static (5)
 fn main_track_mix(tier: usize) -> Vec<f32> {
-    let bpm = 128.0;
+    let tk = tier.min(5);
+    let bpm = [128.0f32, 125.0, 122.0, 119.0, 116.0, 112.0][tk];
+    let detune = 2f32.powf(-(tk as f32) * 0.4 / 12.0); // tape-sag: ~40 cents flatter per tier
+    let lead = [0u8, 1, 2, 2, 3, 3][tk]; // which instrument carries the (unchanged) arp line
     let bars = 64usize;
     let step = 60.0 / bpm / 4.0;
     let steps = bars * 16;
@@ -188,7 +205,8 @@ fn main_track_mix(tier: usize) -> Vec<f32> {
     let mut music = vec![0f32; n];
 
     // Am F Dm E (i–VI–iv–V) — a dramatic MINOR progression (not the old bright, bouncy F–C–G).
-    let prog = [55.00f32, 43.65, 73.42, 82.41];
+    // The whole harmony sags with the tape (× detune) — everything stays in tune with itself.
+    let prog = [55.00f32, 43.65, 73.42, 82.41].map(|f| f * detune);
     // arp kept within one octave (no bright octave leap) so it drives hypnotically; ♭6 (8) darkens.
     let arp = [0i32, 3, 7, 8, 7, 5, 3, 0];
 
@@ -269,8 +287,9 @@ fn main_track_mix(tier: usize) -> Vec<f32> {
         if tier >= 3 && drop && bp == 0 {
             add_voice(&mut music, start, step * 6.0, 0.3, move |t, _| reese(t, root));
         }
-        // ARP supersaw — 16ths when energetic, softer 8ths elsewhere (the hypnotic drive).
-        // tier 1+ the pitch WOBBLES (slow detune drift); tier 5 it lands WRONG NOTES outright.
+        // THE ARP — the song's one melody, always the same NOTES; 16ths when energetic, softer 8ths
+        // elsewhere. Per tier the INSTRUMENT playing it changes (see `lead`), tier 1+ its pitch
+        // WOBBLES (drifting tape), and tier 5 it lands WRONG NOTES outright.
         let play_arp = if energetic { true } else { s.is_multiple_of(2) };
         if play_arp {
             let idx = if energetic { s } else { s / 2 };
@@ -278,7 +297,12 @@ fn main_track_mix(tier: usize) -> Vec<f32> {
             let wobble = 1.0 + tier as f32 * 0.0012 * (s as f32 * 0.7).sin();
             let f = root * 4.0 * 2f32.powf(semi as f32 / 12.0) * wobble;
             let g = if energetic { 0.15 } else { 0.10 };
-            add_voice(&mut music, start, step * 1.6, g, move |t, _| arp_saw(t, f));
+            match lead {
+                1 => add_voice(&mut music, start, step * 1.6, g * 1.1, move |t, _| arp_square(t, f)),
+                2 => add_voice(&mut music, start, step * 1.6, g, move |t, _| acid(t, f)),
+                3 => add_voice(&mut music, start, step * 1.6, g, move |t, _| metal_lead(t, f)),
+                _ => add_voice(&mut music, start, step * 1.6, g, move |t, _| arp_saw(t, f)),
+            }
         }
         // RAVE STAB — supersaw chord hits on a syncopated pattern during the drops (the club hook).
         // tier 4+ jams a ♭9 into the chord — the hook turns SOUR right where it used to feel good.
@@ -729,6 +753,19 @@ pub fn nova_up_sfx_wav() -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore] // dev TOOL, not a check: renders per-tier previews for HUMAN audition — the model
+              // can't hear, so ears judge. Run: cargo test render_tier_previews -- --ignored
+    fn render_tier_previews() {
+        let secs = 24.0; // intro through the first drop — where the tier identity shows
+        for k in 0..6usize {
+            let grit = k as f32 / 5.0;
+            let mut buf = corrupt(&main_track_mix(k), grit);
+            buf.truncate((secs * SR) as usize);
+            std::fs::write(format!("target/tier{k}_preview.wav"), master(&buf)).unwrap();
+        }
+    }
 
     #[test]
     fn corruption_tiers_differ_and_stay_valid() {

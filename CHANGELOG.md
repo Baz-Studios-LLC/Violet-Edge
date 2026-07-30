@@ -16,14 +16,16 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
     (bullet, chain, mine, warhead, blast). Small rocks skip it so the field never washes out.
   - **Bosses finally SOUND like they die**: a deep falling-sub detonation boom on every boss kill
     (they used to go down with particles only).
-- **The music corrupts as you descend — audibly.** After each boss the main track comes back a
-  tier *wronger*, and each tier brings NEW instruments the clean mix doesn't own, not just damage:
-  boss 1 sets the arp's pitch wobbling and slips a ghost tritone drone under the phrases; boss 2
-  adds industrial metallic clangs to the backbeat; boss 3 lets the boss track's own reese growl
-  bleed into the drops; boss 4 jams a sour ♭9 into every rave stab; the last act hits outright
-  wrong notes (tritone substitutions) with static bursts ticking through the kit. DSP grit
-  (drive/bitcrush/decimation) still deepens on top. Menu and post-win screens play the clean mix —
-  beating the Phantom literally hands the music back.
+- **The music corrupts as you descend — same song, playing WRONG.** The composition never changes;
+  how it plays back does. Each boss down, the whole track sags like a dying tape — slower and
+  flatter every act (128 BPM in tune → 112 BPM two semitones flat by the last) — and the melody's
+  instrument is swapped colder while playing the same notes: supersaw → hollow square → acid
+  squelch → FM metal. The wrongness layers pile on with it: ghost tritone drone + pitch wobble
+  (boss 1+), industrial clangs (2+), the boss track's reese growl in the drops (3+), sour ♭9 stabs
+  (4+), wrong notes and static bursts (final act) — with DSP grit (drive/bitcrush/decimation)
+  deepening on top. Menu and post-win screens play the clean mix — beating the Phantom literally
+  hands the music back. (New dev tool: `cargo test render_tier_previews -- --ignored` renders 24s
+  previews of every tier for audition by ear.)
 - **The Warhead detonates on impact now.** The round no longer pierces on forever — it spends
   itself on the first rock it hits, and the violet ring finally means something: everything inside
   the blast radius dies with it (credited to you; gold is spared, lit pulsers shrug it off, and
