@@ -32,8 +32,8 @@ const TAU: f32 = std::f32::consts::TAU;
 
 const SHIP_R: f32 = 13.5; // was 15 — trimmed slightly per playtest (hitbox + visuals shrink together, a touch forgiving)
 const TURN_RATE: f32 = 5.2; // rad/s (~300°/s) — raised from 4.6 in the flight-feel pass: a 180° flip in ~0.6s makes gap-weaving answer the hands, and taps still land fine aim (~5°/frame at 60fps)
-const THRUST: f32 = 1000.0; // px/s^2 — raised to keep a usable top speed against the heavier drag below
-const FRICTION: f32 = 0.15; // velocity kept per second — much heavier drag than before, so the ship sheds momentum fast (~0.37s half-life) for precise, deliberate flying instead of a long glide
+const THRUST: f32 = 1200.0; // px/s^2 — raised in lockstep with the heavier drag below so terminal speed stays ~520 (less drift must never read as a slower ship)
+const FRICTION: f32 = 0.10; // velocity kept per second — tightened from 0.15 per playtest ("drift too great"): glide-out is ~20% shorter (~0.30s half-life), still a drift game, not a stop-on-release one
 const MAX_SPEED: f32 = 560.0; // px/s (a cap; sustained thrust settles a bit under it)
 const FIRE_COOLDOWN: f32 = 0.18; // s
 
@@ -797,9 +797,27 @@ fn kill_ship(
     commands.entity(ship_e).despawn();
     run.lives -= 1;
     run.died = true; // a real death (not a Nova absorb) — forfeits Untouchable for this run
+    run.deaths += 1;
     // Even on the last life we DON'T jump straight to Game Over — set a timer so the death
     // explosion plays out; `respawn` makes the transition once it elapses (less abrupt).
     run.respawn = if run.lives <= 0 { GAMEOVER_DELAY } else { RESPAWN_DELAY };
+}
+
+// Everything the player can DESTROY, summed. The Pacifist streak diffs this across a wave — every
+// kill is already credited in exactly one place, so a sum here beats sprinkling a "broke something"
+// flag into every kill site. Warps count: firing one is reaching for the destruction tool.
+fn total_breaks(s: &Stats) -> u64 {
+    s.blue as u64
+        + s.green as u64
+        + s.orange as u64
+        + s.pulser as u64
+        + s.red as u64
+        + s.cluster as u64
+        + s.beacon as u64
+        + s.mines as u64
+        + s.enemies as u64
+        + s.golds as u64
+        + s.warps as u64
 }
 
 // Credit a player rock-kill to its type's lifetime counter (the per-type achievements). One source
@@ -1402,6 +1420,7 @@ struct Run {
     respawn: f32,
     nova: Nova, // the Nova Shield's per-run state (see `Nova`)
     died: bool, // any life lost this run (a Nova absorb doesn't count) — drives the deathless-win achievement
+    deaths: u32, // COUNT of lives lost this run — the Pacifist streak diffs this per wave (a bool can only catch the first)
 }
 
 #[derive(Resource)]
@@ -1409,6 +1428,18 @@ struct Wave {
     level: i32,
     timer: f32,
     calm: f32, // > 0 during the post-boss calm — pauses spawns + the wave timer
+}
+
+// The Pacifist streak (survive 2 straight waves breaking nothing): snapshots taken at each wave
+// start, diffed at its end. `primed_at_level` catches boss waves sneaking into the window — a boss
+// advance (defeat_boss) never re-primes, so the level mismatch marks the next check dirty and the
+// streak resets (a boss kill is not pacifism, even a collateral-free one).
+#[derive(Resource, Default)]
+struct PacifistWatch {
+    primed_at_level: i32,
+    breaks: u64,
+    deaths: u32,
+    streak: u32,
 }
 
 // Counts down while the big "WAVE n" flash is on screen (0 = hidden).
@@ -1488,6 +1519,7 @@ enum Ach {
     Runs10,
     Runs25,
     Runs50,
+    Pacifist,
     Edgelord,
     Untouchable,
     Purist,
@@ -1495,7 +1527,7 @@ enum Ach {
 // Order defines the index into `Achievements.unlocked` and the menu list: the boss ladder, the
 // rock-type grinds (one per type), the other lifetime grinds, the restart ladder, then the
 // beat-the-game capstones.
-const ACHIEVEMENTS: [Ach; 23] = [
+const ACHIEVEMENTS: [Ach; 24] = [
     Ach::FirstBlood,
     Ach::Warden,
     Ach::Glutton,
@@ -1516,6 +1548,7 @@ const ACHIEVEMENTS: [Ach; 23] = [
     Ach::Runs10,
     Ach::Runs25,
     Ach::Runs50,
+    Ach::Pacifist,
     Ach::Edgelord,
     Ach::Untouchable,
     Ach::Purist,
@@ -1558,6 +1591,7 @@ fn ach_meta(a: Ach) -> (&'static str, &'static str) {
         Ach::Runs10 => ("Back for More", "Start 10 runs"),
         Ach::Runs25 => ("Sisyphus", "Start 25 runs"),
         Ach::Runs50 => ("The Definition of Insanity", "Start 50 runs"),
+        Ach::Pacifist => ("Pacifist", "Survive two straight waves breaking nothing"),
         Ach::Edgelord => ("Edgelord", "Beat the game — defeat the Phantom at wave 30"),
         Ach::Untouchable => ("Untouchable", "Beat the game without losing a single life"),
         Ach::Purist => ("Purist", "Beat the game without a single powerup"),
@@ -1586,6 +1620,7 @@ fn ach_met(a: Ach, s: &Stats) -> bool {
         Ach::Runs10 => s.runs >= 10,
         Ach::Runs25 => s.runs >= 25,
         Ach::Runs50 => s.runs >= 50,
+        Ach::Pacifist => s.pacifist,
         // The REAL win: the wave-30 Phantom kill. (Historically this fired on boss 2 — the old
         // 10-wave arc's "beat the game" — which read as unlocking a third of the way in.)
         Ach::Edgelord => s.phantom,
@@ -1652,6 +1687,7 @@ struct Stats {
     warps: u32,        // warp holes opened (lifetime)
     deathless: bool,   // ever beat the game without losing a single life
     best_wave: u32,    // deepest wave ever REACHED — the game-over screen's "you were close" marker
+    pacifist: bool,    // ever survived two straight timer waves breaking nothing (and not dying)
 }
 
 // Which achievements are unlocked (drives the toast + the menu list). Initialized from the loaded
@@ -3409,6 +3445,8 @@ fn wave_timer(
     arena: Res<Arena>,
     asteroids: Query<(), With<Asteroid>>,
     mut stats: Option<ResMut<Stats>>, // optional so headless tests needn't insert it
+    run: Option<Res<Run>>,
+    mut watch: Option<ResMut<PacifistWatch>>,
 ) {
     if wave.calm > 0.0 {
         wave.calm -= time.delta_secs(); // during the post-boss calm the timer is paused
@@ -3426,6 +3464,18 @@ fn wave_timer(
     banner.timer = WAVE_BANNER_SECS; // flash the new wave number
     if let Some(s) = stats.as_mut() {
         s.waves += 1; // lifetime wave tally (saved on run end / progress saves)
+        // PACIFIST: the wave that just ended is clean if nothing was broken, nobody died, and no
+        // boss advance slipped into the window since it was primed. Two clean in a row = the unlock.
+        if let (Some(w), Some(r)) = (watch.as_deref_mut(), run.as_deref()) {
+            let clean = total_breaks(s) == w.breaks && r.deaths == w.deaths && wave.level - 1 == w.primed_at_level;
+            w.streak = if clean { w.streak + 1 } else { 0 };
+            if w.streak >= 2 {
+                s.pacifist = true; // persisted by the `achievements` system's unlock save
+            }
+            w.breaks = total_breaks(s);
+            w.deaths = r.deaths;
+            w.primed_at_level = wave.level;
+        }
     }
     let target = population_target(wave.level);
     let have = asteroids.iter().count() as i32;
@@ -7473,11 +7523,15 @@ fn reset_run(
     flags: &mut RunFlags,
     gold: &mut GoldRush,
     stats: &mut Stats,
+    watch: &mut PacifistWatch,
 ) {
     run.lives = START_LIVES;
     run.respawn = 0.0;
     run.nova = Nova::default(); // the Nova Shield must be re-earned (like every other pickup)
     run.died = false; // fresh deathless slate (achievement: Untouchable)
+    run.deaths = 0;
+    // prime the Pacifist watch on wave 1 with the CURRENT lifetime totals (streaks never span runs)
+    *watch = PacifistWatch { primed_at_level: 1, breaks: total_breaks(stats), deaths: 0, streak: 0 };
     stats.runs += 1; // every launch counts — dying a lot is the expected way to play
     save_progress(stats); // persist immediately: a rage-quit mid-run still counts the attempt
     score.0 = 0;
@@ -7515,7 +7569,7 @@ fn menu_start(
     mut wave: ResMut<Wave>,
     mut banner: ResMut<WaveBanner>,
     mut warp: ResMut<Warp>,
-    mut progress: (ResMut<BossState>, ResMut<Chain>, ResMut<MassShot>, ResMut<RunFlags>, ResMut<GoldRush>, ResMut<Warhead>, ResMut<Stats>), // bundled (16-param limit)
+    mut progress: (ResMut<BossState>, ResMut<Chain>, ResMut<MassShot>, ResMut<RunFlags>, ResMut<GoldRush>, ResMut<Warhead>, ResMut<Stats>, ResMut<PacifistWatch>), // bundled (16-param limit)
     mut clicks: EventReader<MenuClick>,
 ) {
     let actions: Vec<MenuAction> = clicks.read().map(|c| c.0).collect(); // read once, then test
@@ -7540,7 +7594,7 @@ fn menu_start(
     if !(keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) || actions.contains(&MenuAction::Play)) {
         return;
     }
-    reset_run(&mut commands, &mut run, &mut score, &mut wave, &mut banner, &mut warp, &mut progress.0, &mut progress.1, &mut progress.2, &mut progress.5, &mut progress.3, &mut progress.4, &mut progress.6);
+    reset_run(&mut commands, &mut run, &mut score, &mut wave, &mut banner, &mut warp, &mut progress.0, &mut progress.1, &mut progress.2, &mut progress.5, &mut progress.3, &mut progress.4, &mut progress.6, &mut progress.7);
     next.set(GameState::Playing);
 }
 
@@ -8336,12 +8390,13 @@ fn read_progress() -> Option<Stats> {
         warps: num(19),
         deathless: flag(20),
         best_wave: num(21),
+        pacifist: flag(22),
     })
 }
 #[cfg(not(test))]
 fn save_progress(s: &Stats) {
     let line = format!(
-        "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+        "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
         s.blue,
         s.green,
         s.enemies,
@@ -8363,7 +8418,8 @@ fn save_progress(s: &Stats) {
         s.waves,
         s.warps,
         s.deathless as u8,
-        s.best_wave
+        s.best_wave,
+        s.pacifist as u8
     );
     let _ = std::fs::write(SAVE_PATH, line); // best-effort — never block gameplay on I/O
 }
@@ -8436,7 +8492,7 @@ fn gameover_restart(
     mut wave: ResMut<Wave>,
     mut banner: ResMut<WaveBanner>,
     mut warp: ResMut<Warp>,
-    mut progress: (ResMut<BossState>, ResMut<Chain>, ResMut<MassShot>, ResMut<RunFlags>, ResMut<GoldRush>, ResMut<Warhead>, ResMut<Stats>),
+    mut progress: (ResMut<BossState>, ResMut<Chain>, ResMut<MassShot>, ResMut<RunFlags>, ResMut<GoldRush>, ResMut<Warhead>, ResMut<Stats>, ResMut<PacifistWatch>),
     field: Query<Entity, GameplayEntity>,
 ) {
     if keys.just_pressed(KeyCode::Escape) {
@@ -8449,7 +8505,7 @@ fn gameover_restart(
     for e in &field {
         commands.entity(e).despawn();
     }
-    reset_run(&mut commands, &mut run, &mut score, &mut wave, &mut banner, &mut warp, &mut progress.0, &mut progress.1, &mut progress.2, &mut progress.5, &mut progress.3, &mut progress.4, &mut progress.6);
+    reset_run(&mut commands, &mut run, &mut score, &mut wave, &mut banner, &mut warp, &mut progress.0, &mut progress.1, &mut progress.2, &mut progress.5, &mut progress.3, &mut progress.4, &mut progress.6, &mut progress.7);
     next.set(GameState::Playing); // field refills from the edges via top_up_asteroids
 }
 
@@ -8808,6 +8864,7 @@ fn main() {
         .insert_resource(Stats::default())
         .insert_resource(Achievements::default())
         .insert_resource(LoreSeen::default())
+        .insert_resource(PacifistWatch::default())
         .insert_resource(RunFlags::default())
         .insert_resource(GoldRush::default())
         .insert_resource(FireArmed::default())
@@ -10294,6 +10351,8 @@ mod tests {
         // the capstones key their own dedicated flags, not each other's
         assert!(ach_met(Ach::Untouchable, &Stats { deathless: true, ..default() }));
         assert!(!ach_met(Ach::Untouchable, &Stats { phantom: true, no_powerups: true, ..default() }));
+        assert!(ach_met(Ach::Pacifist, &Stats { pacifist: true, ..default() }));
+        assert!(!ach_met(Ach::Pacifist, &Stats { deathless: true, phantom: true, ..default() }));
         assert!(ach_met(Ach::Purist, &Stats { no_powerups: true, ..default() }));
         assert!(!ach_met(Ach::Purist, &Stats { phantom: true, deathless: true, ..default() }));
     }
@@ -10344,10 +10403,11 @@ mod tests {
             warps: 13,
             deathless: true,
             best_wave: 14,
+            pacifist: true,
         };
         // mirror save_progress's field order (the real fn is a test no-op so runs can't clobber saves)
         let line = format!(
-            "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+            "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
             s.blue,
             s.green,
             s.enemies,
@@ -10369,10 +10429,11 @@ mod tests {
             s.waves,
             s.warps,
             s.deathless as u8,
-            s.best_wave
+            s.best_wave,
+            s.pacifist as u8
         );
         let n: Vec<&str> = line.split_whitespace().collect();
-        assert_eq!(n.len(), 22, "the save line carries all 22 fields");
+        assert_eq!(n.len(), 23, "the save line carries all 23 fields");
         let flag = |i: usize| n[i] == "1";
         let num = |i: usize| n[i].parse::<u32>().unwrap();
         assert_eq!((num(0), num(1), num(2)), (s.blue, s.green, s.enemies));
@@ -10382,7 +10443,8 @@ mod tests {
         assert_eq!((num(12), num(13), num(14), num(15), num(16)), (s.orange, s.pulser, s.red, s.cluster, s.beacon));
         assert_eq!((num(17), num(18), num(19)), (s.runs, s.waves, s.warps));
         assert!(flag(20), "deathless rides in slot 20");
-        assert_eq!(num(21), s.best_wave, "best_wave rides in the final slot");
+        assert_eq!(num(21), s.best_wave, "best_wave rides in slot 21");
+        assert!(flag(22), "pacifist rides in the final slot");
         // an OLD 12-field save (pre-expansion) must still load — new counters default to zero
         let old = "5 4 3 1 0 0 1 0 0 0 2 1";
         assert_eq!(old.split_whitespace().count(), 12);
@@ -10423,6 +10485,33 @@ mod tests {
         app.update();
         let after = app.world().entity(ship).get::<Velocity>().unwrap().0;
         assert!(after.x < v.x && after.x > 0.0 && after.y.abs() < f32::EPSILON, "coasting only bleeds speed");
+    }
+
+    #[test]
+    fn two_clean_waves_unlock_pacifist_and_breaks_reset_the_streak() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(Wave { level: 1, timer: 0.0, calm: 0.0 });
+        app.insert_resource(WaveBanner::default());
+        app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
+        app.insert_resource(Stats::default());
+        app.insert_resource(Run { lives: 3, ..default() });
+        app.insert_resource(PacifistWatch { primed_at_level: 1, breaks: 0, deaths: 0, streak: 0 });
+        app.add_systems(Update, wave_timer);
+        app.update(); // wave 1 ends: nothing broken, nobody died → streak 1
+        assert!(!app.world().resource::<Stats>().pacifist, "one clean wave isn't enough");
+        app.world_mut().resource_mut::<Wave>().timer = 0.0;
+        app.update(); // wave 2 ends clean → streak 2 → the unlock
+        assert!(app.world().resource::<Stats>().pacifist, "two straight clean waves = Pacifist");
+        // now a wave where the player broke a rock: the streak resets instead of counting
+        app.world_mut().resource_mut::<Stats>().pacifist = false;
+        let breaks_now = total_breaks(app.world().resource::<Stats>());
+        *app.world_mut().resource_mut::<PacifistWatch>() = PacifistWatch { primed_at_level: 3, breaks: breaks_now, deaths: 0, streak: 1 };
+        app.world_mut().resource_mut::<Stats>().blue += 1; // a kill mid-wave
+        app.world_mut().resource_mut::<Wave>().timer = 0.0;
+        app.update();
+        assert_eq!(app.world().resource::<PacifistWatch>().streak, 0, "breaking anything resets the streak");
+        assert!(!app.world().resource::<Stats>().pacifist, "a dirty pair never unlocks it");
     }
 
     #[test]
@@ -11479,6 +11568,7 @@ mod tests {
         app.insert_resource(RunFlags { powerup_used: true });
         app.insert_resource(GoldRush { active: true, forfeited: false, cooldown: 0.0 });
         app.insert_resource(Stats { runs: 9, ..default() });
+        app.insert_resource(PacifistWatch { primed_at_level: 7, breaks: 42, deaths: 2, streak: 1 }); // stale — Start must re-prime it
         let mut input = ButtonInput::<KeyCode>::default();
         input.press(KeyCode::Enter);
         app.insert_resource(input);
