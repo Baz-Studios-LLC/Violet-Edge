@@ -3,7 +3,7 @@
 Patch notes for the Rust + Bevy build. Newest first. (Releases are cut to GitHub and picked up by the
 Baz Studios launcher.) **Keep this current with every change** — it's the record testers read.
 
-## Unreleased
+## v0.4.9 — The first produced track (2026-07-30)
 
 - **The Game Over theme is now a produced track.** Generated in Antigravity from the procedural
   dirge as reference: melancholic ambient synthwave — warm analog pads over Am–Fmaj7–Dm7–E7,
