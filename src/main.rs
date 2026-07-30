@@ -3184,6 +3184,7 @@ fn collisions(
         let bp = bt.translation.truncate();
         let br = bullet_radius(b.mass); // mass shots are fatter…
         let power = bullet_boss_power(b.mass); // …and (vs a boss/mob) hit a bit harder; vs free rocks, see below
+        let mut warhead_blast_at: Option<Vec2> = None; // set when a warhead round detonates on a rock
         for (ae, at, mut a, gold, explosive, pulser, red, cluster, beacon) in &mut asteroids {
             if dead_a.contains(&ae) {
                 continue;
@@ -3191,11 +3192,12 @@ fn collisions(
             let ap = at.translation.truncate();
             let rr = asteroid_radius(a.size) + br;
             if bp.distance_squared(ap) < rr * rr {
-                // a LIT pulser is invulnerable — every shot fizzles on its shield (a WARHEAD round passes over it)
+                // a LIT pulser is invulnerable — every shot fizzles on its shield (a WARHEAD round
+                // doesn't detonate on an invulnerable shield either; it flies on past)
                 if pulser.is_some_and(|pl| pulser_lit(pl.offset, time.elapsed_secs())) {
                     burst(&mut commands, bp, Color::srgb(6.0, 6.0, 7.0), 4, 130.0, &mut rng); // white spark
                     if is_warhead {
-                        continue; // the piercing round carries on past it
+                        continue; // no detonation on a shield — the round carries on
                     }
                     dead_b.insert(be);
                     commands.entity(be).despawn();
@@ -3210,8 +3212,10 @@ fn collisions(
                     break;
                 }
                 if is_warhead {
-                    // WARHEAD: DESTROY the rock outright (no chunks, no chain) + a violet blast RING, and PASS
-                    // THROUGH — the round keeps flying to delete the next rock in its path (never consumed here).
+                    // WARHEAD: detonate ON IMPACT — the round is spent here (it's a warhead, not a
+                    // drill; the old infinite pierce read as the shot "just keeping going"). The rock
+                    // it struck dies outright, and the violet ring is now a REAL blast: everything
+                    // within WARHEAD_BLAST_R is destroyed in the after-pass below.
                     dead_a.insert(ae);
                     break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, a.dense, gold.is_some(), pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), false);
                     commands.spawn((
@@ -3224,7 +3228,10 @@ fn collisions(
                     } else {
                         credit_rock_kill(&mut stats, a.dense, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some());
                     }
-                    continue; // PIERCE — do not consume the round
+                    warhead_blast_at = Some(ap); // AoE applied after this loop (can't nest a second &mut pass)
+                    dead_b.insert(be);
+                    commands.entity(be).despawn();
+                    break;
                 }
                 // MASS / STANDARD: consume the round, chip hp (mass hits harder), split on the killing hit
                 dead_b.insert(be);
@@ -3246,6 +3253,30 @@ fn collisions(
                     }
                 }
                 break;
+            }
+        }
+        // ── the warhead's AoE: the ring means it now — every rock inside the blast dies, credited.
+        // Blast rules apply, same as a mine's: gold is spared (only aimed shots may break the 1UP),
+        // a LIT pulser shrugs it off, and the beacon aura does NOT protect (blasts are its counter).
+        if let Some(c) = warhead_blast_at {
+            for (ae, at, a, gold, explosive, pulser, red, cluster, beacon) in &mut asteroids {
+                if dead_a.contains(&ae) || gold.is_some() {
+                    continue;
+                }
+                if pulser.is_some_and(|pl| pulser_lit(pl.offset, time.elapsed_secs())) {
+                    continue;
+                }
+                let ap = at.translation.truncate();
+                let rr = WARHEAD_BLAST_R + asteroid_radius(a.size);
+                if c.distance_squared(ap) < rr * rr {
+                    dead_a.insert(ae);
+                    break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, a.dense, false, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), false);
+                    if explosive.is_some() {
+                        stats.orange += 1; // the blast deletes an orange whole — yours
+                    } else {
+                        credit_rock_kill(&mut stats, a.dense, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some());
+                    }
+                }
             }
         }
         if dead_b.contains(&be) {
@@ -11653,25 +11684,47 @@ mod tests {
     }
 
     #[test]
-    fn warhead_round_pierces_and_destroys() {
+    fn warhead_round_detonates_on_impact_with_real_aoe() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.add_event::<SoundFx>();
         app.insert_resource(Stats::default());
         app.insert_resource(Score(0));
-        // a rock + a WARHEAD round on it (WarheadShot marker): it destroys the rock outright — no chunks, no
-        // Detonating/chain — and the round is NOT consumed (it pierces on to the next rock)
+        // the impact rock, a neighbor INSIDE the blast, a bystander far outside it, and a gold
+        // rock inside the blast (gold is blast-immune — only aimed shots may break the 1UP)
         app.world_mut().spawn((
             Asteroid { size: 2, verts: vec![Vec2::X * 40.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
             Velocity(Vec2::ZERO),
             Transform::from_xyz(0.0, 0.0, 0.0),
         ));
+        app.world_mut().spawn((
+            Asteroid { size: 1, verts: vec![Vec2::X * 22.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(WARHEAD_BLAST_R * 0.6, 0.0, 0.0),
+        ));
+        app.world_mut().spawn((
+            Asteroid { size: 1, verts: vec![Vec2::X * 22.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(WARHEAD_BLAST_R + 220.0, 0.0, 0.0),
+        ));
+        app.world_mut().spawn((
+            Asteroid { size: 1, verts: vec![Vec2::X * 22.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+            Gold,
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(-WARHEAD_BLAST_R * 0.5, 0.0, 0.0),
+        ));
         app.world_mut().spawn((Bullet { life: 1.0, trail: Vec::new(), mass: false }, WarheadShot, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0)));
         app.add_systems(Update, collisions);
         app.update();
-        assert_eq!(app.world_mut().query::<&Asteroid>().iter(app.world()).count(), 0, "the Warhead round destroys the rock outright (no chunks)");
-        assert_eq!(app.world_mut().query::<&Detonating>().iter(app.world()).count(), 0, "and does NOT leave it ticking / chaining");
-        assert_eq!(app.world_mut().query::<&Bullet>().iter(app.world()).count(), 1, "the round PIERCES — it isn't consumed by the rock");
+        assert_eq!(app.world_mut().query::<&Bullet>().iter(app.world()).count(), 0, "the round DETONATES on impact — it does not keep going");
+        assert_eq!(app.world_mut().query::<&Detonating>().iter(app.world()).count(), 0, "nothing is left ticking");
+        let survivors: Vec<bool> = {
+            let mut q = app.world_mut().query::<(&Asteroid, Option<&Gold>)>();
+            q.iter(app.world()).map(|(_, g)| g.is_some()).collect()
+        };
+        assert_eq!(survivors.len(), 2, "impact rock + blast neighbor die; the far rock and the gold survive");
+        assert!(survivors.contains(&true), "the gold 1UP shrugged off the blast");
+        assert_eq!(app.world().resource::<Stats>().blue, 2, "both blast kills are credited to the player");
     }
 
     #[test]

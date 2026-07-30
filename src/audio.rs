@@ -90,6 +90,12 @@ fn reese(t: f32, f: f32) -> f32 {
 fn crash(t: f32, i: usize) -> f32 {
     (noise(i) - noise(i + 11)) * 0.5 * (-t * 3.2).exp()
 }
+// A METALLIC CLANG — inharmonic partials, fast decay: the corruption's industrial percussion
+// (tier ≥ 2). Deliberately bell-adjacent and wrong next to the clean track's claps and hats.
+fn clang(t: f32, f: f32) -> f32 {
+    let p = |m: f32, g: f32| (TAU * f * m * t).sin() * g;
+    (p(1.0, 0.5) + p(2.41, 0.3) + p(3.76, 0.2) + p(5.5, 0.1)) * (1.0 - (-t * 400.0).exp()) * (-t * 9.0).exp()
+}
 
 // Sustained detuned-saw PAD chord — a slow-swelling atmospheric bed. Tracks that use this feel
 // harmonic and spacious instead of arp-driven, which is a bigger identity change than a waveform
@@ -125,7 +131,7 @@ fn master(buf: &[f32]) -> Vec<u8> {
 /// it is never faded — so it doesn't cut off. This is the clean (act-start) normal-play track;
 /// `main_track_variants` derives the corrupted tiers from the same mix.
 pub fn main_track_wav() -> Vec<u8> {
-    master(&main_track_mix())
+    master(&main_track_mix(0))
 }
 
 // CORRUPTION: each boss down, the field's own music degrades — drive into saturation, bit depth
@@ -151,19 +157,26 @@ fn corrupt(buf: &[f32], grit: f32) -> Vec<f32> {
         .collect()
 }
 
-/// The main track at every corruption tier (0 = clean … tiers-1 = fully corrupted): ONE synthesis
-/// pass, then per-tier post-processing — the arrangement never changes, only how damaged it sounds.
+/// The main track at every corruption tier (0 = clean … tiers-1 = fully corrupted). Each tier is a
+/// FULL re-synthesis with its own corruption CONTENT (`main_track_mix(tier)` — new instruments per
+/// boss down, not just damage), then the DSP grit rides on top. The arrangement skeleton never
+/// changes — it's always recognizably THE track, being taken apart.
 pub fn main_track_variants(tiers: usize) -> Vec<Vec<u8>> {
-    let clean = main_track_mix();
     (0..tiers)
         .map(|k| {
             let grit = k as f32 / (tiers.saturating_sub(1)).max(1) as f32;
-            master(&corrupt(&clean, grit))
+            master(&corrupt(&main_track_mix(k.min(5)), grit))
         })
         .collect()
 }
 
-fn main_track_mix() -> Vec<f32> {
+// `tier` (0..=5) = bosses down: each one ADDS a wrongness the clean mix doesn't have —
+//   1+: the arp's pitch WOBBLES (detune drift) and a ghost TRITONE drone seeps under the phrases
+//   2+: industrial metallic CLANGS join the backbeat
+//   3+: the boss track's own reese GROWL bleeds into the drops (their DNA in your music)
+//   4+: the rave stabs turn SOUR (a ♭9 jammed into every chord)
+//   5 : the arp starts hitting WRONG NOTES (tritone substitutions) and static bursts tick through
+fn main_track_mix(tier: usize) -> Vec<f32> {
     let bpm = 128.0;
     let bars = 64usize;
     let step = 60.0 / bpm / 4.0;
@@ -204,6 +217,15 @@ fn main_track_mix() -> Vec<f32> {
         if energetic && (bp == 4 || bp == 12) {
             add_voice(&mut drums, start, 0.20, 0.5, clap); // backbeat
         }
+        // tier 2+: industrial CLANGS shadow the backbeat — percussion the clean track doesn't own
+        if tier >= 2 && energetic && bp == 12 && bar % 2 == 1 {
+            let cf = 640.0 + 90.0 * ((s * 7) % 3) as f32; // three alternating strike pitches
+            add_voice(&mut drums, start, 0.5, 0.16 + 0.06 * tier as f32, move |t, _| clang(t, cf));
+        }
+        // tier 5: bursts of STATIC tick through the kit — the signal itself failing
+        if tier >= 5 && s.wrapping_mul(2654435761) % 16 < 2 {
+            add_voice(&mut drums, start, 0.06, 0.14, |t, i| (noise(i * 3) - noise(i * 3 + 5)) * (-t * 40.0).exp());
+        }
         if energetic {
             let open = beat == 2;
             let (dur, gain) = if open { (0.14, 0.18) } else { (0.05, 0.12) };
@@ -237,18 +259,33 @@ fn main_track_mix() -> Vec<f32> {
                 add_voice(&mut music, start, step * 32.0, 0.5, move |t, _| pad_voice(t, f)); // breakdown pad
             }
         }
-        // ARP supersaw — 16ths when energetic, softer 8ths elsewhere (the hypnotic drive)
+        // tier 1+: a ghost TRITONE drone seeps under every 2-bar phrase — quiet, low, and wrong
+        if tier >= 1 && s.is_multiple_of(32) {
+            let f = root * 2f32.powf(6.0 / 12.0); // the devil's interval against the root
+            let g = 0.05 + 0.05 * tier as f32;
+            add_voice(&mut music, start, step * 32.0, g, move |t, _| pad_voice(t, f));
+        }
+        // tier 3+: the BOSS track's reese growl bleeds into the drops — their DNA in your music
+        if tier >= 3 && drop && bp == 0 {
+            add_voice(&mut music, start, step * 6.0, 0.3, move |t, _| reese(t, root));
+        }
+        // ARP supersaw — 16ths when energetic, softer 8ths elsewhere (the hypnotic drive).
+        // tier 1+ the pitch WOBBLES (slow detune drift); tier 5 it lands WRONG NOTES outright.
         let play_arp = if energetic { true } else { s.is_multiple_of(2) };
         if play_arp {
             let idx = if energetic { s } else { s / 2 };
-            let f = root * 4.0 * 2f32.powf(arp[idx % 8] as f32 / 12.0);
+            let semi = if tier >= 5 && idx % 7 == 0 { 6 } else { arp[idx % 8] }; // tritone substitution
+            let wobble = 1.0 + tier as f32 * 0.0012 * (s as f32 * 0.7).sin();
+            let f = root * 4.0 * 2f32.powf(semi as f32 / 12.0) * wobble;
             let g = if energetic { 0.15 } else { 0.10 };
             add_voice(&mut music, start, step * 1.6, g, move |t, _| arp_saw(t, f));
         }
-        // RAVE STAB — supersaw chord hits on a syncopated pattern during the drops (the club hook)
+        // RAVE STAB — supersaw chord hits on a syncopated pattern during the drops (the club hook).
+        // tier 4+ jams a ♭9 into the chord — the hook turns SOUR right where it used to feel good.
         if drop && (bp == 0 || bp == 6 || bp == 10) {
             let base = root * 2.0;
-            for semi in [0.0f32, 3.0, 7.0] {
+            let chord: &[f32] = if tier >= 4 { &[0.0, 1.0, 3.0, 7.0] } else { &[0.0, 3.0, 7.0] };
+            for &semi in chord {
                 let f = base * 2f32.powf(semi / 12.0);
                 add_voice(&mut music, start, step * 3.0, 0.16, move |t, _| stab_voice(t, f));
             }
@@ -695,14 +732,16 @@ mod tests {
 
     #[test]
     fn corruption_tiers_differ_and_stay_valid() {
-        // one synthesis, N masters: every tier is a real WAV and the grit genuinely changes the audio
+        // every tier is a real WAV, and the corruption is CONTENT, not just mastering: tier 1
+        // already differs (wobble + tritone drone), and full grit differs from both
         let v = main_track_variants(3);
         assert_eq!(v.len(), 3);
         for wav in &v {
             assert_eq!(&wav[0..4], b"RIFF", "every tier is a valid WAV");
             assert!(wav.len() > 44 + 600_000, "every tier carries the whole loop");
         }
-        assert_ne!(v[0], v[2], "full grit must not equal the clean mix");
+        assert_ne!(v[0], v[1], "one boss down must already sound different");
+        assert_ne!(v[1], v[2], "and the corruption keeps deepening");
     }
 
     #[test]

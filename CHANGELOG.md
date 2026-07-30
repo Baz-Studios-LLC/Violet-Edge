@@ -16,11 +16,19 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
     (bullet, chain, mine, warhead, blast). Small rocks skip it so the field never washes out.
   - **Bosses finally SOUND like they die**: a deep falling-sub detonation boom on every boss kill
     (they used to go down with particles only).
-- **The music corrupts as you descend.** After each boss, the main track comes back a tier
-  *wronger* — progressively driven, bit-crushed, and aliased (six tiers, one per act segment, same
-  arrangement throughout). The menu and the post-win screens play the clean mix: beating the
-  Phantom literally hands the music back. The lore does the talking — the deeper you go, the
-  wronger the Belt sounds.
+- **The music corrupts as you descend — audibly.** After each boss the main track comes back a
+  tier *wronger*, and each tier brings NEW instruments the clean mix doesn't own, not just damage:
+  boss 1 sets the arp's pitch wobbling and slips a ghost tritone drone under the phrases; boss 2
+  adds industrial metallic clangs to the backbeat; boss 3 lets the boss track's own reese growl
+  bleed into the drops; boss 4 jams a sour ♭9 into every rave stab; the last act hits outright
+  wrong notes (tritone substitutions) with static bursts ticking through the kit. DSP grit
+  (drive/bitcrush/decimation) still deepens on top. Menu and post-win screens play the clean mix —
+  beating the Phantom literally hands the music back.
+- **The Warhead detonates on impact now.** The round no longer pierces on forever — it spends
+  itself on the first rock it hits, and the violet ring finally means something: everything inside
+  the blast radius dies with it (credited to you; gold is spared, lit pulsers shrug it off, and
+  beacon auras do NOT protect against it — blasts are their designed counter). One aimed round
+  into a packed lane is now a real answer, and it visibly ENDS there.
 - **Game Over has its own music.** A tolling two-note bell knell (inharmonic partials, long
   decays, one strike every 2.4s) over a breathing sub drone and a whisper of cold wind — no drums,
   no saws, nothing shared with the rest of the score. A run ending now *sounds* like its own world
