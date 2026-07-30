@@ -465,11 +465,14 @@ pub fn boss_down_sfx_wav() -> Vec<u8> {
     })
 }
 
-/// The GAME OVER track, v2 — the first cut was fairly called "the main track but slower" (same saw
-/// pads + a kick at 70 BPM). This is a different INSTRUMENT entirely: **no drums, no saws** — a
-/// two-note tolling BELL (inharmonic partials, long decay, A→E knell every 2.4s), a breathing sub
-/// drone, and a barely-there cold wind. Nothing in it appears anywhere else in the score, so a run
-/// ending sounds like its own world. A 19.2s seamless loop (drone and LFO land on whole periods).
+/// The GAME OVER track — ⚠️ **NO LONGER SHIPPED** (2026-07-30): the game now plays a PRODUCED
+/// track (`GAMEOVER_MP3`, generated in Antigravity using this as the reference). Kept as the
+/// reference render (`render_full_tracks`) and a working fallback if the mp3 is ever pulled.
+///
+/// v2 — the first cut was fairly called "the main track but slower" (same saw pads + a kick at 70
+/// BPM). This is a different INSTRUMENT entirely: **no drums, no saws** — a two-note tolling BELL
+/// (inharmonic partials, long decay, A→E knell every 2.4s), a breathing sub drone, and a
+/// barely-there cold wind. A 19.2s seamless loop (drone and LFO land on whole periods).
 pub fn gameover_track_wav() -> Vec<u8> {
     let toll = 2.4f32; // seconds between strikes — a funeral pace, not a tempo
     let tolls = 8usize;

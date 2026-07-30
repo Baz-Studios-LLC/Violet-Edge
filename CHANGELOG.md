@@ -3,6 +3,15 @@
 Patch notes for the Rust + Bevy build. Newest first. (Releases are cut to GitHub and picked up by the
 Baz Studios launcher.) **Keep this current with every change** — it's the record testers read.
 
+## Unreleased
+
+- **The Game Over theme is now a produced track.** Generated in Antigravity from the procedural
+  dirge as reference: melancholic ambient synthwave — warm analog pads over Am–Fmaj7–Dm7–E7,
+  Rhodes-toned arpeggios, soft sub bass (15s, loops gap-free). Embedded like every other asset, so
+  the exe stays self-contained, and level-matched to the rest of the score (the produced master
+  runs ~1.6 dB quieter, so it carries a measured gain trim). The procedural bell dirge is retired
+  to reference/fallback duty — this is the first externally-produced track in the score.
+
 ## v0.4.8 — NEW GAME+, the split economy, and the big balance pass (2026-07-30)
 
 - **The split economy** (user design): breaking a rock no longer guarantees two children. A large

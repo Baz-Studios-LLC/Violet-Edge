@@ -7463,6 +7463,16 @@ const LOGO_PNG: &[u8] = include_bytes!("../assets/logo.png");
 // studio game opens identically.
 const BAZ_LOGO_PNG: &[u8] = include_bytes!("../assets/baz_logo.png");
 const BAZ_STING_MP3: &[u8] = include_bytes!("../assets/logo_sound.mp3");
+// PRODUCED MUSIC (2026-07-30): the first externally-produced track in the score — the GAME OVER
+// theme, generated in Antigravity from the procedural dirge as reference (melancholic ambient
+// synthwave: analog pads over Am-Fmaj7-Dm7-E7, Rhodes arpeggios, sub bass; 15s, 192kbps, loops
+// gap-free — verified no silence at either edge). Embedded like every other asset so the exe stays
+// self-contained. The procedural `audio::gameover_track_wav` is no longer shipped — it survives as
+// the reference render + fallback.
+const GAMEOVER_MP3: &[u8] = include_bytes!("../assets/gameover.mp3");
+// This track masters ~1.6 dB quieter (mean -17.8 dB) than the procedural score (main: -16.2 dB),
+// so it gets a measured gain trim to sit at the same perceived level as the other cues.
+const GAMEOVER_GAIN: f32 = 1.2;
 
 #[derive(Resource)]
 struct LogoImage(Handle<Image>);
@@ -8771,7 +8781,7 @@ enum MusicCue {
     Main(u8), // the full-length main track at a CORRUPTION TIER (0 = clean … 5 = the last act's snarl)
     Buildup,  // the ~10 s riser in the run-up to a boss (one-shot)
     Boss,     // the boss track (loops)
-    GameOver, // the somber ~70 BPM dirge under the Game Over screen (loops)
+    GameOver, // the produced ambient-synthwave game-over theme (loops) — see GAMEOVER_MP3
     Silence,  // the post-boss calm — a deliberate breather, no music
 }
 
@@ -8797,18 +8807,20 @@ fn start_music(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>)
         .map(|wav| sources.add(AudioSource { bytes: wav.into() }))
         .collect();
     let boss = sources.add(AudioSource { bytes: audio::boss_track_wav().into() });
+    // the game-over theme is a PRODUCED mp3 (not synthesized) — decoded by bevy's `mp3` feature
+    let gameover = sources.add(AudioSource { bytes: GAMEOVER_MP3.to_vec().into() });
     let buildup = sources.add(AudioSource { bytes: audio::boss_buildup_wav().into() });
-    let gameover = sources.add(AudioSource { bytes: audio::gameover_track_wav().into() });
     commands.insert_resource(MusicDirector { mains, boss, buildup, gameover, cue: None, muted: false });
 }
 
 // Spawn a Music player. Loops for the main/boss tracks; one-shot (Despawn) for the buildup riser.
-fn play_track(commands: &mut Commands, handle: Handle<AudioSource>, muted: bool, looping: bool) {
+// `gain` trims a track that masters at a different level from the rest of the score (1.0 = as-is).
+fn play_track(commands: &mut Commands, handle: Handle<AudioSource>, muted: bool, looping: bool, gain: f32) {
     commands.spawn((
         AudioPlayer(handle),
         PlaybackSettings {
             mode: if looping { PlaybackMode::Loop } else { PlaybackMode::Despawn },
-            volume: Volume::Linear(if muted { 0.0 } else { MUSIC_VOLUME }),
+            volume: Volume::Linear(if muted { 0.0 } else { MUSIC_VOLUME * gain }),
             ..default()
         },
         Music,
@@ -8870,19 +8882,19 @@ fn music_director(
             MusicCue::Silence => {}
             MusicCue::Main(t) => {
                 let h = dir.mains[(t as usize).min(dir.mains.len() - 1)].clone();
-                play_track(&mut commands, h, dir.muted, true);
+                play_track(&mut commands, h, dir.muted, true, 1.0);
             }
             MusicCue::Boss => {
                 let h = dir.boss.clone();
-                play_track(&mut commands, h, dir.muted, true);
+                play_track(&mut commands, h, dir.muted, true, 1.0);
             }
             MusicCue::Buildup => {
                 let h = dir.buildup.clone();
-                play_track(&mut commands, h, dir.muted, false);
+                play_track(&mut commands, h, dir.muted, false, 1.0);
             }
             MusicCue::GameOver => {
                 let h = dir.gameover.clone();
-                play_track(&mut commands, h, dir.muted, true);
+                play_track(&mut commands, h, dir.muted, true, GAMEOVER_GAIN); // produced track, quieter master
             }
         }
         dir.cue = Some(desired);

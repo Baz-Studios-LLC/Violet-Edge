@@ -431,6 +431,18 @@ Considered and shelved (could layer on later): score extends, boss-clear +1, per
   `MusicCue::Main(tier)`, tier = (wave-1)/5 — each boss down, the field's music returns a tier
   wronger; menu/Briefing/Victory play tier 0 (a win hands the clean track back). The lore speaks
   through the mix: the Belt sounds progressively wronger the deeper the run goes.
+- **PRODUCED music (started 2026-07-30).** The score is migrating from fully-procedural synthesis to
+  externally-produced tracks generated in **Antigravity** (the same tool the whole of Wingman was
+  made on, so licensing is settled by that precedent), using the procedural score as the style
+  reference. **Shipped so far: the GAME OVER theme** (`assets/gameover.mp3` → `GAMEOVER_MP3`,
+  `include_bytes!`-embedded, decoded by bevy's `mp3` feature; ambient synthwave, Am–Fmaj7–Dm7–E7
+  pads + Rhodes arpeggios, 15s gap-free loop). Pipeline notes for the next tracks: verify the loop
+  has **no edge silence** (`silencedetect`) and **level-match it** — `play_track` takes a `gain`
+  multiplier per cue, and produced masters have run ~1.6 dB quieter than the procedural ones
+  (`GAMEOVER_GAIN` = 1.2). Superseded procedural fns stay as reference renders + fallbacks
+  (`render_full_tracks` writes them for handoff), never deleted. ⚠️ If MAIN is ever replaced, the
+  corruption tiers need either per-act produced variants or the existing `corrupt()` DSP applied to
+  the decoded PCM — the tier system is a story beat, not an effect.
 - **Flight model (tuned 2026-07-29, hitbox EXPLICITLY untouched — user rule: clean maneuvering must
   never come from shrinking the ship).** `ship_control` is fully dt-correct: turn 5.2 rad/s (~300°/s,
   raised from 4.6 for gap-weaving), thrust 1000 px/s² against heavy drag (`FRICTION 0.15` retention/s,
