@@ -67,6 +67,14 @@ const FINALE_FIELD_CAP: i32 = 10; // wave 30: max non-gold rocks out at once (ma
 const CLUSTER_SHARDS: usize = 7;
 const CLUSTER_SHARD_SPEED: f32 = 210.0; // outward fling of the shard ring (× the caller's chunk_mult)
 
+// Hunter (waves 6+): the first rock that CHASES. It steers at the ship with `HUNTER_ACCEL`, capped at
+// HUNTER_MAX_SPEED, and its aggression ramps over HUNTER_RAMP seconds of life — a slow menace that
+// becomes a real threat if ignored. Deliberately slower than the ship at full charge (outrunnable, so
+// it's pressure rather than a death sentence) and children reset to charge 0 when it splits.
+const HUNTER_ACCEL: f32 = 115.0; // px/s² steering toward the ship at FULL charge
+const HUNTER_MAX_SPEED: f32 = 205.0; // px/s cap — well under the ship's 560, so you can always disengage
+const HUNTER_RAMP: f32 = 14.0; // s of life to reach full aggression (fresh chunks start docile)
+
 // Beacon (waves 23+): a teal warden rock projecting an AURA — rocks inside it are immune to gunfire
 // and the chain until the beacon falls (blasts, the warp, and red-absorption all bypass it: the
 // counterplay). Spawns dense (hp = size), never splits — it dies clean when cracked.
@@ -284,6 +292,15 @@ const PICKUP_R: f32 = 30.0; // reward-orb radius
 const NOVA_REGEN: f32 = 9.0; // s the shield stays DOWN after eating a hit (long enough that it can't tank everything)
 const NOVA_GRACE: f32 = 1.0; // s of immunity as it pops — the overlap that broke it can't instantly re-kill
 const NOVA_RELIGHT: f32 = 0.8; // the regen's final stretch — the shell flickers as it comes back (≤3 Hz, photosafe)
+// AEGIS SHARDS — the Warden+'s drop (NG+ boss 1). The Warden PENS rocks on orbital arms; this is
+// that trick in the player's hands: SMALL shards orbiting the hull, moving with the ship, that grind
+// any rock which would have hit you. Deliberately NOT invincibility: each block consumes a shard and
+// they come back one at a time on a slow cooldown, so a careless stretch leaves you bare.
+const AEGIS_SHARDS: u8 = 3; // shards at full strength
+const AEGIS_ORBIT_R: f32 = 30.0; // how far out they ride (just off the hull)
+const AEGIS_SHARD_R: f32 = 4.2; // SMALL, per the user's call — chips, not plates
+const AEGIS_SPIN: f32 = 1.5; // rad/s — a slow, readable rotation
+const AEGIS_REGEN: f32 = 11.0; // s to grow ONE shard back (the anti-invincibility throttle)
 const NOVA_SHELL: f32 = 1.8; // the shield is the SHIP'S OWN silhouette scaled out — a second hull layer, not a separate polygon
 const PICKUP_DRIFT: f32 = 32.0; // px/s slow drift
 const PICKUP_LIFE: f32 = 20.0; // the orb lingers this long (well past the 10s boss calm) before vanishing
@@ -501,6 +518,10 @@ fn well_color() -> Color {
 fn pulser_lit(offset: f32, t: f32) -> bool {
     (t * PULSE_RATE + offset).sin() > PULSE_LIT_THRESHOLD
 }
+fn hunter_color() -> Color {
+    Color::srgb(6.0, 1.1, 0.35)
+} // hazard VERMILLION — the wave-6 predator. Distinct from orange (yellower, and an Act II type) and
+  // from the red rock (pinker, Act III); its tracking EYE and its motion are the real identity.
 fn cluster_color() -> Color {
     Color::srgb(2.0, 3.2, 4.4)
 } // pale fractured ICE — brighter than a dark pulser, colder/whiter than the blue rocks; waves 26+
@@ -847,8 +868,10 @@ fn total_breaks(s: &Stats) -> u64 {
 
 // Credit a player rock-kill to its type's lifetime counter (the per-type achievements). One source
 // of truth for the priority order (beacon/pulser are ALSO dense internally, so they check first).
-fn credit_rock_kill(stats: &mut Stats, dense: bool, pulser: bool, red: bool, cluster: bool, beacon: bool) {
-    if beacon {
+fn credit_rock_kill(stats: &mut Stats, dense: bool, pulser: bool, red: bool, cluster: bool, beacon: bool, hunter: bool) {
+    if hunter {
+        stats.hunter += 1;
+    } else if beacon {
         stats.beacon += 1;
     } else if pulser {
         stats.pulser += 1;
@@ -1209,6 +1232,17 @@ struct Cluster;
 #[derive(Component)]
 struct Beacon;
 
+// A HUNTER rock (waves 6+): the field's first thing that comes AFTER you. It steers toward the ship
+// and `charge` ramps 0→1 over HUNTER_RAMP seconds, so the longer one lives the harder it drives —
+// you cannot park and farm. Breaking one resets the hunt: children inherit the marker at charge 0
+// (see `break_asteroid`), so a split buys you real breathing room instead of doubling the pressure.
+#[derive(Component)]
+#[derive(Clone, Copy)]
+struct Hunter {
+    charge: f32,
+    look: Vec2, // unit heading toward the ship — kept here so `render` can draw the eye without a Velocity join
+}
+
 // An orange rock that's been lit and is about to blow. The brief fuse gives a visible flash, then
 // `detonate` blasts a radius and chains any other oranges caught in it.
 #[derive(Component)]
@@ -1287,6 +1321,7 @@ enum PickupKind {
     Drone,
     Warhead,
     Nova, // the Pulsar's drop (boss 5): the regenerating one-hit Nova Shield
+    Aegis, // the Warden+'s drop (NG+ boss 1): orbiting shards that grind rocks off your hull
 }
 
 // An ally drone (boss-3 reward): orbits the ship a short distance out and auto-fires at the nearest
@@ -1441,11 +1476,22 @@ struct Nova {
     grace: f32, // brief post-pop immunity so the hit that broke it can't also kill next frame
 }
 
-#[derive(Resource, Default)]
+// The Aegis Shards' per-run state (see the AEGIS_* consts). `shards` is how many are live right now;
+// `regen` counts down to the next regrowth; `spin` is the ring's rotation.
+#[derive(Default, Clone, Copy)]
+struct Aegis {
+    unlocked: bool,
+    shards: u8,
+    regen: f32,
+    spin: f32,
+}
+
+#[derive(Resource, Default, Clone, Copy)]
 struct Run {
     lives: i32,
     respawn: f32,
     nova: Nova, // the Nova Shield's per-run state (see `Nova`)
+    aegis: Aegis, // the Aegis Shards' per-run state (the Warden+'s NG+-only drop)
     died: bool, // any life lost this run (a Nova absorb doesn't count) — drives the deathless-win achievement
     powerup_fires: u32, // chain/mass/warhead activations this run — the Pacifist streak diffs this per wave (warp counts via stats.warps)
 }
@@ -1562,6 +1608,7 @@ enum Ach {
     SeeingRed,
     IceBreaker,
     Keymaster,
+    Whostheprey,
     Minesweeper,
     GoldRush,
     WaveGoodbye,
@@ -1577,7 +1624,7 @@ enum Ach {
 // Order defines the index into `Achievements.unlocked` and the menu list: the boss ladder, the
 // rock-type grinds (one per type), the other lifetime grinds, the restart ladder, then the
 // beat-the-game capstones.
-const ACHIEVEMENTS: [Ach; 24] = [
+const ACHIEVEMENTS: [Ach; 25] = [
     Ach::FirstBlood,
     Ach::Warden,
     Ach::Glutton,
@@ -1591,6 +1638,7 @@ const ACHIEVEMENTS: [Ach; 24] = [
     Ach::SeeingRed,
     Ach::IceBreaker,
     Ach::Keymaster,
+    Ach::Whostheprey,
     Ach::Minesweeper,
     Ach::GoldRush,
     Ach::WaveGoodbye,
@@ -1613,7 +1661,8 @@ const ACH_ORANGE: u32 = 400;
 const ACH_PULSER: u32 = 300; // every one is a timed dark-beat kill
 const ACH_RED: u32 = 400;
 const ACH_CLUSTER: u32 = 300;
-const ACH_BEACON: u32 = 100; // the rarest rock — and each takes deliberate focus
+const ACH_BEACON: u32 = 100;
+const ACH_HUNTER: u32 = 350; // hunters run waves 6-9 (and every NG+ wave past 5), so this accrues fast on lap two // the rarest rock — and each takes deliberate focus
 const ACH_MINES: u32 = 250;
 const ACH_GOLDS: u32 = 25;
 const ACH_WAVES: u32 = 250; // lifetime waves cleared (a full win is 30)
@@ -1634,6 +1683,7 @@ fn ach_meta(a: Ach) -> (&'static str, &'static str) {
         Ach::SeeingRed => ("Seeing Red", "Destroy 400 red asteroids"),
         Ach::IceBreaker => ("Ice Breaker", "Shatter 300 clusters"),
         Ach::Keymaster => ("Keymaster", "Crack 100 beacons"),
+        Ach::Whostheprey => ("Who's the Prey Now", "Destroy 350 hunters"),
         Ach::Minesweeper => ("Minesweeper", "Destroy 250 mines"),
         Ach::GoldRush => ("Gold Rush", "Earn 25 extra lives from gold rocks"),
         Ach::WaveGoodbye => ("Wave Goodbye", "Clear 250 waves, lifetime"),
@@ -1663,6 +1713,7 @@ fn ach_met(a: Ach, s: &Stats) -> bool {
         Ach::SeeingRed => s.red >= ACH_RED,
         Ach::IceBreaker => s.cluster >= ACH_CLUSTER,
         Ach::Keymaster => s.beacon >= ACH_BEACON,
+        Ach::Whostheprey => s.hunter >= ACH_HUNTER,
         Ach::Minesweeper => s.mines >= ACH_MINES,
         Ach::GoldRush => s.golds >= ACH_GOLDS,
         Ach::WaveGoodbye => s.waves >= ACH_WAVES,
@@ -1690,6 +1741,7 @@ fn ach_progress(a: Ach, s: &Stats) -> Option<(u32, u32)> {
         Ach::SeeingRed => Some((s.red, ACH_RED)),
         Ach::IceBreaker => Some((s.cluster, ACH_CLUSTER)),
         Ach::Keymaster => Some((s.beacon, ACH_BEACON)),
+        Ach::Whostheprey => Some((s.hunter, ACH_HUNTER)),
         Ach::Minesweeper => Some((s.mines, ACH_MINES)),
         Ach::GoldRush => Some((s.golds, ACH_GOLDS)),
         Ach::WaveGoodbye => Some((s.waves, ACH_WAVES)),
@@ -1738,6 +1790,7 @@ struct Stats {
     deathless: bool,   // ever beat the game without losing a single life
     best_wave: u32,    // deepest wave ever REACHED — the game-over screen's "you were close" marker
     pacifist: bool,    // ever survived two straight timer waves breaking nothing (and not dying)
+    hunter: u32,       // hunter rocks destroyed (lifetime)
 }
 
 // Which achievements are unlocked (drives the toast + the menu list). Initialized from the loaded
@@ -2095,6 +2148,7 @@ fn disarm_fire(mut armed: ResMut<FireArmed>) {
 enum RockKind {
     Blue,    // plain
     Green,   // dense / tanky (takes `hp` hits)
+    Hunter,  // vermillion predator (Act I, w6+) — HOMES on the ship, accelerating the longer it lives
     Orange,  // explosive (detonates instead of splitting)
     Pulser,  // pulses lit (invulnerable) ↔ dark (vulnerable) — hit it on the dark beat
     Red,     // growing (Act III) — absorbs nearby rocks to swell; a plain shot splits it into more reds
@@ -2105,11 +2159,11 @@ enum RockKind {
 // Which flavor should a rock spawned for `level` be? One roll shared by every edge-spawn caller,
 // so a wave's whole rock mix is defined here. Fractions are the tuning knobs for wave feel.
 fn roll_rock_kind(level: i32, plus: bool, rng: &mut impl Rng) -> RockKind {
-    // NG+ ACT I (waves 1-5): the pilot has already seen everything, so the second lap OPENS on the
-    // finale's all-types mix — no teaching rosters on a lap that assumes mastery. From wave 6 on,
-    // the act arcs resume as authored (the corruption story still needs its shape).
-    if plus && content_wave(level) <= 5 {
-        return roll_finale_kind(rng);
+    // NEW GAME+ runs its own bestiary. Waves 1-5 open on the finale's all-types mix (the pilot has
+    // seen it all — no teaching rosters on a lap that assumes mastery); from wave 6 the OLD ROSTER
+    // RETIRES entirely and lap two runs new rock types only (see `roll_ngplus_kind`).
+    if plus {
+        return if content_wave(level) <= 5 { roll_finale_kind(rng) } else { roll_ngplus_kind(rng) };
     }
     let cw = content_wave(level);
     // Beacon (aura warden) — RARE, rolled first so nothing eats its slice. Debuts w23 (target-order
@@ -2159,10 +2213,21 @@ fn roll_rock_kind(level: i32, plus: bool, rng: &mut impl Rng) -> RockKind {
     if rng.gen_bool(orange) {
         return RockKind::Orange;
     }
-    // Green (dense) — bridges Act I (debuts 6, owns 7-9) and CARRIES Act II (the 11-19 baseline),
-    // then retires with its act at wave 20. No green in Act III.
+    // Hunter (homing) — an ACT I type: wave 6 is its DEBUT and headline (the first rock that comes
+    // after you, landing right after the Warden teaches you that things can chase), it garnishes
+    // 7-9 alongside green, and it retires with its act at wave 10. Rolled before green so its
+    // teaching wave isn't eaten by the dense baseline.
+    let hunter = match cw {
+        6 => 0.7, // the teaching wave — mostly hunters, a few blues to break the pressure
+        7..=9 => 0.25,
+        _ => 0.0,
+    };
+    if rng.gen_bool(hunter) {
+        return RockKind::Hunter;
+    }
+    // Green (dense) — bridges Act I (now debuts 7, after the hunter's wave) and CARRIES Act II (the
+    // 11-19 baseline), then retires with its act at wave 20. No green in Act III.
     let green = match cw {
-        6 => 0.5,
         7..=9 => 1.0,
         11..=13 | 15..=17 | 19 => 1.0,
         _ => 0.0,
@@ -2207,6 +2272,9 @@ fn spawn_kind_rock(commands: &mut Commands, pos: Vec2, size: u8, vel: Vec2, rng:
         RockKind::Beacon => {
             commands.entity(e).insert(Beacon); // aura-shields its neighbours (see collisions/chain)
         }
+        RockKind::Hunter => {
+            commands.entity(e).insert(Hunter { charge: 0.0, look: Vec2::X }); // starts docile, ramps into a chaser
+        }
         RockKind::Blue | RockKind::Green => {} // plain / dense — no extra tag
     }
     e
@@ -2219,14 +2287,23 @@ fn roll_finale_kind(rng: &mut impl Rng) -> RockKind {
     if rng.gen_bool(0.06) {
         return RockKind::Beacon;
     }
-    match rng.gen_range(0..6) {
+    match rng.gen_range(0..7) {
         0 => RockKind::Blue,
         1 => RockKind::Green,
         2 => RockKind::Orange,
         3 => RockKind::Pulser,
         4 => RockKind::Red,
+        5 => RockKind::Hunter,
         _ => RockKind::Cluster,
     }
+}
+
+// NEW GAME+ from wave 6 on: the OLD ROSTER IS RETIRED (user rule, 2026-07-31) — lap two opens on the
+// greatest-hits mix through wave 5, then sheds every rock the first lap taught you and runs the NEW
+// bestiary instead. ⚠️ Only the Hunter exists so far, so NG+ 6-30 is currently a single-type field;
+// each new rock type added here widens it.
+fn roll_ngplus_kind(_rng: &mut impl Rng) -> RockKind {
+    RockKind::Hunter
 }
 
 fn spawn_edge_asteroid(commands: &mut Commands, half: Vec2, rng: &mut impl Rng, kind: RockKind, force_big: bool) -> Entity {
@@ -2290,7 +2367,7 @@ fn spawn_asteroid(commands: &mut Commands, pos: Vec2, size: u8, vel: Vec2, rng: 
 #[allow(clippy::too_many_arguments)]
 // `chunks`: whether a size>1 rock spawns its two smaller fragments. True for every normal break; the
 // mass shot passes false to VAPORIZE a rock outright (its field-clearing identity — no rubble left).
-fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score, e: Entity, pos: Vec2, size: u8, chunk_mult: f32, dense: bool, gold: bool, pulser: bool, red: bool, cluster: bool, beacon: bool, chunks: bool) {
+fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score, e: Entity, pos: Vec2, size: u8, chunk_mult: f32, dense: bool, gold: bool, pulser: bool, red: bool, cluster: bool, beacon: bool, hunter: bool, chunks: bool) {
     commands.entity(e).despawn();
     let base = match size {
         3 => 20,
@@ -2308,6 +2385,8 @@ fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score
         cluster_color()
     } else if beacon {
         beacon_color()
+    } else if hunter {
+        hunter_color()
     } else if dense {
         dense_color()
     } else {
@@ -2369,6 +2448,11 @@ fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score
             if red {
                 commands.entity(child).insert(Red { cool: RED_ABSORB_EVERY }); // a broken red begets reds (whack-a-mole)
             }
+            if hunter {
+                // the hunt carries to the chunks, but RESET: fresh pieces start docile and must
+                // ramp again, so breaking a charged hunter genuinely relieves the pressure
+                commands.entity(child).insert(Hunter { charge: 0.0, look: Vec2::X });
+            }
         }
     }
 }
@@ -2380,7 +2464,7 @@ fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score
 fn blast_asteroids(
     commands: &mut Commands,
     rng: &mut impl Rng,
-    asteroids: &Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>), (Without<Mine>, Without<Shielded>)>,
+    asteroids: &Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>), (Without<Mine>, Without<Shielded>)>,
     broken: &mut HashSet<Entity>,
     center: Vec2,
     t: f32,
@@ -2390,7 +2474,7 @@ fn blast_asteroids(
     let mut unscored = Score(0);
     let score = &mut unscored;
     // shared &Query → iterates read-only, so we just read size/dense/gold/explosive here
-    for (ae, at, a, gold, explosive, pulser, red, cluster, beacon) in asteroids {
+    for (ae, at, a, gold, explosive, pulser, red, cluster, beacon, hunter) in asteroids {
         if broken.contains(&ae) {
             continue;
         }
@@ -2409,8 +2493,37 @@ fn blast_asteroids(
             } else {
                 // mine flings chunks (ignores hp + the beacon aura — blasts are the counterplay); never gold;
                 // a mined red splits into reds; a mined CLUSTER shatters spectacularly (fast shard ring)
-                break_asteroid(commands, rng, score, ae, ap, a.size, MINE_CHUNK_MULT, a.dense, false, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), true);
+                break_asteroid(commands, rng, score, ae, ap, a.size, MINE_CHUNK_MULT, a.dense, false, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), true);
             }
+        }
+    }
+}
+
+// HUNTER rocks (waves 6+): steer at the ship and get hungrier the longer they live. `charge` ramps
+// 0→1 over HUNTER_RAMP seconds, scaling both the steering force and the speed cap, so a fresh chunk
+// drifts like any rock and a veteran bears down on you. Capped well under the ship's top speed —
+// you can always outrun one; the pressure is that it never stops coming. Rocks the boss is holding
+// (Shielded) and thrown cannonballs are left alone: they're the boss's, not the field's.
+fn hunter_update(
+    time: Res<Time>,
+    ships: Query<&Transform, (With<Ship>, Without<Asteroid>)>,
+    mut q: Query<(&Transform, &mut Velocity, &mut Hunter), (With<Asteroid>, Without<Shielded>, Without<Cannonball>)>,
+) {
+    let dt = time.delta_secs();
+    let Some(ship) = ships.iter().next() else {
+        return; // mid-respawn: nothing to hunt, so they just drift
+    };
+    let target = ship.translation.truncate();
+    for (t, mut v, mut h) in &mut q {
+        h.charge = (h.charge + dt / HUNTER_RAMP).min(1.0);
+        let to_ship = (target - t.translation.truncate()).normalize_or_zero();
+        if to_ship != Vec2::ZERO {
+            h.look = to_ship; // the eye tracks whatever it's driving at
+        }
+        v.0 += to_ship * HUNTER_ACCEL * h.charge * dt;
+        let cap = HUNTER_MAX_SPEED * (0.35 + 0.65 * h.charge); // docile at spawn, full pace once charged
+        if v.0.length() > cap {
+            v.0 = v.0.normalize() * cap;
         }
     }
 }
@@ -2973,7 +3086,7 @@ fn ship_death(
     // Include the boss's rocks, but a rock still being REELED IN (grab in progress) is exempt — it
     // mustn't kill the player as the boss drags it across the field. A SETTLED shield rock (orbiting
     // the boss) still hurts, and free / thrown rocks always do (a thrown rock drops Shielded).
-    asteroids: Query<(&Transform, &Asteroid, Option<&Shielded>)>,
+    asteroids: Query<(Entity, &Transform, &Asteroid, Option<&Shielded>)>,
 ) {
     if run.respawn > 0.0 {
         return; // already dead/respawning
@@ -2983,13 +3096,28 @@ fn ship_death(
             continue;
         }
         let sp = t.translation.truncate();
-        for (at, a, shielded) in &asteroids {
+        for (ae, at, a, shielded) in &asteroids {
             if shielded.is_some_and(|sh| sh.grab < BOSS_GRAB_TIME) {
                 continue; // mid-grab: harmless while it reels across the field
             }
             let rr = asteroid_radius(a.size) + SHIP_R * 0.6;
             if sp.distance_squared(at.translation.truncate()) < rr * rr {
                 let mut rng = rand::thread_rng();
+                // AEGIS SHARDS: a live shard GRINDS the rock instead of you dying — it vaporizes
+                // (no chunks, no score, no kill credit: this is a save, not a kill you earned) and
+                // one shard is spent. When the ring is empty the rock kills you as usual, so the
+                // shard count + the slow regrowth are what keep this from being invincibility.
+                if run.aegis.unlocked && run.aegis.shards > 0 && shielded.is_none() {
+                    run.aegis.shards -= 1;
+                    if run.aegis.shards == AEGIS_SHARDS - 1 {
+                        run.aegis.regen = AEGIS_REGEN; // first loss starts the clock
+                    }
+                    let rp = at.translation.truncate();
+                    commands.entity(ae).despawn();
+                    burst(&mut commands, rp, ship_color(), 12, 260.0, &mut rng);
+                    sfx.write(SoundFx::Break(a.size));
+                    continue; // that rock is gone — keep checking the rest of the field
+                }
                 kill_ship(&mut commands, &mut run, &mut next, &mut sfx, e, sp, &mut rng);
                 break;
             }
@@ -3013,6 +3141,21 @@ fn respawn(mut commands: Commands, time: Res<Time>, mut run: ResMut<Run>, mut ne
 
 // Tick the Nova Shield's regen + pop-grace (Playing only, so it doesn't heal while paused). When the
 // regen elapses the shield flickers back ON with its own soft cue.
+fn aegis_tick(time: Res<Time>, mut run: ResMut<Run>) {
+    if !run.aegis.unlocked {
+        return;
+    }
+    let dt = time.delta_secs();
+    run.aegis.spin += AEGIS_SPIN * dt;
+    if run.aegis.shards < AEGIS_SHARDS {
+        run.aegis.regen -= dt;
+        if run.aegis.regen <= 0.0 {
+            run.aegis.shards += 1; // one back — never the whole ring at once
+            run.aegis.regen = AEGIS_REGEN;
+        }
+    }
+}
+
 fn nova_tick(time: Res<Time>, mut run: ResMut<Run>, mut sfx: EventWriter<SoundFx>) {
     if !run.nova.unlocked {
         return;
@@ -3198,7 +3341,7 @@ fn collisions(
     mut commands: Commands,
     time: Res<Time>,
     bullets: Query<(Entity, &Transform, &Bullet, Has<WarheadShot>)>,
-    mut asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>), (Without<Mine>, Without<Shielded>)>,
+    mut asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>), (Without<Mine>, Without<Shielded>)>,
     mines: Query<(Entity, &Transform), With<Mine>>,
     enemies: Query<(Entity, &Transform), With<Enemy>>,
     mut shield_rocks: Query<(Entity, &Transform, &mut Asteroid), With<Shielded>>,
@@ -3228,7 +3371,7 @@ fn collisions(
     // falls. Zones are collected in a read-only pass so the mutable bullet loop below can test them.
     let beacon_zones: Vec<Vec2> = asteroids
         .iter()
-        .filter(|(.., beacon)| beacon.is_some())
+        .filter(|(.., beacon, _)| beacon.is_some())
         .map(|(_, at, ..)| at.translation.truncate())
         .collect();
     let beacon_shielded =
@@ -3241,7 +3384,7 @@ fn collisions(
         let br = bullet_radius(b.mass); // mass shots are fatter…
         let power = bullet_boss_power(b.mass); // …and (vs a boss/mob) hit a bit harder; vs free rocks, see below
         let mut warhead_blast_at: Option<Vec2> = None; // set when a warhead round detonates on a rock
-        for (ae, at, mut a, gold, explosive, pulser, red, cluster, beacon) in &mut asteroids {
+        for (ae, at, mut a, gold, explosive, pulser, red, cluster, beacon, hunter) in &mut asteroids {
             if dead_a.contains(&ae) {
                 continue;
             }
@@ -3273,7 +3416,7 @@ fn collisions(
                     // it struck dies outright, and the violet ring is now a REAL blast: everything
                     // within WARHEAD_BLAST_R is destroyed in the after-pass below.
                     dead_a.insert(ae);
-                    break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, a.dense, gold.is_some(), pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), false);
+                    break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, a.dense, gold.is_some(), pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), false);
                     commands.spawn((
                         Shockwave { age: 0.0, ttl: 0.28, max_r: WARHEAD_BLAST_R, color: warhead_color() },
                         Transform::from_xyz(ap.x, ap.y, 0.0),
@@ -3282,7 +3425,7 @@ fn collisions(
                     if explosive.is_some() {
                         stats.orange += 1; // the round deletes an orange whole — still a player-credited kill
                     } else {
-                        credit_rock_kill(&mut stats, a.dense, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some());
+                        credit_rock_kill(&mut stats, a.dense, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some());
                     }
                     warhead_blast_at = Some(ap); // AoE applied after this loop (can't nest a second &mut pass)
                     dead_b.insert(be);
@@ -3303,9 +3446,9 @@ fn collisions(
                         commands.entity(ae).insert(Detonating { fuse: ORANGE_FUSE, friendly: false }); // orange detonates + chains
                         stats.orange += 1; // you lit it — the kill is yours
                     } else {
-                        break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, a.dense, gold.is_some(), pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), true);
+                        break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, a.dense, gold.is_some(), pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), true);
                         sfx.write(SoundFx::Break(a.size));
-                        credit_rock_kill(&mut stats, a.dense, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some());
+                        credit_rock_kill(&mut stats, a.dense, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some());
                     }
                 }
                 break;
@@ -3315,7 +3458,7 @@ fn collisions(
         // Blast rules apply, same as a mine's: gold is spared (only aimed shots may break the 1UP),
         // a LIT pulser shrugs it off, and the beacon aura does NOT protect (blasts are its counter).
         if let Some(c) = warhead_blast_at {
-            for (ae, at, a, gold, explosive, pulser, red, cluster, beacon) in &mut asteroids {
+            for (ae, at, a, gold, explosive, pulser, red, cluster, beacon, hunter) in &mut asteroids {
                 if dead_a.contains(&ae) || gold.is_some() {
                     continue;
                 }
@@ -3326,11 +3469,11 @@ fn collisions(
                 let rr = WARHEAD_BLAST_R + asteroid_radius(a.size);
                 if c.distance_squared(ap) < rr * rr {
                     dead_a.insert(ae);
-                    break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, a.dense, false, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), false);
+                    break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, a.dense, false, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), false);
                     if explosive.is_some() {
                         stats.orange += 1; // the blast deletes an orange whole — yours
                     } else {
-                        credit_rock_kill(&mut stats, a.dense, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some());
+                        credit_rock_kill(&mut stats, a.dense, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some());
                     }
                 }
             }
@@ -3733,7 +3876,7 @@ fn mine_update(
     ships: Query<(Entity, &Transform, &Ship), Without<Mine>>,
     mut mines: Query<(Entity, &mut Transform, &mut Velocity, &mut Mine)>,
     // &mut to match blast_asteroids' type; only read here (iter + shared borrow)
-    asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>), (Without<Mine>, Without<Shielded>)>,
+    asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>), (Without<Mine>, Without<Shielded>)>,
 ) {
     let dt = time.delta_secs();
     let h = arena.half;
@@ -4303,6 +4446,7 @@ fn boss_update(
     time: Res<Time>,
     mut commands: Commands,
     arena: Res<Arena>,
+    plus: Res<NewGamePlus>,
     mut run: ResMut<Run>,
     mut next: ResMut<NextState<GameState>>,
     mut score: ResMut<Score>,
@@ -4351,6 +4495,17 @@ fn boss_update(
                         Velocity(dir * PICKUP_DRIFT),
                         Transform::from_xyz(0.0, 0.0, 0.0),
                     ));
+                    // NEW GAME+ ONLY: the WARDEN+ also gives up its own trick — the AEGIS SHARDS.
+                    // Dropped ALONGSIDE the chain (not instead of it: the beam is Act III's answer to
+                    // beacons, so losing it would gut the late run), thrown the opposite way so both
+                    // orbs are reachable inside the post-boss calm. This is lap two's exclusive kit.
+                    if plus.0 {
+                        commands.spawn((
+                            Pickup { rot: 0.0, pulse: 0.0, life: PICKUP_LIFE, kind: PickupKind::Aegis },
+                            Velocity(-dir * PICKUP_DRIFT),
+                            Transform::from_xyz(0.0, 0.0, 0.0),
+                        ));
+                    }
                 }
                 stats.warden = true; // achievement: defeated the Warden
                 sfx.write(SoundFx::BossDown);
@@ -4759,7 +4914,7 @@ fn chain_update(
     mut sfx: EventWriter<SoundFx>,
     mut stats: ResMut<Stats>,
     mut chains: Query<(Entity, &Transform, &mut ChainShot)>,
-    asteroids: Query<(Entity, &Transform, &Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>), (Without<Mine>, Without<Shielded>)>,
+    asteroids: Query<(Entity, &Transform, &Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>), (Without<Mine>, Without<Shielded>)>,
     enemies: Query<(Entity, &Transform), With<Enemy>>,
     mines: Query<(Entity, &Transform), With<Mine>>,
 ) {
@@ -4779,10 +4934,10 @@ fn chain_update(
         // beacon auras block the beam too — collect the zones once per beam sweep
         let beacon_zones: Vec<Vec2> = asteroids
             .iter()
-            .filter(|(.., beacon)| beacon.is_some())
+            .filter(|(.., beacon, _)| beacon.is_some())
             .map(|(_, at, ..)| at.translation.truncate())
             .collect();
-        for (ae, at, ast, gold, explosive, pulser, red, cluster, beacon) in &asteroids {
+        for (ae, at, ast, gold, explosive, pulser, red, cluster, beacon, hunter) in &asteroids {
             if dead.contains(&ae) {
                 continue;
             }
@@ -4805,9 +4960,9 @@ fn chain_update(
                 }
                 // chain beam shears dense rocks outright — the beam ignores hp, like a mine (a BEACON dies
                 // in one sweep: the beam is a clean answer to an aura)
-                break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, ast.size, 1.0, ast.dense, gold.is_some(), pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), true); // chain shears rocks; a red splits into reds (they stay red + regrow)
+                break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, ast.size, 1.0, ast.dense, gold.is_some(), pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), true); // chain shears rocks; a red splits into reds (they stay red + regrow)
                 sfx.write(SoundFx::Break(ast.size));
-                credit_rock_kill(&mut stats, ast.dense, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some());
+                credit_rock_kill(&mut stats, ast.dense, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some());
             }
         }
         for (ee, et) in &enemies {
@@ -4925,6 +5080,13 @@ fn pickup_update(
                         r.nova = Nova { unlocked: true, down: 0.0, grace: 0.0 }; // raised, and UP right away
                     }
                     nova_color()
+                }
+                PickupKind::Aegis => {
+                    if let Some(r) = run.as_mut() {
+                        // arrives at FULL strength; from here it's spend-and-regrow
+                        r.aegis = Aegis { unlocked: true, shards: AEGIS_SHARDS, regen: AEGIS_REGEN, spin: 0.0 };
+                    }
+                    ship_color() // the granted kit is player-violet, like every other effect
                 }
             };
             burst(&mut commands, p, col, 30, 300.0, &mut rng);
@@ -5274,7 +5436,7 @@ fn render(
     wf: Res<WarpField>,
     stars: Query<(&Star, &Transform)>,
     ships: Query<(&Ship, &Transform, Option<&ShipTrail>)>,
-    asteroids: Query<(&Asteroid, &Transform, Option<&Gold>, Option<&Explosive>, Option<&Detonating>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>)>,
+    asteroids: Query<(&Asteroid, &Transform, Option<&Gold>, Option<&Explosive>, Option<&Detonating>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>)>,
     bullets: Query<(&Bullet, &Transform, Has<WarheadShot>, &Velocity)>,
     particles: Query<(&Particle, &Transform)>,
     holes: Query<(&BlackHole, &Transform)>,
@@ -5290,6 +5452,7 @@ fn render(
     let hud_flash = &abilities.3;
     let (mass, warhead) = (&abilities.4, &abilities.5); // shot modes — drive the HUD's Q-slot
     let nova = &run.nova; // the Nova Shield's state (ship bubble + HUD icon)
+    let aegis = &run.aegis; // the Aegis Shards' state (the orbiting chips drawn around the hull)
     let has_drone = !foes.2.is_empty();
     // a rapid bright shimmer applied to pips/lives right after they refill / a life is gained
     let flick = |active: bool| if active { 1.1 + 0.8 * (t * 18.0).sin() } else { 1.0 }; // ~2.9 Hz (was ~6.4) — no strobe
@@ -5378,7 +5541,7 @@ fn render(
     // they're chipped, so their tanky state reads at a glance.
     let rock = rock_color();
     let dense = dense_color();
-    for (a, at, gold, explosive, det, pulser, red, cluster, beacon) in &asteroids {
+    for (a, at, gold, explosive, det, pulser, red, cluster, beacon, hunter) in &asteroids {
         let c = at.translation.truncate();
         let rot = Vec2::from_angle(a.rot);
         // colour by type: a lit orange flashes white-hot as its fuse burns; a live orange pulses; gold
@@ -5399,6 +5562,8 @@ fn render(
             dim(red_color(), 0.7 + 0.3 * (t * 4.0).sin()) // a slow, menacing throb — it's alive and hungry
         } else if beacon.is_some() {
             dim(beacon_color(), 0.8 + 0.2 * (t * 2.0).sin()) // steady teal breathe — the aura's living key
+        } else if let Some(h) = hunter {
+            dim(hunter_color(), 0.62 + 0.38 * h.charge) // dull when it spawns, burning once it's locked on
         } else if cluster.is_some() {
             cluster_color()
         } else if a.dense {
@@ -5420,6 +5585,17 @@ fn render(
             gizmos.circle_2d(Isometry2d::from_translation(c), BEACON_AURA_R, dim(col, 0.22 + 0.06 * (t * 2.0).sin()));
             let frac = a.hp.max(1) as f32 / a.size.max(1) as f32;
             gizmos.linestrip_2d(ring(0.35 + 0.3 * frac), col);
+        } else if let Some(h) = hunter {
+            // THE EYE — the hunter's signature, and the one visual nothing else in the game has: a
+            // bright iris that sits toward whatever it's chasing and opens wider as its charge builds.
+            // Identity by silhouette, not by hue (the neon palette is crowded — see DESIGN.md).
+            let look = h.look;
+            let eye = c + look * asteroid_radius(a.size) * 0.34;
+            let r = asteroid_radius(a.size) * (0.1 + 0.07 * h.charge);
+            gizmos.circle_2d(Isometry2d::from_translation(eye), r, Color::srgb(7.0, 5.6, 4.6));
+            gizmos.circle_2d(Isometry2d::from_translation(eye), r * 0.45, Color::srgb(9.0, 2.0, 1.0));
+            // a lock-on tick pointing the way it's driving, so its heading reads at a glance
+            gizmos.line_2d(eye + look * r * 1.4, eye + look * r * 2.6, dim(col, 0.85));
         } else if let Some(lit) = lit {
             // a Pulser: an inner ring that snaps bright when the shield is up (a clear "don't shoot" tell)
             gizmos.linestrip_2d(ring(0.55), if lit { col } else { dim(col, 0.6) });
@@ -5610,6 +5786,32 @@ fn render(
                 let breathe = 1.0 + 0.04 * (t * 2.2).sin();
                 let glow = if nova.down <= 0.0 { 0.8 + 0.2 * (t * 2.2).sin() } else { 0.55 };
                 draw_ship(&mut gizmos, c, Vec2::from_angle(s.angle), SHIP_R * NOVA_SHELL * breathe, dim(nova_color(), glow), false);
+            }
+        }
+        // AEGIS SHARDS — small chips riding a slow orbit around the hull, drawn from the ship's own
+        // position so they MOVE WITH IT (user's call). One diamond per live shard, evenly spaced, in
+        // player violet; the ring visibly thins as they're spent, so the shard count IS the readout
+        // (no HUD slot needed). The next one regrowing shows as a faint ghost at its slot.
+        if aegis.unlocked {
+            for i in 0..AEGIS_SHARDS {
+                let a = aegis.spin + i as f32 / AEGIS_SHARDS as f32 * TAU;
+                let p = c + Vec2::from_angle(a) * AEGIS_ORBIT_R;
+                let live = i < aegis.shards;
+                // the slot that's currently regrowing fades in as its timer runs down
+                let ghost = i == aegis.shards && aegis.shards < AEGIS_SHARDS;
+                if !live && !ghost {
+                    continue;
+                }
+                let grow = if live { 1.0 } else { 1.0 - (aegis.regen / AEGIS_REGEN).clamp(0.0, 1.0) };
+                let r = AEGIS_SHARD_R * (0.4 + 0.6 * grow);
+                let col = dim(sc, if live { 0.95 } else { 0.3 + 0.4 * grow });
+                // a little diamond, tipped along its orbit — reads as a shard, not a dot
+                let out = Vec2::from_angle(a);
+                let side = out.perp();
+                gizmos.linestrip_2d(
+                    [p + out * r * 1.6, p + side * r, p - out * r * 1.6, p - side * r, p + out * r * 1.6],
+                    col,
+                );
             }
         }
         if s.invuln > 0.0 && (s.invuln * 6.0) as i32 % 2 == 0 {
@@ -7347,7 +7549,8 @@ fn render_extras(
             PickupKind::Mass => mass_color(),
             PickupKind::Drone => drone_color(),
             PickupKind::Warhead => orange_color(),
-            PickupKind::Nova => pulsar_color(), // the orb wears its boss's electric white-cyan (like Warhead wears the Detonator's orange); the granted shield itself is player-purple
+            PickupKind::Nova => pulsar_color(),
+            PickupKind::Aegis => boss_color(), // wears the Warden's magenta — the boss it was taken from // the orb wears its boss's electric white-cyan (like Warhead wears the Detonator's orange); the granted shield itself is player-purple
         };
         let hex: Vec<Vec2> = (0..=6)
             .map(|i| c + Vec2::from_angle(i as f32 / 6.0 * TAU + pk.rot) * PICKUP_R * throb)
@@ -7782,6 +7985,7 @@ fn reset_run(
     run.lives = START_LIVES;
     run.respawn = 0.0;
     run.nova = Nova::default(); // the Nova Shield must be re-earned (like every other pickup)
+    run.aegis = Aegis::default(); // …and so must the Aegis Shards
     run.died = false; // fresh deathless slate (achievement: Untouchable)
     run.powerup_fires = 0;
     // prime the Pacifist watch on wave 1 with the CURRENT lifetime totals (streaks never span runs)
@@ -8653,12 +8857,13 @@ fn read_progress() -> Option<Stats> {
         deathless: flag(20),
         best_wave: num(21),
         pacifist: flag(22),
+        hunter: num(23),
     })
 }
 #[cfg(not(test))]
 fn save_progress(s: &Stats) {
     let line = format!(
-        "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+        "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
         s.blue,
         s.green,
         s.enemies,
@@ -8681,7 +8886,8 @@ fn save_progress(s: &Stats) {
         s.warps,
         s.deathless as u8,
         s.best_wave,
-        s.pacifist as u8
+        s.pacifist as u8,
+        s.hunter
     );
     let _ = std::fs::write(SAVE_PATH, line); // best-effort — never block gameplay on I/O
 }
@@ -9278,7 +9484,8 @@ fn main() {
                 )
                     .chain(),
                 (
-                    nova_tick, // ticks the shield's regen/grace BEFORE the frame's death checks
+                    nova_tick,  // both shield ticks run their regen/grace BEFORE the frame's
+                    aegis_tick, // death checks, so a shield that came back this tick can save you
                     ship_death,
                     mine_update,
                     enemy_update,
@@ -9316,6 +9523,7 @@ fn main() {
                     gold_spawn,
                     gold_rush_update,
                     red_growth,
+                    hunter_update,
                     detonate,
                 )
                     .chain(),
@@ -10767,16 +10975,16 @@ mod tests {
         // beacon/pulser/red/cluster rocks are ALSO dense internally (2-hp bodies), so the helper must
         // check the special kinds BEFORE falling through to the plain green/blue split.
         let mut s = Stats::default();
-        credit_rock_kill(&mut s, true, false, false, false, true); // dense + beacon
+        credit_rock_kill(&mut s, true, false, false, false, true, false); // dense + beacon
         assert_eq!((s.beacon, s.green), (1, 0), "a beacon credits beacon, not green");
-        credit_rock_kill(&mut s, true, true, false, false, false); // dense + pulser
+        credit_rock_kill(&mut s, true, true, false, false, false, false); // dense + pulser
         assert_eq!((s.pulser, s.green), (1, 0), "a pulser credits pulser, not green");
-        credit_rock_kill(&mut s, true, false, true, false, false); // dense + red
+        credit_rock_kill(&mut s, true, false, true, false, false, false); // dense + red
         assert_eq!((s.red, s.green), (1, 0), "a red credits red, not green");
-        credit_rock_kill(&mut s, true, false, false, true, false); // dense + cluster
+        credit_rock_kill(&mut s, true, false, false, true, false, false); // dense + cluster
         assert_eq!((s.cluster, s.green), (1, 0), "a cluster credits cluster, not green");
-        credit_rock_kill(&mut s, true, false, false, false, false); // plain dense
-        credit_rock_kill(&mut s, false, false, false, false, false); // plain blue
+        credit_rock_kill(&mut s, true, false, false, false, false, false); // plain dense
+        credit_rock_kill(&mut s, false, false, false, false, false, false); // plain blue
         assert_eq!((s.green, s.blue), (1, 1), "plain rocks split on the dense flag");
     }
 
@@ -10809,10 +11017,11 @@ mod tests {
             deathless: true,
             best_wave: 14,
             pacifist: true,
+            hunter: 15,
         };
         // mirror save_progress's field order (the real fn is a test no-op so runs can't clobber saves)
         let line = format!(
-            "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+            "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
             s.blue,
             s.green,
             s.enemies,
@@ -10835,10 +11044,11 @@ mod tests {
             s.warps,
             s.deathless as u8,
             s.best_wave,
-            s.pacifist as u8
+            s.pacifist as u8,
+            s.hunter
         );
         let n: Vec<&str> = line.split_whitespace().collect();
-        assert_eq!(n.len(), 23, "the save line carries all 23 fields");
+        assert_eq!(n.len(), 24, "the save line carries all 24 fields");
         let flag = |i: usize| n[i] == "1";
         let num = |i: usize| n[i].parse::<u32>().unwrap();
         assert_eq!((num(0), num(1), num(2)), (s.blue, s.green, s.enemies));
@@ -10849,7 +11059,8 @@ mod tests {
         assert_eq!((num(17), num(18), num(19)), (s.runs, s.waves, s.warps));
         assert!(flag(20), "deathless rides in slot 20");
         assert_eq!(num(21), s.best_wave, "best_wave rides in slot 21");
-        assert!(flag(22), "pacifist rides in the final slot");
+        assert!(flag(22), "pacifist rides in slot 22");
+        assert_eq!(num(23), s.hunter, "hunter kills ride in the final slot");
         // an OLD 12-field save (pre-expansion) must still load — new counters default to zero
         let old = "5 4 3 1 0 0 1 0 0 0 2 1";
         assert_eq!(old.split_whitespace().count(), 12);
@@ -11030,8 +11241,8 @@ mod tests {
         // boss flags and capstones never appear, even on a maxed save — they're binary, not progress
         let done = Stats {
             blue: ACH_BLUE, green: ACH_GREEN, orange: ACH_ORANGE, pulser: ACH_PULSER, red: ACH_RED,
-            cluster: ACH_CLUSTER, beacon: ACH_BEACON, mines: ACH_MINES, golds: ACH_GOLDS,
-            waves: ACH_WAVES, warps: ACH_WARPS, runs: 50, ..default()
+            cluster: ACH_CLUSTER, beacon: ACH_BEACON, hunter: ACH_HUNTER, mines: ACH_MINES,
+            golds: ACH_GOLDS, waves: ACH_WAVES, warps: ACH_WARPS, runs: 50, ..default()
         };
         assert!(nearest_grind(&done).is_none(), "with every counter capped the ticker goes quiet");
     }
@@ -11430,7 +11641,7 @@ mod tests {
     fn finale_roll_covers_every_rock_type() {
         // the wave-30 field is fully random across ALL types — over a big sample every kind shows up
         let mut rng = rand::thread_rng();
-        let (mut blue, mut green, mut orange, mut pulser, mut red, mut cluster, mut beacon) = (0, 0, 0, 0, 0, 0, 0);
+        let (mut blue, mut green, mut orange, mut pulser, mut red, mut cluster, mut beacon, mut hunter) = (0, 0, 0, 0, 0, 0, 0, 0);
         for _ in 0..4000 {
             match roll_finale_kind(&mut rng) {
                 RockKind::Blue => blue += 1,
@@ -11440,9 +11651,10 @@ mod tests {
                 RockKind::Red => red += 1,
                 RockKind::Cluster => cluster += 1,
                 RockKind::Beacon => beacon += 1,
+                RockKind::Hunter => hunter += 1,
             }
         }
-        for (name, n) in [("blue", blue), ("green", green), ("orange", orange), ("pulser", pulser), ("red", red), ("cluster", cluster), ("beacon", beacon)] {
+        for (name, n) in [("blue", blue), ("green", green), ("orange", orange), ("pulser", pulser), ("red", red), ("cluster", cluster), ("beacon", beacon), ("hunter", hunter)] {
             assert!(n > 0, "the finale mix must include {name} rocks");
         }
         assert!(beacon < blue, "the beacon stays the RARE spice of the finale mix");
@@ -11450,7 +11662,7 @@ mod tests {
 
     #[test]
     fn wave_rock_mix_matches_the_authored_content() {
-        // returns (blue, green, orange, pulser) counts
+        // returns (blue, green, orange, pulser) counts — hunters are checked by their own test
         fn sample(level: i32, n: usize, rng: &mut rand::rngs::ThreadRng) -> (i32, i32, i32, i32) {
             let (mut blue, mut green, mut orange, mut pulser) = (0, 0, 0, 0);
             for _ in 0..n {
@@ -11459,8 +11671,8 @@ mod tests {
                     RockKind::Green => green += 1,
                     RockKind::Orange => orange += 1,
                     RockKind::Pulser => pulser += 1,
-                    // Act III-only kinds; covered by their own tests below
-                    RockKind::Red | RockKind::Cluster | RockKind::Beacon => {}
+                    // Hunter (Act I) + the Act III-only kinds; covered by their own tests
+                    RockKind::Hunter | RockKind::Red | RockKind::Cluster | RockKind::Beacon => {}
                 }
             }
             (blue, green, orange, pulser)
@@ -11512,6 +11724,106 @@ mod tests {
         assert_eq!(mine_target(9, 100), 6, "deep waves hit the hard cap of 6, never a wall");
         assert_eq!(mine_target(31, 100), 0, "loop past 30: wave 31 = content 1 → no mines");
         assert_eq!(mine_target(32, 100), 1, "loop past 30: wave 32 = content 2 → back to 1");
+    }
+
+    #[test]
+    fn aegis_shards_grind_rocks_then_run_out() {
+        // The anti-invincibility contract: each shard eats exactly ONE rock (vaporized, no chunks),
+        // and once the ring is spent the next rock kills you.
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_event::<SoundFx>();
+        app.insert_resource(NextState::<GameState>::default());
+        app.insert_resource(Dev::default());
+        app.insert_resource(Run {
+            lives: 3,
+            aegis: Aegis { unlocked: true, shards: AEGIS_SHARDS, regen: AEGIS_REGEN, spin: 0.0 },
+            ..default()
+        });
+        app.world_mut().spawn((Ship { angle: 0.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0)));
+        // one rock sitting on the ship per shard, plus one extra to get through
+        for i in 0..=AEGIS_SHARDS {
+            app.world_mut().spawn((
+                Asteroid { size: 1, verts: vec![Vec2::X * 22.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+                Velocity(Vec2::ZERO),
+                Transform::from_xyz(i as f32 * 0.1, 0.0, 0.0),
+            ));
+        }
+        app.add_systems(Update, ship_death);
+        app.update();
+        let run = *app.world().resource::<Run>();
+        assert_eq!(run.aegis.shards, 0, "every shard was spent grinding a rock");
+        assert_eq!(
+            app.world_mut().query::<&Asteroid>().iter(app.world()).count(),
+            1,
+            "AEGIS_SHARDS rocks were vaporized (no chunks left behind); the extra one survived"
+        );
+        assert_eq!(run.lives, 2, "with the ring empty that last rock still killed the ship");
+
+        // …and the regrowth is ONE at a time on the cooldown, never the whole ring at once. Its own
+        // world: in the app above, ship_death would immediately grind the regrown shard away.
+        let mut regen = App::new();
+        regen.add_plugins(MinimalPlugins);
+        regen.insert_resource(Run { lives: 3, aegis: Aegis { unlocked: true, shards: 0, regen: 0.0, spin: 0.0 }, ..default() });
+        regen.add_systems(Update, aegis_tick);
+        regen.update();
+        let a = regen.world().resource::<Run>().aegis;
+        assert_eq!(a.shards, 1, "one shard back, not the full ring");
+        assert_eq!(a.regen, AEGIS_REGEN, "and the timer re-armed for the next one");
+        assert!(AEGIS_REGEN > 5.0, "the regrow cooldown is what stops this being invincibility");
+    }
+
+    #[test]
+    fn a_hunter_chases_the_ship_and_ramps_up() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        // ship at the origin, a hunter parked out to the right with no velocity
+        app.world_mut().spawn((Ship { angle: 0.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0)));
+        let rock = app
+            .world_mut()
+            .spawn((
+                Asteroid { size: 2, verts: vec![Vec2::X * 40.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+                Hunter { charge: 0.0, look: Vec2::X },
+                Velocity(Vec2::ZERO),
+                Transform::from_xyz(300.0, 0.0, 0.0),
+            ))
+            .id();
+        app.add_systems(Update, hunter_update);
+        app.update();
+        app.update(); // first tick's dt is 0 under MinimalPlugins
+        let (v, h) = {
+            let e = app.world().entity(rock);
+            (e.get::<Velocity>().unwrap().0, *e.get::<Hunter>().unwrap())
+        };
+        assert!(v.x < 0.0, "it accelerates TOWARD the ship (leftward from +x), got {v:?}");
+        assert!(h.charge > 0.0, "its aggression ramps with time alive");
+        assert!(h.look.x < 0.0, "the eye tracks the ship");
+        // the speed cap keeps it outrunnable — never faster than the ship's top speed
+        for _ in 0..400 {
+            app.update();
+        }
+        let v = app.world().entity(rock).get::<Velocity>().unwrap().0;
+        assert!(v.length() <= HUNTER_MAX_SPEED + 1.0, "capped at HUNTER_MAX_SPEED, got {}", v.length());
+        assert!(HUNTER_MAX_SPEED < MAX_SPEED, "a hunter must always be outrunnable");
+    }
+
+    #[test]
+    fn hunters_debut_on_wave_six_and_retire_with_their_act() {
+        let mut rng = rand::thread_rng();
+        let count = |level: i32, n: usize, rng: &mut rand::rngs::ThreadRng| {
+            (0..n).filter(|_| matches!(roll_rock_kind(level, false, rng), RockKind::Hunter)).count()
+        };
+        assert_eq!(count(5, 300, &mut rng), 0, "no hunters before wave 6 (wave 5 is the Warden anyway)");
+        let w6 = count(6, 400, &mut rng);
+        assert!(w6 > 200, "wave 6 is the hunter's teaching wave — mostly hunters, got {w6}/400");
+        assert!(count(8, 400, &mut rng) > 0, "they garnish waves 7-9");
+        // ACT OWNERSHIP: the hunter dies with Act I — nothing past wave 10 (the finale rolls its own mix)
+        for level in [11, 14, 19, 23, 26] {
+            assert_eq!(count(level, 300, &mut rng), 0, "no hunters in wave {level} — Act I owns them");
+        }
+        // NEW GAME+ retires the OLD roster after wave 5 instead: lap two runs the new bestiary
+        let ngp = (0..300).filter(|_| matches!(roll_rock_kind(12, true, &mut rng), RockKind::Hunter)).count();
+        assert_eq!(ngp, 300, "NG+ past wave 5 is the new roster only (hunters, for now)");
     }
 
     #[test]
@@ -12349,6 +12661,7 @@ mod tests {
     fn boss_hp_zero_begins_slow_death() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
+        app.insert_resource(NewGamePlus::default());
         app.add_event::<SoundFx>();
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());

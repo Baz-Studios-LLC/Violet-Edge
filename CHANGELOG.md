@@ -3,6 +3,26 @@
 Patch notes for the Rust + Bevy build. Newest first. (Releases are cut to GitHub and picked up by the
 Baz Studios launcher.) **Keep this current with every change** — it's the record testers read.
 
+## Unreleased
+
+- **AEGIS SHARDS — a NEW GAME+ exclusive powerup.** Beat the Warden+ on lap two and it gives up its
+  own trick: three small shards ride a slow orbit around your hull, moving with the ship, and each
+  one **grinds a rock that would have killed you** — vaporized, no chunks. It is deliberately *not*
+  invincibility: every save spends a shard, they regrow **one at a time on an 11s cooldown**, and
+  with the ring empty the next rock kills you as usual. The thinning ring is its own readout, so
+  there's no HUD slot to read. Dropped *alongside* the usual Chain orb (the beam is still Act III's
+  answer to beacons), thrown the opposite way so both orbs are catchable in the post-boss calm.
+- **THE HUNTER — a new asteroid, debuting wave 6.** The first rock that comes *after you*: it steers
+  at your ship and gets hungrier the longer it lives, so you can't park and farm. It's always
+  outrunnable (capped well under your top speed) and breaking one **resets the hunt** — the chunks
+  inherit it but start docile, so a split really does buy breathing room. Wave 6 is its teaching
+  wave, it garnishes 7-9, and it retires with Act I at wave 10. It joins the wave-30 all-types
+  finale, and has its own achievement (**Who's the Prey Now** — 350 hunters).
+- **NEW GAME+ sheds the old roster after wave 5.** Lap two opens on a greatest-hits mix through
+  wave 5, then retires every rock the first lap taught you and runs a new bestiary instead.
+  ⚠️ Only the Hunter exists so far, so NG+ waves 6-30 are currently a single-type field — each new
+  rock type added widens it.
+
 ## v0.5.0 — A real soundtrack (2026-07-30)
 
 - **The whole soundtrack is produced music now.** The main and boss themes join the game-over
