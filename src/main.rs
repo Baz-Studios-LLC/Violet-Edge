@@ -105,6 +105,8 @@ const _: () = assert!(LAPSE_FADE_IN >= 1.0);
 // hard wall. The ricochet is deliberately SLOWER than your shot so it can be dodged on the way back.
 const FACET_OPEN_ARC: f32 = 1.15; // radians of vulnerable face (~66°) — wide enough to hit on purpose
 const FACET_RICOCHET_SPEED: f32 = 0.62; // reflected rounds keep this fraction of their speed
+// A ricochet must always be slower than the shot that made it, or it's an unavoidable counterattack.
+const _: () = assert!(FACET_RICOCHET_SPEED < 1.0);
 const FACET_RICOCHET_LIFE: f32 = 1.1; // s a ricochet stays lethal before it fizzles out
 
 // Beacon (waves 23+): a teal warden rock projecting an AURA — rocks inside it are immune to gunfire
@@ -13309,7 +13311,6 @@ mod tests {
         assert!(rocks != 1, "the open face takes damage like any rock");
         assert!(!ric, "and nothing bounces back off it");
         // the ricochet is slower than the shot that made it, so it can be dodged on the way back
-        assert!(FACET_RICOCHET_SPEED < 1.0, "a ricochet must be outrunnable");
     }
 
     #[test]
