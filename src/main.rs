@@ -74,6 +74,9 @@ const CLUSTER_SHARD_SPEED: f32 = 210.0; // outward fling of the shard ring (× t
 const HUNTER_ACCEL: f32 = 115.0; // px/s² steering toward the ship at FULL charge
 const HUNTER_MAX_SPEED: f32 = 205.0; // px/s cap — well under the ship's 560, so you can always disengage
 const HUNTER_RAMP: f32 = 14.0; // s of life to reach full aggression (fresh chunks start docile)
+// Outrunnability is an invariant, not a preference: a hunter must never be able to catch a ship that
+// is flying away. Enforced at compile time — raise it past MAX_SPEED and the build fails.
+const _: () = assert!(HUNTER_MAX_SPEED < MAX_SPEED);
 
 // Beacon (waves 23+): a teal warden rock projecting an AURA — rocks inside it are immune to gunfire
 // and the chain until the beacon falls (blasts, the warp, and red-absorption all bypass it: the
@@ -301,6 +304,9 @@ const AEGIS_ORBIT_R: f32 = 30.0; // how far out they ride (just off the hull)
 const AEGIS_SHARD_R: f32 = 4.2; // SMALL, per the user's call — chips, not plates
 const AEGIS_SPIN: f32 = 1.5; // rad/s — a slow, readable rotation
 const AEGIS_REGEN: f32 = 11.0; // s to grow ONE shard back (the anti-invincibility throttle)
+// The regrow cooldown IS the anti-invincibility mechanism — a trivial value would make the ring
+// permanent. Enforced at compile time so a careless retune can't quietly hand out immortality.
+const _: () = assert!(AEGIS_REGEN > 5.0);
 const NOVA_SHELL: f32 = 1.8; // the shield is the SHIP'S OWN silhouette scaled out — a second hull layer, not a separate polygon
 const PICKUP_DRIFT: f32 = 32.0; // px/s slow drift
 const PICKUP_LIFE: f32 = 20.0; // the orb lingers this long (well past the 10s boss calm) before vanishing
@@ -1795,6 +1801,8 @@ struct Stats {
     best_wave: u32,    // deepest wave ever REACHED — the game-over screen's "you were close" marker
     pacifist: bool,    // ever survived two straight timer waves breaking nothing (and not dying)
     hunter: u32,       // hunter rocks destroyed (lifetime)
+    seen: u32,         // GALLERY sightings bitmask — one bit per subject, set the frame it first
+                       // appears on your field (see `gallery_bit` / `gallery_sightings`)
 }
 
 // Which achievements are unlocked (drives the toast + the menu list). Initialized from the loaded
@@ -3789,7 +3797,11 @@ fn top_up_asteroids(
         let cap = FINALE_FIELD_CAP + if plus.0 { NGP_POP_BONUS / 2 } else { 0 }; // NG+ finale: denser, still a trickle
         if count < cap {
             let mut rng = rand::thread_rng();
-            let kind = roll_finale_kind(&mut rng);
+            // NG+ honours its roster rule even here: past wave 5 lap two runs the new bestiary, so
+            // its finale is NOT the all-types mix. (Without this the wave-30 field was inconsistent
+            // with itself — `wave_timer`'s opening fill goes through `roll_rock_kind`, which already
+            // respects the rule, while this trickle didn't.)
+            let kind = if plus.0 { roll_ngplus_kind(&mut rng) } else { roll_finale_kind(&mut rng) };
             spawn_edge_asteroid(&mut commands, arena.half, &mut rng, kind, false);
             clock.0 = FINALE_TRICKLE;
         } else {
@@ -4365,6 +4377,7 @@ fn boss_director(
     wave: Res<Wave>,
     arena: Res<Arena>,
     plus: Res<NewGamePlus>,
+    mut stats: Option<ResMut<Stats>>, // Option so headless tests needn't insert it
     mut state: ResMut<BossState>,
     mut enemies: Query<&mut Enemy>,
     field: Query<(Entity, &Transform), (With<Asteroid>, Without<Cannonball>, Without<Gold>)>, // slate-wipe spares the gold 1UP (else its lineage vanishing reads as "cleared" → a free life)
@@ -4374,6 +4387,12 @@ fn boss_director(
     }
     let mut rng = rand::thread_rng();
     state.fought = wave.level;
+    // GALLERY: this is the only place that knows WHICH boss just arrived, so it marks the sighting
+    if let Some(s) = stats.as_mut() {
+        if mark_seen(s, GalleryArt::Boss(boss_kind(wave.level))) {
+            save_progress(s);
+        }
+    }
     let hp = |base: i32| scaled_hp(base, plus.0); // NG+: every core spawns half again as tough
     if is_devourer_wave(wave.level) {
         // Boss 2: the devourer starts small in the upper arena and hunts free rocks to grow.
@@ -8582,47 +8601,119 @@ enum GalleryArt {
     Boss(BossKind),
 }
 
-// How deep this save has ever been. `best_wave` only started recording in v0.4.5, so the BOSS FLAGS
-// (which are older) are also read as proof of depth — otherwise a long-standing save looks like it
-// never met the rocks it has obviously fought.
-fn gallery_reached(s: &Stats) -> u32 {
-    let mut deep = s.best_wave;
-    for (flag, wave) in [(s.warden, 5), (s.glutton, 10), (s.slinger, 15), (s.detonator, 20), (s.pulsar, 25), (s.phantom, 30)] {
-        if flag {
-            deep = deep.max(wave);
-        }
-    }
-    deep
+// A STABLE bit per gallery subject, stored in `Stats.seen`. ⚠️ APPEND ONLY — never renumber these,
+// or every existing save's gallery scrambles. (32 subjects fit; add a second word past that.)
+fn gallery_bit(art: GalleryArt) -> u32 {
+    let i = match art {
+        GalleryArt::Rock(RockKind::Blue) => 0,
+        GalleryArt::Rock(RockKind::Green) => 1,
+        GalleryArt::Rock(RockKind::Hunter) => 2,
+        GalleryArt::Rock(RockKind::Orange) => 3,
+        GalleryArt::Rock(RockKind::Pulser) => 4,
+        GalleryArt::Rock(RockKind::Red) => 5,
+        GalleryArt::Rock(RockKind::Cluster) => 6,
+        GalleryArt::Rock(RockKind::Beacon) => 7,
+        GalleryArt::Gold => 8,
+        GalleryArt::Mine => 9,
+        GalleryArt::Mob => 10,
+        GalleryArt::Well => 11,
+        GalleryArt::Boss(BossKind::Warden) => 12,
+        GalleryArt::Boss(BossKind::Devourer) => 13,
+        GalleryArt::Boss(BossKind::Slinger) => 14,
+        GalleryArt::Boss(BossKind::Detonator) => 15,
+        GalleryArt::Boss(BossKind::Pulsar) => 16,
+        GalleryArt::Boss(BossKind::Phantom) => 17,
+    };
+    1 << i
+}
+
+fn gallery_seen(s: &Stats, art: GalleryArt) -> bool {
+    s.seen & gallery_bit(art) != 0
+}
+
+// Mark a subject as INTRODUCED. Returns true if this was the first sighting (so the caller knows to
+// persist). One flag, flipped the moment the thing shows up on your field — see `gallery_sightings`.
+fn mark_seen(stats: &mut Stats, art: GalleryArt) -> bool {
+    let bit = gallery_bit(art);
+    let fresh = stats.seen & bit == 0;
+    stats.seen |= bit;
+    fresh
 }
 
 // (art, name, one-line role, the long description, unlocked?)
-// A page opens once you've ENCOUNTERED the thing — the user's word was "introduced" — so the test is
-// either a lifetime kill counter OR having flown past the wave it debuts on. Depth alone is enough:
-// you don't have to have killed one to have met it, and it means the book fills in honestly for
-// saves older than the per-type counters.
+// A page opens on its SEEN FLAG — set when the thing was first introduced to your field. No
+// inference, no kill thresholds: if you've laid eyes on it, it's in the book.
 fn gallery_entries(s: &Stats) -> Vec<(GalleryArt, &'static str, &'static str, &'static str, bool)> {
-    let deep = gallery_reached(s);
-    let met = |kills: u32, debut: u32| kills > 0 || deep >= debut;
     vec![
-        (GalleryArt::Rock(RockKind::Blue), "DRIFT ROCK", "The Belt's bones", "The plain stuff, and most of what you'll ever shoot. One hit from anything breaks it. Act I only — by wave 11 the Belt has stopped sending anything this simple.", met(s.blue, 1)),
-        (GalleryArt::Rock(RockKind::Green), "DENSE ROCK", "Tanky", "Packed tight: it takes a hit per size before it cracks, and its chunks stay dense. The mass shot was built for these. Bridges Act I into Act II, then retires at wave 20.", met(s.green, 7)),
-        (GalleryArt::Rock(RockKind::Hunter), "HUNTER", "It comes to you", "The first rock that hunts. It steers at your ship and drives harder the longer it lives, so you can't sit still and farm — but it's always slower than you are, and breaking it resets the chase: the chunks inherit the hunt and start docile. Debuts wave 6.", met(s.hunter, 6)),
-        (GalleryArt::Rock(RockKind::Orange), "EXPLOSIVE", "Don't stand near it", "Doesn't split — DETONATES, after a short fuse, in a blast that obliterates everything inside it and lights other oranges. Anything can set it off, including a mine or your own beam. Act II, peaking at wave 14.", met(s.orange, 11)),
-        (GalleryArt::Rock(RockKind::Pulser), "PULSER", "Timing", "Beats between lit and dark on its own slow clock. While it's LIT nothing touches it — shots fizzle white. Hit it on the dark beat. Its fragments keep their own beats. Debuts wave 16.", met(s.pulser, 16)),
-        (GalleryArt::Rock(RockKind::Red), "GROWER", "Eats the field", "Absorbs nearby rocks — other growers included — and swells a size each time. Soft, but a plain shot splits it into MORE growers, and those eat their way back up. Mass, warhead, chain or a mine kills one outright. Act III's backbone.", met(s.red, 21)),
-        (GalleryArt::Rock(RockKind::Cluster), "CLUSTER", "Shatters", "Fractured through: break it and it bursts into a ring of tiny fast shards instead of two chunks, so point-blank kills punish you. The mass shot vaporizes it clean and the warp swallows it whole. Debuts wave 26.", met(s.cluster, 26)),
-        (GalleryArt::Rock(RockKind::Beacon), "BEACON", "Shields the others", "Projects an aura: every rock inside it is immune to guns and the beam until the beacon itself falls. Blasts, the warp and grower-absorption ignore the aura. It turns a field into a question of what to shoot FIRST. Debuts wave 23.", met(s.beacon, 23)),
-        (GalleryArt::Gold, "LIFE ROCK", "Reward", "Not a threat — a spare life, shimmering gold. Destroy the WHOLE lineage, it and every fragment, and you get it. Let a piece drift off the edge and the life is forfeit. Only your shots can break it: mines bounce, the Glutton won't eat it.", met(s.golds, 2)),
-        (GalleryArt::Mine, "MINE", "Proximity", "Drifts, arms when you're close, and detonates on a short fuse — the blast is small but lethal. Shooting one sets it off too, and the blast shatters every rock in reach. Points for the mine; none for the rubble.", met(s.mines, 2)),
-        (GalleryArt::Mob, "RAIDER", "Shoots back", "A small gunship that hovers at range and fires slow, dodgeable shots. It steers around rocks and bugs out if it lingers too long. Never many at once — the asteroids are the real fight.", met(s.enemies, 3)),
-        (GalleryArt::Well, "GRAVITY WELL", "Pulls you", "An anti-warp: it drags your SHIP toward it. Deliberately weaker than your thrust, so you can always fly out — the danger is what it does to your dodging, not the well itself. Pops in and collapses. Waves 18+.", deep >= 18),
-        (GalleryArt::Boss(BossKind::Warden), "THE WARDEN", "Boss 1 — wave 5", "Pens the field's rocks onto rotating arms and hurls them at you. The shield eats most shots, so you break the arms or catch the core between throws. Its fall leaves the chain beam.", s.warden),
-        (GalleryArt::Boss(BossKind::Devourer), "THE GLUTTON", "Boss 2 — wave 10", "Hunts rocks to eat, growing and healing with every one. Starve it or outpace it: gorge it far enough and it overloads and bursts. Its fall leaves the mass shot.", s.glutton),
-        (GalleryArt::Boss(BossKind::Slinger), "THE SLINGER", "Boss 3 — wave 15", "A gunship that doesn't throw rocks — it LOADS them, aims, and fires. Its core is exposed the whole fight; surviving the barrage is the fight. Its fall leaves the drone.", s.slinger),
-        (GalleryArt::Boss(BossKind::Detonator), "THE DETONATOR", "Boss 4 — wave 20", "Armored except while it's priming a rock into a bomb. Those windows are your only opening, and the bombs it leaves are the arena. Its fall leaves the warhead rounds.", s.detonator),
-        (GalleryArt::Boss(BossKind::Pulsar), "THE PULSAR", "Boss 5 — wave 25", "Beats like the rock that carries its name: invulnerable while lit, open while dark, and shockwaving the whole field outward on the pulse. Its fall leaves the Nova shield.", s.pulsar),
-        (GalleryArt::Boss(BossKind::Phantom), "THE PHANTOM", "Boss 6 — wave 30", "The steersman. Three forms, each harder than anything before it: it possesses the field, tears the arena with a ray, and charges when it's desperate. Break it and the Belt goes still.", s.phantom),
+        (GalleryArt::Rock(RockKind::Blue), "DRIFT ROCK", "The Belt's bones", "The plain stuff, and most of what you'll ever shoot. One hit from anything breaks it. Act I only — by wave 11 the Belt has stopped sending anything this simple.", gallery_seen(s, GalleryArt::Rock(RockKind::Blue))),
+        (GalleryArt::Rock(RockKind::Green), "DENSE ROCK", "Tanky", "Packed tight: it takes a hit per size before it cracks, and its chunks stay dense. The mass shot was built for these. Bridges Act I into Act II, then retires at wave 20.", gallery_seen(s, GalleryArt::Rock(RockKind::Green))),
+        (GalleryArt::Rock(RockKind::Hunter), "HUNTER", "It comes to you", "The first rock that hunts. It steers at your ship and drives harder the longer it lives, so you can't sit still and farm — but it's always slower than you are, and breaking it resets the chase: the chunks inherit the hunt and start docile. Debuts wave 6.", gallery_seen(s, GalleryArt::Rock(RockKind::Hunter))),
+        (GalleryArt::Rock(RockKind::Orange), "EXPLOSIVE", "Don't stand near it", "Doesn't split — DETONATES, after a short fuse, in a blast that obliterates everything inside it and lights other oranges. Anything can set it off, including a mine or your own beam. Act II, peaking at wave 14.", gallery_seen(s, GalleryArt::Rock(RockKind::Orange))),
+        (GalleryArt::Rock(RockKind::Pulser), "PULSER", "Timing", "Beats between lit and dark on its own slow clock. While it's LIT nothing touches it — shots fizzle white. Hit it on the dark beat. Its fragments keep their own beats. Debuts wave 16.", gallery_seen(s, GalleryArt::Rock(RockKind::Pulser))),
+        (GalleryArt::Rock(RockKind::Red), "GROWER", "Eats the field", "Absorbs nearby rocks — other growers included — and swells a size each time. Soft, but a plain shot splits it into MORE growers, and those eat their way back up. Mass, warhead, chain or a mine kills one outright. Act III's backbone.", gallery_seen(s, GalleryArt::Rock(RockKind::Red))),
+        (GalleryArt::Rock(RockKind::Cluster), "CLUSTER", "Shatters", "Fractured through: break it and it bursts into a ring of tiny fast shards instead of two chunks, so point-blank kills punish you. The mass shot vaporizes it clean and the warp swallows it whole. Debuts wave 26.", gallery_seen(s, GalleryArt::Rock(RockKind::Cluster))),
+        (GalleryArt::Rock(RockKind::Beacon), "BEACON", "Shields the others", "Projects an aura: every rock inside it is immune to guns and the beam until the beacon itself falls. Blasts, the warp and grower-absorption ignore the aura. It turns a field into a question of what to shoot FIRST. Debuts wave 23.", gallery_seen(s, GalleryArt::Rock(RockKind::Beacon))),
+        (GalleryArt::Gold, "LIFE ROCK", "Reward", "Not a threat — a spare life, shimmering gold. Destroy the WHOLE lineage, it and every fragment, and you get it. Let a piece drift off the edge and the life is forfeit. Only your shots can break it: mines bounce, the Glutton won't eat it.", gallery_seen(s, GalleryArt::Gold)),
+        (GalleryArt::Mine, "MINE", "Proximity", "Drifts, arms when you're close, and detonates on a short fuse — the blast is small but lethal. Shooting one sets it off too, and the blast shatters every rock in reach. Points for the mine; none for the rubble.", gallery_seen(s, GalleryArt::Mine)),
+        (GalleryArt::Mob, "RAIDER", "Shoots back", "A small gunship that hovers at range and fires slow, dodgeable shots. It steers around rocks and bugs out if it lingers too long. Never many at once — the asteroids are the real fight.", gallery_seen(s, GalleryArt::Mob)),
+        (GalleryArt::Well, "GRAVITY WELL", "Pulls you", "An anti-warp: it drags your SHIP toward it. Deliberately weaker than your thrust, so you can always fly out — the danger is what it does to your dodging, not the well itself. Pops in and collapses. Waves 18+.", gallery_seen(s, GalleryArt::Well)),
+        (GalleryArt::Boss(BossKind::Warden), "THE WARDEN", "Boss 1 — wave 5", "Pens the field's rocks onto rotating arms and hurls them at you. The shield eats most shots, so you break the arms or catch the core between throws. Its fall leaves the chain beam.", gallery_seen(s, GalleryArt::Boss(BossKind::Warden))),
+        (GalleryArt::Boss(BossKind::Devourer), "THE GLUTTON", "Boss 2 — wave 10", "Hunts rocks to eat, growing and healing with every one. Starve it or outpace it: gorge it far enough and it overloads and bursts. Its fall leaves the mass shot.", gallery_seen(s, GalleryArt::Boss(BossKind::Devourer))),
+        (GalleryArt::Boss(BossKind::Slinger), "THE SLINGER", "Boss 3 — wave 15", "A gunship that doesn't throw rocks — it LOADS them, aims, and fires. Its core is exposed the whole fight; surviving the barrage is the fight. Its fall leaves the drone.", gallery_seen(s, GalleryArt::Boss(BossKind::Slinger))),
+        (GalleryArt::Boss(BossKind::Detonator), "THE DETONATOR", "Boss 4 — wave 20", "Armored except while it's priming a rock into a bomb. Those windows are your only opening, and the bombs it leaves are the arena. Its fall leaves the warhead rounds.", gallery_seen(s, GalleryArt::Boss(BossKind::Detonator))),
+        (GalleryArt::Boss(BossKind::Pulsar), "THE PULSAR", "Boss 5 — wave 25", "Beats like the rock that carries its name: invulnerable while lit, open while dark, and shockwaving the whole field outward on the pulse. Its fall leaves the Nova shield.", gallery_seen(s, GalleryArt::Boss(BossKind::Pulsar))),
+        (GalleryArt::Boss(BossKind::Phantom), "THE PHANTOM", "Boss 6 — wave 30", "The steersman. Three forms, each harder than anything before it: it possesses the field, tears the arena with a ray, and charges when it's desperate. Break it and the Belt goes still.", gallery_seen(s, GalleryArt::Boss(BossKind::Phantom))),
     ]
+}
+
+// GALLERY SIGHTINGS — the single place the "introduced" flags get set. One scan of the live field per
+// frame: whatever is on screen right now is marked seen. Doing it here rather than at every spawn site
+// keeps Stats out of a dozen spawn functions, and it's the honest test — the thing is in front of you.
+// Bosses mark themselves in `boss_director` (it's the only place that knows which kind spawned).
+// Persists ONLY on a change, so this never touches the disk on a normal frame.
+fn gallery_sightings(
+    mut stats: ResMut<Stats>,
+    rocks: Query<(Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, &Asteroid)>,
+    mines: Query<(), With<Mine>>,
+    mobs: Query<(), With<Enemy>>,
+    wells: Query<(), With<Well>>,
+) {
+    let mut fresh = false;
+    for (gold, explosive, pulser, red, cluster, beacon, hunter, a) in &rocks {
+        // one rock, one subject — mirrors `credit_rock_kill`'s priority so the tags can't double up
+        let art = if gold.is_some() {
+            GalleryArt::Gold
+        } else if hunter.is_some() {
+            GalleryArt::Rock(RockKind::Hunter)
+        } else if beacon.is_some() {
+            GalleryArt::Rock(RockKind::Beacon)
+        } else if pulser.is_some() {
+            GalleryArt::Rock(RockKind::Pulser)
+        } else if red.is_some() {
+            GalleryArt::Rock(RockKind::Red)
+        } else if cluster.is_some() {
+            GalleryArt::Rock(RockKind::Cluster)
+        } else if explosive.is_some() {
+            GalleryArt::Rock(RockKind::Orange)
+        } else if a.dense {
+            GalleryArt::Rock(RockKind::Green)
+        } else {
+            GalleryArt::Rock(RockKind::Blue)
+        };
+        fresh |= mark_seen(&mut stats, art);
+    }
+    if !mines.is_empty() {
+        fresh |= mark_seen(&mut stats, GalleryArt::Mine);
+    }
+    if !mobs.is_empty() {
+        fresh |= mark_seen(&mut stats, GalleryArt::Mob);
+    }
+    if !wells.is_empty() {
+        fresh |= mark_seen(&mut stats, GalleryArt::Well);
+    }
+    if fresh {
+        save_progress(&stats); // a NEW subject — worth the write
+    }
 }
 
 // The gallery's rock silhouette: ONE deterministic jagged ring so every rock page is drawn at the
@@ -9165,12 +9256,13 @@ fn read_progress() -> Option<Stats> {
         best_wave: num(21),
         pacifist: flag(22),
         hunter: num(23),
+        seen: num(24),
     })
 }
 #[cfg(not(test))]
 fn save_progress(s: &Stats) {
     let line = format!(
-        "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+        "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
         s.blue,
         s.green,
         s.enemies,
@@ -9194,7 +9286,8 @@ fn save_progress(s: &Stats) {
         s.deathless as u8,
         s.best_wave,
         s.pacifist as u8,
-        s.hunter
+        s.hunter,
+        s.seen
     );
     let _ = std::fs::write(SAVE_PATH, line); // best-effort — never block gameplay on I/O
 }
@@ -9403,8 +9496,11 @@ fn music_director(
         match desired {
             MusicCue::Silence => {}
             MusicCue::Main(t) => {
-                let h = dir.mains[(t as usize).min(dir.mains.len() - 1)].clone();
-                play_track(&mut commands, h, dir.muted, true, MAIN_GAIN); // produced track, hot master
+                // clamp via get() rather than len()-1: an empty `mains` would underflow the index
+                let h = dir.mains.get(t as usize).or_else(|| dir.mains.last()).cloned();
+                if let Some(h) = h {
+                    play_track(&mut commands, h, dir.muted, true, MAIN_GAIN); // produced track, hot master
+                }
             }
             MusicCue::Boss => {
                 let h = dir.boss.clone();
@@ -9832,6 +9928,7 @@ fn main() {
                     gold_rush_update,
                     red_growth,
                     hunter_update,
+                    gallery_sightings,
                     detonate,
                 )
                     .chain(),
@@ -11329,10 +11426,11 @@ mod tests {
             best_wave: 14,
             pacifist: true,
             hunter: 15,
+            seen: 0b1010_1010,
         };
         // mirror save_progress's field order (the real fn is a test no-op so runs can't clobber saves)
         let line = format!(
-            "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+            "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
             s.blue,
             s.green,
             s.enemies,
@@ -11356,10 +11454,11 @@ mod tests {
             s.deathless as u8,
             s.best_wave,
             s.pacifist as u8,
-            s.hunter
+            s.hunter,
+            s.seen
         );
         let n: Vec<&str> = line.split_whitespace().collect();
-        assert_eq!(n.len(), 24, "the save line carries all 24 fields");
+        assert_eq!(n.len(), 25, "the save line carries all 25 fields");
         let flag = |i: usize| n[i] == "1";
         let num = |i: usize| n[i].parse::<u32>().unwrap();
         assert_eq!((num(0), num(1), num(2)), (s.blue, s.green, s.enemies));
@@ -11371,7 +11470,8 @@ mod tests {
         assert!(flag(20), "deathless rides in slot 20");
         assert_eq!(num(21), s.best_wave, "best_wave rides in slot 21");
         assert!(flag(22), "pacifist rides in slot 22");
-        assert_eq!(num(23), s.hunter, "hunter kills ride in the final slot");
+        assert_eq!(num(23), s.hunter, "hunter kills ride in slot 23");
+        assert_eq!(num(24), s.seen, "the gallery sightings bitmask rides in the final slot");
         // an OLD 12-field save (pre-expansion) must still load — new counters default to zero
         let old = "5 4 3 1 0 0 1 0 0 0 2 1";
         assert_eq!(old.split_whitespace().count(), 12);
@@ -11383,6 +11483,8 @@ mod tests {
         assert_eq!(onum(11), 1, "the old save's last field still reads");
         assert_eq!(onum(17), 0, "missing runs field defaults to 0");
         assert!(!oflag(20), "missing deathless field defaults to false");
+        assert_eq!(onum(23), 0, "missing hunter-kill field defaults to 0");
+        assert_eq!(onum(24), 0, "missing GALLERY sightings mask defaults to 0 — an old save just re-discovers");
     }
 
     #[test]
@@ -12038,9 +12140,9 @@ mod tests {
     }
 
     #[test]
-    fn the_gallery_unlocks_from_the_save_it_already_keeps() {
-        // A virgin save shows nothing but silhouettes; each entry opens off the lifetime counters we
-        // ALREADY persist (no new save fields), and every page has real text behind it.
+    fn the_gallery_opens_pages_on_the_seen_flag() {
+        // One boolean per subject, set when the thing is INTRODUCED to your field. No inference from
+        // kill counts or wave depth — flags only.
         let fresh = gallery_entries(&Stats::default());
         assert_eq!(fresh.iter().filter(|e| e.4).count(), 0, "a fresh pilot has met nothing");
         assert!(fresh.len() >= 18, "every rock, hazard and boss gets a page, got {}", fresh.len());
@@ -12048,30 +12150,27 @@ mod tests {
             assert!(!name.is_empty() && !role.is_empty(), "every page is titled");
             assert!(desc.len() > 60, "'{name}' needs a real description, got {} chars", desc.len());
         }
-        // spot-check the derivations across all three kinds of unlock
-        let hunted = gallery_entries(&Stats { hunter: 1, ..default() });
-        assert!(hunted.iter().any(|e| e.1 == "HUNTER" && e.4), "one hunter kill opens the hunter's page");
-        assert!(!hunted.iter().any(|e| e.1 == "BEACON" && e.4), "and nothing else");
-        let welled = gallery_entries(&Stats { best_wave: 18, ..default() });
-        assert!(welled.iter().any(|e| e.1 == "GRAVITY WELL" && e.4), "reaching wave 18 opens the well (it has no kill counter)");
-        assert!(welled.iter().any(|e| e.1 == "EXPLOSIVE" && e.4), "…and wave 18 means you've met the wave-11 explosive too");
-        assert!(!welled.iter().any(|e| e.1 == "CLUSTER" && e.4), "but not the wave-26 cluster");
-        let boss = gallery_entries(&Stats { phantom: true, ..default() });
-        assert!(boss.iter().any(|e| e.1 == "THE PHANTOM" && e.4), "beating a boss opens its page");
-        // LEGACY SAVES: the per-type counters postdate the boss flags, so depth-by-boss-flag must
-        // fill the book in — a save that beat the game shows every rock, counters or not.
-        let veteran = gallery_entries(&Stats { warden: true, glutton: true, slinger: true, detonator: true, pulsar: true, phantom: true, ..default() });
-        assert!(veteran.iter().all(|e| e.4), "a save that beat the game has met everything, even with zero per-type counters");
-        // a maxed save opens the whole book
-        let all = Stats {
-            blue: 1, green: 1, hunter: 1, orange: 1, pulser: 1, red: 1, cluster: 1, beacon: 1,
-            golds: 1, mines: 1, enemies: 1, best_wave: 30, warden: true, glutton: true,
-            slinger: true, detonator: true, pulsar: true, phantom: true, ..default()
-        };
-        let full = gallery_entries(&all);
-        assert!(full.iter().all(|e| e.4), "a complete save leaves no page locked");
+        // flipping one flag opens exactly one page — and killing things does NOT open pages
+        let mut s = Stats { hunter: 999, blue: 999, best_wave: 30, phantom: true, ..default() };
+        assert_eq!(gallery_entries(&s).iter().filter(|e| e.4).count(), 0, "counters and depth don't open pages — only sightings do");
+        assert!(mark_seen(&mut s, GalleryArt::Rock(RockKind::Hunter)), "first sighting reports fresh");
+        assert!(!mark_seen(&mut s, GalleryArt::Rock(RockKind::Hunter)), "and a repeat sighting does not");
+        let seen = gallery_entries(&s);
+        assert_eq!(seen.iter().filter(|e| e.4).count(), 1, "exactly one page opened");
+        assert!(seen.iter().any(|e| e.1 == "HUNTER" && e.4), "…the hunter's");
+        // every subject has a UNIQUE, stable bit — a collision would open the wrong page
+        let mut bits = std::collections::HashSet::new();
+        for (art, name, ..) in gallery_entries(&Stats::default()) {
+            assert!(bits.insert(gallery_bit(art)), "'{name}' shares its bit with another subject");
+        }
+        assert_eq!(bits.len(), gallery_entries(&Stats::default()).len(), "one bit per page");
+        // and marking everything opens the whole book
+        let mut all = Stats::default();
+        for (art, ..) in gallery_entries(&Stats::default()) {
+            mark_seen(&mut all, art);
+        }
+        assert!(gallery_entries(&all).iter().all(|e| e.4), "every subject seen = every page open");
     }
-
     #[test]
     fn aegis_shards_grind_rocks_then_run_out() {
         // The anti-invincibility contract: each shard eats exactly ONE rock (vaporized, no chunks),
@@ -12116,7 +12215,6 @@ mod tests {
         let a = regen.world().resource::<Run>().aegis;
         assert_eq!(a.shards, 1, "one shard back, not the full ring");
         assert_eq!(a.regen, AEGIS_REGEN, "and the timer re-armed for the next one");
-        assert!(AEGIS_REGEN > 5.0, "the regrow cooldown is what stops this being invincibility");
     }
 
     #[test]
@@ -12150,7 +12248,6 @@ mod tests {
         }
         let v = app.world().entity(rock).get::<Velocity>().unwrap().0;
         assert!(v.length() <= HUNTER_MAX_SPEED + 1.0, "capped at HUNTER_MAX_SPEED, got {}", v.length());
-        assert!(HUNTER_MAX_SPEED < MAX_SPEED, "a hunter must always be outrunnable");
     }
 
     #[test]

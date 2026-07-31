@@ -20,11 +20,11 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
   finale, and has its own achievement (**Who's the Prey Now** — 350 hunters).
 - **THE GALLERY — a bestiary in the menu.** Every rock, hazard and boss gets its **own page** (18 of
   them), drawn large as real vector art from the same canonical body functions the fights use, with
-  a name, a role line and a proper description of how the thing behaves. Pages open as you
-  *encounter* things — derived from the progress the game already saves, so there are no new save
-  fields and long-standing saves fill in correctly (boss flags count as proof of depth, since the
-  per-type counters are newer). Unmet entries show a dim silhouette. Page with A/D or the arrows.
-  One-per-page also settles the palette question: several entities share a hue because the neon
+  a name, a role line and a proper description of how the thing behaves. A page opens on a simple
+  **seen flag**, set the moment that thing is first introduced to your field — no inference from kill
+  counts or wave depth. Unmet entries show a dim silhouette. Page with A/D or the arrows.
+  (Existing saves start the book empty and fill it in as you play.) One-per-page also settles the
+  palette question: several entities share a hue because the neon
   spectrum is full, and on separate pages they're never compared side by side.
 - **NEW GAME+ sheds the old roster after wave 5.** Lap two opens on a greatest-hits mix through
   wave 5, then retires every rock the first lap taught you and runs a new bestiary instead.
