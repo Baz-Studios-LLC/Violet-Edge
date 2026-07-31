@@ -4922,7 +4922,18 @@ fn boss_director(
     }
 }
 
-// Boss movement (glide in → bob near the top), charge-up (invulnerable), ship-contact
+// A boss's wandering destination: a Lissajous on two INCOMMENSURATE rates, so the path never settles
+// into a loop you can memorise and camp. Amplitudes span the whole playfield minus `margin` (which
+// must clear the boss's own hazard geometry, e.g. the Warden's shield ring) — bosses roam ANYWHERE
+// on screen, they do not patrol a band (user rule, 2026-07-31).
+fn boss_roam_target(pulse: f32, h: Vec2, margin: f32) -> Vec2 {
+    Vec2::new(
+        (pulse * 0.16).sin() * (h.x - margin) * 0.92,
+        (pulse * 0.11 + 1.3).sin() * (h.y - margin) * 0.86,
+    )
+}
+
+// Boss movement (glide in → roam the arena), charge-up (invulnerable), ship-contact
 // kill, and death → big burst, release the shield, reward calm, advance the wave.
 fn boss_update(
     time: Res<Time>,
@@ -5003,7 +5014,10 @@ fn boss_update(
 
         // ── ALIVE: glide in → bob near the top, charge-up, ship-contact kill ──
         boss.rot += BOSS_SPIN * whirl_spin_mult(boss.whirl, boss.whirl_t) * dt;
-        let margin = BOSS_R + BOSS_ORBIT_R + 6.0;
+        // the margin has to clear the SHIELD RING, and in NG+ the whirl extends the arms — otherwise
+        // a sweeping ring would hang off-screen where it can't be read or dodged
+        let reach = if plus.0 { NGP_WARDEN_WHIRL_REACH } else { 1.0 };
+        let margin = BOSS_R + BOSS_ORBIT_R * reach + 6.0;
         let mut p = p;
         let rest_y = h.y - margin;
         if !boss.entered {
@@ -5016,12 +5030,11 @@ fn boss_update(
             if boss.charge > 0.0 {
                 boss.charge -= dt;
             }
-            // ROAM: ease toward a slow wandering target (a lazy Lissajous across the upper arena)
-            // so the boss isn't a stationary target — you have to keep repositioning to hit its
-            // core, and its shield sweeps the field. Wide horizontal sweep, gentle vertical dip.
-            let cx = (boss.pulse * 0.16).sin() * (h.x - margin) * 0.72;
-            let cy = rest_y - (h.y * 0.15) * (0.5 - 0.5 * (boss.pulse * 0.11).cos());
-            let target = Vec2::new(cx, cy);
+            // ROAM THE WHOLE ARENA (2026-07-31 — user: bosses must move anywhere on screen, not
+            // side-to-side across the top). A Lissajous on two incommensurate rates, so the path
+            // never settles into a loop you can memorise and camp: it comes down at you, crosses,
+            // and drifts back up. Amplitudes are the full playfield minus the ring's margin.
+            let target = boss_roam_target(boss.pulse, h, margin);
             let np = p + (target - p) * (1.0 - (-dt * 2.6).exp());
             p.x = np.x.clamp(-h.x + margin, h.x - margin);
             p.y = np.y.clamp(-h.y + margin, h.y - margin);
@@ -6560,11 +6573,14 @@ fn slinger_update(
             sl.charge -= dt; // intro power-up: invulnerable, not yet firing
         }
 
-        // ── HOVER: stay up high, mirroring the ship's x, so its shots come down-and-across ──
+        // ── PROWL: mirror the ship's x (so its shots come across at an angle) while WANDERING the
+        // full height of the arena — it used to sit in a hover band up top, which made it a fixed
+        // firing line you could learn once. Now it takes the low ground too and you have to keep
+        // re-solving the angle. (User: bosses move anywhere on screen.)
         let margin = SLINGER_R + 24.0;
         let want = Vec2::new(
             ship_pos.map(|s| -s.x).unwrap_or(0.0).clamp(-h.x + margin, h.x - margin),
-            (h.y * 0.5).min(h.y - margin),
+            ((sl.pulse * 0.13).sin() * (h.y - margin) * 0.85).clamp(-h.y + margin, h.y - margin),
         );
         p += (want - p).clamp_length_max(SLINGER_SPEED * dt);
         st.translation.x = p.x;
@@ -7299,11 +7315,14 @@ fn pulsar_update(
             pl.charge -= dt;
         }
 
-        // ── DRIFT: slow chase toward the ship's x, staying high — hard to camp ──
+        // ── DRIFT: a slow chase across the WHOLE arena. It used to hold the upper third and the
+        // middle 60% of the width, which let you camp a corner it could never reach; now it follows
+        // you anywhere and only the shockwave cadence limits it. (User: bosses move anywhere.)
         if let Some(s) = sp {
             // a slow orbital SWAY rides on the chase — the star never just hangs there
-            let sway = Vec2::new((pl.pulse * 0.17).sin() * 46.0, (pl.pulse * 0.13).sin() * 20.0);
-            let want = Vec2::new(s.x.clamp(-h.x * 0.6, h.x * 0.6), (h.y * 0.35).min(h.y - PULSAR_R - 20.0)) + sway;
+            let sway = Vec2::new((pl.pulse * 0.17).sin() * 46.0, (pl.pulse * 0.13).sin() * 34.0);
+            let m = PULSAR_R + 20.0;
+            let want = Vec2::new(s.x.clamp(-h.x + m, h.x - m), s.y.clamp(-h.y + m, h.y - m)) + sway;
             p += (want - p).clamp_length_max(PULSAR_SPEED * dt);
         }
         ptf.translation.x = p.x.clamp(-h.x + PULSAR_R, h.x - PULSAR_R);
@@ -14134,6 +14153,32 @@ mod tests {
         assert!(app.world().entity(rock).get::<Detonating>().is_none(), "a NORMAL Warden's throws are plain rocks");
         let v = app.world().entity(rock).get::<Velocity>().unwrap().0;
         assert!(v.length() > 1.0 && v.y < 0.0, "flung toward the ship (which is below it)");
+    }
+
+    #[test]
+    fn bosses_roam_the_whole_arena_not_a_band() {
+        // The Warden used to sweep side-to-side across the TOP with a token 15% dip, so the bottom
+        // half of the screen was permanently safe. Bosses must be able to go anywhere.
+        let h = Vec2::new(640.0, 400.0);
+        let margin = BOSS_R + BOSS_ORBIT_R + 6.0;
+        let (mut lo, mut hi, mut left, mut right) = (false, false, false, false);
+        let (mut min_y, mut max_y) = (f32::MAX, f32::MIN);
+        for i in 0..4000 {
+            let t = i as f32 * 0.05;
+            let p = boss_roam_target(t, h, margin);
+            lo |= p.y < -(h.y - margin) * 0.5;
+            hi |= p.y > (h.y - margin) * 0.5;
+            left |= p.x < -(h.x - margin) * 0.5;
+            right |= p.x > (h.x - margin) * 0.5;
+            min_y = min_y.min(p.y);
+            max_y = max_y.max(p.y);
+            // and it must never wander somewhere its hazard geometry would hang off-screen
+            assert!(p.x.abs() <= h.x - margin && p.y.abs() <= h.y - margin, "roam target left the safe box");
+        }
+        assert!(lo && hi && left && right, "the roam must reach all four quadrants (lo={lo} hi={hi} l={left} r={right})");
+        // specifically: it genuinely comes DOWN, rather than dipping from a top band
+        assert!(min_y < -(h.y - margin) * 0.7, "it has to come right down the screen, got {min_y:.0}");
+        assert!(max_y > (h.y - margin) * 0.7, "…and go right back up, got {max_y:.0}");
     }
 
     #[test]
