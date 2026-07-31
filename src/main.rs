@@ -1096,6 +1096,46 @@ struct EnemyBullet {
 }
 
 // The octopus boss core.
+// Ring speed for the current whirl phase, x BOSS_SPIN. Shared because `boss_update` rotates the ring
+// while `boss_shield` positions it — they must agree exactly or the sweep desyncs from its own arms.
+fn whirl_spin_mult(w: Whirl, t: f32) -> f32 {
+    match w {
+        // the TELEGRAPH: the ring visibly STALLS, then creeps BACKWARDS at the end of the wind-up.
+        // Nothing else in the fight does that, so it can't be mistaken for normal behaviour.
+        Whirl::Wind => {
+            let f = 1.0 - (t / NGP_WARDEN_WIND).clamp(0.0, 1.0);
+            0.85 - 1.15 * f
+        }
+        // accelerate in, hold, ease out — it winds up visibly rather than snapping to full speed
+        Whirl::Spin => {
+            let f = 1.0 - (t / NGP_WARDEN_SPIN).clamp(0.0, 1.0);
+            let ramp = (f / 0.3).min(1.0) * (1.0 - ((f - 0.8) / 0.2).clamp(0.0, 1.0) * 0.45);
+            1.0 + (NGP_WARDEN_SPIN_MULT - 1.0) * ramp
+        }
+        Whirl::Recover => 0.35, // spent: the ring barely turns
+        Whirl::Idle => 1.0,
+    }
+}
+
+// How far the arms extend, x BOSS_ORBIT_R — the sweep's actual reach.
+fn whirl_reach(w: Whirl, t: f32) -> f32 {
+    if w != Whirl::Spin {
+        return 1.0;
+    }
+    let f = 1.0 - (t / NGP_WARDEN_SPIN).clamp(0.0, 1.0);
+    let ease = (f / 0.25).min(1.0) * (1.0 - ((f - 0.75) / 0.25).clamp(0.0, 1.0));
+    1.0 + (NGP_WARDEN_WHIRL_REACH - 1.0) * ease
+}
+
+// The Warden+'s whirl state machine. Idle → Wind (telegraph) → Spin (the sweep) → Recover (spent).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Whirl {
+    Idle,
+    Wind,
+    Spin,
+    Recover,
+}
+
 #[derive(Component)]
 struct Boss {
     hp: i32,
@@ -1106,6 +1146,8 @@ struct Boss {
     fire: f32,    // countdown to the next throw
     capture: f32, // countdown to the next grab
     dying: f32,   // > 0 → death animation counting down; despawns at 0
+    whirl: Whirl, // NG+ only: the charged spin attack's phase
+    whirl_t: f32, // seconds left in the current whirl phase (or until the next one, while Idle)
 }
 
 // An asteroid captured onto the boss's shield (orbits slot `slot`; `grab` eases it in).
@@ -1648,6 +1690,22 @@ const NGP_BOSS_HP_MULT: f32 = 1.5; // boss cores half again as tough
 // hurls is PRIMED (a live bomb on a fuse): shoot it out of the air or clear the blast radius.
 const NGP_WARDEN_RATE: f32 = 0.65; // throw + regrab cadence multiplier (lower = faster)
 const NGP_WARDEN_VOLLEY: usize = 2; // rocks hurled per throw (a spread, not a single lob)
+// THE WHIRL — the Warden+'s charged spin (NG+ only). It weaponizes the one thing the Warden already
+// is: a keeper with rocks penned on arms. It winds up, then rips the whole ring around at speed with
+// the arms extended, sweeping a lethal circle. STRICTLY TELEGRAPHED (user requirement): the wind-up
+// visibly STALLS the ring and lights the core for a full NGP_WARDEN_WIND before anything moves fast,
+// and the danger zone is a fixed radius you can simply be outside of — it never chases. Afterwards it
+// hangs there spent, which is the player's reward window for reading it correctly.
+const NGP_WARDEN_WHIRL_EVERY: f32 = 10.0; // gap between whirls (from the END of the last one)
+const NGP_WARDEN_WIND: f32 = 1.7; // the telegraph: ring stalls, core charges — LONG on purpose
+// The sweep must never arrive un-announced: shortening the wind-up below reaction time fails the BUILD.
+const _: () = assert!(NGP_WARDEN_WIND >= 1.5);
+const NGP_WARDEN_SPIN: f32 = 2.4; // the sweep itself
+const NGP_WARDEN_RECOVER: f32 = 1.5; // spent afterwards: slow ring, no throws, no grabs
+const NGP_WARDEN_SPIN_MULT: f32 = 6.5; // ring speed at full tilt, x BOSS_SPIN
+const NGP_WARDEN_WHIRL_REACH: f32 = 1.5; // arms extend to this x BOSS_ORBIT_R during the sweep
+// The sweep must stay a ZONE you can stand outside of, never an arena-wide hit.
+const _: () = assert!(BOSS_ORBIT_R * NGP_WARDEN_WHIRL_REACH < 220.0);
 const NGP_WARDEN_FUSE: f32 = 1.7; // the primed throw's fuse — ~475px of flight, then the blast
 
 // A boss core's spawn HP for the current mode.
@@ -4849,6 +4907,8 @@ fn boss_director(
                 fire: BOSS_FIRE_EVERY,
                 capture: 0.4,
                 dying: 0.0,
+                whirl: Whirl::Idle,
+                whirl_t: NGP_WARDEN_WHIRL_EVERY,
             },
             Transform::from_xyz(0.0, arena.half.y + BOSS_R + BOSS_ORBIT_R, 0.0),
         ));
@@ -4942,7 +5002,7 @@ fn boss_update(
         }
 
         // ── ALIVE: glide in → bob near the top, charge-up, ship-contact kill ──
-        boss.rot += BOSS_SPIN * dt;
+        boss.rot += BOSS_SPIN * whirl_spin_mult(boss.whirl, boss.whirl_t) * dt;
         let margin = BOSS_R + BOSS_ORBIT_R + 6.0;
         let mut p = p;
         let rest_y = h.y - margin;
@@ -5141,6 +5201,21 @@ fn boss_shield(
         }
         let bp = bt.translation.truncate();
 
+        // ── THE WHIRL (NG+): advance the phase clock; the curves themselves are shared helpers ──
+        if plus.0 {
+            boss.whirl_t -= dt;
+            if boss.whirl_t <= 0.0 {
+                let (next, t) = match boss.whirl {
+                    Whirl::Idle => (Whirl::Wind, NGP_WARDEN_WIND),
+                    Whirl::Wind => (Whirl::Spin, NGP_WARDEN_SPIN),
+                    Whirl::Spin => (Whirl::Recover, NGP_WARDEN_RECOVER),
+                    Whirl::Recover => (Whirl::Idle, NGP_WARDEN_WHIRL_EVERY),
+                };
+                boss.whirl = next;
+                boss.whirl_t = t;
+            }
+        }
+        let ring_reach = whirl_reach(boss.whirl, boss.whirl_t);
         // hold: reel in / pin each shield rock to its rotating slot (mark used arms)
         let mut used = [false; BOSS_ARMS];
         for (_se, mut st, mut sv, _a, mut sh) in &mut shielded {
@@ -5148,7 +5223,7 @@ fn boss_shield(
                 used[sh.slot] = true;
             }
             let ang = (sh.slot as f32 / BOSS_ARMS as f32) * TAU + boss.rot;
-            let target = bp + Vec2::from_angle(ang) * BOSS_ORBIT_R;
+            let target = bp + Vec2::from_angle(ang) * BOSS_ORBIT_R * ring_reach;
             let cur = st.translation.truncate();
             let np = if sh.grab < BOSS_GRAB_TIME {
                 sh.grab += dt;
@@ -5169,8 +5244,11 @@ fn boss_shield(
             (BOSS_FIRE_EVERY, BOSS_CAPTURE_EVERY)
         };
         let volley = if plus.0 { NGP_WARDEN_VOLLEY } else { 1 };
+        // the whirl is a whole attack on its own: it doesn't also throw or grab during it, which
+        // keeps the telegraph readable and gives the recovery real value as a punish window
+        let busy = !matches!(boss.whirl, Whirl::Idle);
         boss.fire -= dt;
-        if boss.fire <= 0.0 {
+        if boss.fire <= 0.0 && !busy {
             boss.fire = fire_every + rng.gen_range(0.0..BOSS_FIRE_JITTER);
             if let Some(sp) = ship {
                 let mut hurled = 0usize;
@@ -7897,6 +7975,34 @@ fn render_boss(
         let blink = boss.charge > 0.0;
         if !blink || ((boss.pulse * 3.0) as i32) % 2 == 0 {
             draw_warden_body(&mut gizmos, c, BOSS_R * scale, t, ship_eye.map(|s| s - c).unwrap_or(Vec2::X), mc);
+        }
+        // ── THE WHIRL'S TELEGRAPH (NG+) ── the fairness half of the attack. During the wind-up the
+        // core CHARGES (a brightening inner disc) and the sweep's exact reach is drawn as a ring you
+        // can stand outside of, with spokes reaching for it — so the danger zone is visible in full
+        // BEFORE anything moves fast. Brightness ramps smoothly; nothing here strobes.
+        if boss.dying <= 0.0 {
+            match boss.whirl {
+                Whirl::Wind => {
+                    let f = 1.0 - (boss.whirl_t / NGP_WARDEN_WIND).clamp(0.0, 1.0); // 0→1 through the wind
+                    let reach = BOSS_ORBIT_R * NGP_WARDEN_WHIRL_REACH * scale;
+                    // the zone the sweep will cover, drawn from the first frame of the wind-up
+                    gizmos.circle_2d(Isometry2d::from_translation(c), reach, dim(mc, 0.18 + 0.5 * f));
+                    // spokes stretching out to it — the arms "reaching" before they rip around
+                    for k in 0..BOSS_ARMS {
+                        let a = boss.rot + k as f32 / BOSS_ARMS as f32 * TAU;
+                        let d = Vec2::from_angle(a);
+                        gizmos.line_2d(c + d * BOSS_ORBIT_R * scale, c + d * (BOSS_ORBIT_R + (reach - BOSS_ORBIT_R * scale) * f), dim(mc, 0.3 + 0.6 * f));
+                    }
+                    // the core winding up
+                    gizmos.circle_2d(Isometry2d::from_translation(c), BOSS_R * scale * (0.34 + 0.5 * f), dim(Color::srgb(6.0, 3.4, 5.8), 0.4 + 0.6 * f));
+                }
+                Whirl::Spin => {
+                    // mid-sweep: keep the reach ring lit so the live hazard boundary stays readable
+                    let reach = BOSS_ORBIT_R * whirl_reach(boss.whirl, boss.whirl_t) * scale;
+                    gizmos.circle_2d(Isometry2d::from_translation(c), reach, dim(mc, 0.75));
+                }
+                _ => {}
+            }
         }
         // HP bar (top-center), hidden once it's dying (the fight's over)
         if boss.dying <= 0.0 {
@@ -13954,7 +14060,7 @@ mod tests {
         app.insert_resource(Chain::default());
         app.insert_resource(MassShot::default());
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
-        app.world_mut().spawn((Boss { hp: 0, rot: 0.0, pulse: 0.0, entered: true, charge: 0.0, fire: 1.0, capture: 1.0, dying: 0.0 }, Transform::from_xyz(0.0, 200.0, 0.0)));
+        app.world_mut().spawn((Boss { hp: 0, rot: 0.0, pulse: 0.0, entered: true, charge: 0.0, fire: 1.0, capture: 1.0, dying: 0.0, whirl: Whirl::Idle, whirl_t: NGP_WARDEN_WHIRL_EVERY }, Transform::from_xyz(0.0, 200.0, 0.0)));
         app.add_systems(Update, boss_update);
         app.update();
         // hp<=0 BEGINS the slow death — the boss lingers (dying), wave not yet advanced
@@ -13975,7 +14081,7 @@ mod tests {
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
-        app.world_mut().spawn((Boss { hp: BOSS_HP, rot: 0.0, pulse: 0.0, entered: true, charge: 0.0, fire: 5.0, capture: 0.0, dying: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0)));
+        app.world_mut().spawn((Boss { hp: BOSS_HP, rot: 0.0, pulse: 0.0, entered: true, charge: 0.0, fire: 5.0, capture: 0.0, dying: 0.0, whirl: Whirl::Idle, whirl_t: NGP_WARDEN_WHIRL_EVERY }, Transform::from_xyz(0.0, 0.0, 0.0)));
         let rock = app
             .world_mut()
             .spawn((Asteroid { size: 2, verts: vec![Vec2::X * 40.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 }, Velocity(Vec2::ZERO), Transform::from_xyz(100.0, 100.0, 0.0)))
@@ -13993,7 +14099,7 @@ mod tests {
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());
         app.insert_resource(Score(0));
-        app.world_mut().spawn((Boss { hp: BOSS_HP, rot: 0.0, pulse: 0.0, entered: true, charge: 0.0, fire: 5.0, capture: 5.0, dying: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0)));
+        app.world_mut().spawn((Boss { hp: BOSS_HP, rot: 0.0, pulse: 0.0, entered: true, charge: 0.0, fire: 5.0, capture: 5.0, dying: 0.0, whirl: Whirl::Idle, whirl_t: NGP_WARDEN_WHIRL_EVERY }, Transform::from_xyz(0.0, 0.0, 0.0)));
         app.world_mut().spawn((Bullet { life: 1.0, trail: Vec::new(), mass: false }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0)));
         app.add_systems(Update, collisions);
         app.update();
@@ -14011,7 +14117,7 @@ mod tests {
         app.insert_resource(RunFlags::default());
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
         app.world_mut().spawn((Ship { angle: 0.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, -200.0, 0.0)));
-        app.world_mut().spawn((Boss { hp: BOSS_HP, rot: 0.0, pulse: 0.0, entered: true, charge: 0.0, fire: 0.0, capture: 5.0, dying: 0.0 }, Transform::from_xyz(0.0, 200.0, 0.0)));
+        app.world_mut().spawn((Boss { hp: BOSS_HP, rot: 0.0, pulse: 0.0, entered: true, charge: 0.0, fire: 0.0, capture: 5.0, dying: 0.0, whirl: Whirl::Idle, whirl_t: NGP_WARDEN_WHIRL_EVERY }, Transform::from_xyz(0.0, 200.0, 0.0)));
         let rock = app
             .world_mut()
             .spawn((
@@ -14031,6 +14137,29 @@ mod tests {
     }
 
     #[test]
+    fn the_warden_plus_whirl_is_always_telegraphed_first() {
+        // THE FAIRNESS CONTRACT for the charged spin: the sweep can NEVER arrive un-announced.
+        // Order is fixed (Idle → Wind → Spin → Recover) and the wind-up is long enough to read and
+        // fly out of, so reaching Spin without a full Wind before it is impossible by construction.
+        // during the wind the ring STALLS and reverses — a tell nothing else in the fight shows
+        let early = whirl_spin_mult(Whirl::Wind, NGP_WARDEN_WIND * 0.9);
+        let late = whirl_spin_mult(Whirl::Wind, NGP_WARDEN_WIND * 0.05);
+        assert!(early < 1.0 && late < 0.0, "the ring stalls then creeps backwards ({early:.2} → {late:.2})");
+        // the sweep is genuinely fast, and only the sweep extends the arms
+        let peak = whirl_spin_mult(Whirl::Spin, NGP_WARDEN_SPIN * 0.4);
+        assert!(peak > 3.0, "the sweep has to actually rip around, got {peak:.1}x");
+        for w in [Whirl::Idle, Whirl::Wind, Whirl::Recover] {
+            assert_eq!(whirl_reach(w, 0.5), 1.0, "arms only extend during the sweep itself");
+        }
+        assert!(whirl_reach(Whirl::Spin, NGP_WARDEN_SPIN * 0.5) > 1.2, "…and they do extend during it");
+        // recovery is a real punish window: the ring is slow and it can't throw or grab
+        assert!(whirl_spin_mult(Whirl::Recover, 1.0) < 0.5, "it hangs there spent afterwards");
+        // and the base-game Warden never whirls at all (Idle forever without NG+)
+        assert_eq!(whirl_spin_mult(Whirl::Idle, 9.0), 1.0);
+        assert_eq!(whirl_reach(Whirl::Idle, 9.0), 1.0);
+    }
+
+    #[test]
     fn the_warden_plus_hurls_a_primed_two_rock_volley() {
         // NG+ boss 1: the old throw, meaner — TWO rocks per cadence, and both are LIVE BOMBS
         let mut app = App::new();
@@ -14041,7 +14170,7 @@ mod tests {
         app.insert_resource(RunFlags::default());
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
         app.world_mut().spawn((Ship { angle: 0.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, -200.0, 0.0)));
-        app.world_mut().spawn((Boss { hp: BOSS_HP, rot: 0.0, pulse: 0.0, entered: true, charge: 0.0, fire: 0.0, capture: 5.0, dying: 0.0 }, Transform::from_xyz(0.0, 200.0, 0.0)));
+        app.world_mut().spawn((Boss { hp: BOSS_HP, rot: 0.0, pulse: 0.0, entered: true, charge: 0.0, fire: 0.0, capture: 5.0, dying: 0.0, whirl: Whirl::Idle, whirl_t: NGP_WARDEN_WHIRL_EVERY }, Transform::from_xyz(0.0, 200.0, 0.0)));
         for slot in 0..2 {
             app.world_mut().spawn((
                 Asteroid { size: 1, verts: vec![Vec2::X * 20.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
@@ -14135,7 +14264,7 @@ mod tests {
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
-        app.world_mut().spawn((Boss { hp: BOSS_HP, rot: 0.0, pulse: 0.0, entered: true, charge: 0.0, fire: 5.0, capture: 0.0, dying: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0)));
+        app.world_mut().spawn((Boss { hp: BOSS_HP, rot: 0.0, pulse: 0.0, entered: true, charge: 0.0, fire: 5.0, capture: 0.0, dying: 0.0, whirl: Whirl::Idle, whirl_t: NGP_WARDEN_WHIRL_EVERY }, Transform::from_xyz(0.0, 0.0, 0.0)));
         // a small rock CLOSE and a large rock FAR — it should still take the large one
         let small = app
             .world_mut()
