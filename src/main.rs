@@ -9375,6 +9375,10 @@ const GALLERY_ART_Y: f32 = 96.0; // world-space centre of the art, above the nam
 // straight through the name text. Every entry is scaled by BUDGET / its own extent, so this holds
 // for all of them and for anything added later (give a new entry an honest `gallery_art_extent`).
 const GALLERY_ART_R: f32 = 96.0;
+// The band the UI reserves for the art is 262px tall (±131). The budget must keep real clearance
+// inside it or wide entries print through the name/description — enforced at compile time.
+const GALLERY_ART_BAND_HALF: f32 = 131.0;
+const _: () = assert!(GALLERY_ART_R < GALLERY_ART_BAND_HALF - 20.0);
 
 // The farthest radius each entry draws to at scale 1.0 — auras, blast reaches and towed rocks
 // included, since those are what actually overflow.
@@ -12687,7 +12691,7 @@ mod tests {
         // The Beacon's aura used to reach 133px and print straight through the name line. Every entry
         // is now scaled by GALLERY_ART_R / its own extent, so this asserts the invariant holds for
         // ALL of them — including anything added later, which is the point of the test.
-        const BAND_HALF: f32 = 131.0; // the 262px art band the UI reserves
+        let band_half = GALLERY_ART_BAND_HALF; // the 262px art band the UI reserves
         for (art, name, ..) in gallery_entries(&Stats::default()) {
             let extent = gallery_art_extent(art);
             assert!(extent > 0.0, "'{name}' needs an honest extent");
@@ -12697,10 +12701,8 @@ mod tests {
                 drawn <= GALLERY_ART_R + 0.01,
                 "'{name}' draws to {drawn:.1}px, over the {GALLERY_ART_R}px budget"
             );
-            assert!(drawn < BAND_HALF, "'{name}' at {drawn:.1}px would reach outside the art band and hit the text");
+            assert!(drawn < band_half, "'{name}' at {drawn:.1}px would reach outside the art band and hit the text");
         }
-        // and the budget itself must leave real margin inside the band
-        assert!(GALLERY_ART_R < BAND_HALF - 20.0, "the art budget needs clearance inside its band");
     }
 
     #[test]
