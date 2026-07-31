@@ -18,11 +18,18 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
   inherit it but start docile, so a split really does buy breathing room. Wave 6 is its teaching
   wave, it garnishes 7-9, and it retires with Act I at wave 10. It joins the wave-30 all-types
   finale, and has its own achievement (**Who's the Prey Now** — 350 hunters).
+- **Menu breathes again.** Seven buttons had it packed shoulder to shoulder: the masthead and
+  wordmark are trimmed a little and the buttons now live in their own column with a wider gap, so
+  the screen reads open instead of stacked. (The overlay's shared tight spacing is untouched — the
+  dense screens like Controls and Pilot Log depend on it to fit.)
 - **THE GALLERY — a bestiary in the menu.** Every rock, hazard and boss gets its **own page** (18 of
   them), drawn large as real vector art from the same canonical body functions the fights use, with
-  a name, a role line and a proper description of how the thing behaves. A page opens on a simple
-  **seen flag**, set the moment that thing is first introduced to your field — no inference from kill
-  counts or wave depth. Unmet entries show a dim silhouette. Page with A/D or the arrows.
+  a name, a role line, and a **field report in the pilot's own voice** — because the lore of this
+  game lives in its menus, every page carries a piece of the mystery (rocks assaying as mantle stone
+  and core iron, machined mines left on your route, a belt that keeps time) alongside what you
+  actually have to do about the thing. **The book GROWS**: a page is added when its subject is first
+  introduced to your field, and there are no blank or locked pages to leaf through — so the gallery
+  can never spoil what's still out there. Page with A/D or the arrows.
   (Existing saves start the book empty and fill it in as you play.) One-per-page also settles the
   palette question: several entities share a hue because the neon
   spectrum is full, and on separate pages they're never compared side by side.

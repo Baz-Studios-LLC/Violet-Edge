@@ -8145,23 +8145,36 @@ fn spawn_menu_ui(mut commands: Commands, achieved: Res<Achievements>, stats: Res
     let title_age = if intro.0 { NEON_WARMUP } else { 0.0 };
     let best = hs.top[0];
     commands.entity(root).with_children(|p| {
-        // logo masthead above the wordmark
-        p.spawn((ImageNode::new(logo.0.clone()), Node { width: Val::Px(180.0), height: Val::Px(180.0), margin: UiRect::bottom(Val::Px(-18.0)), ..default() }));
-        p.spawn((MenuTitle { age: title_age }, text_f(f, 82.0, title_color(), "VIOLET EDGE")));
-        menu_button(p, f, MenuAction::Play, "PLAY");
-        if stats.phantom {
-            // the second lap exists only for pilots who've finished the first — beat the game once
-            // (ever, any run) and NEW GAME+ is on the menu forever
-            menu_button(p, f, MenuAction::PlayPlus, "NEW GAME+");
-        }
-        menu_button(p, f, MenuAction::Controls, "CONTROLS");
-        menu_button(p, f, MenuAction::Briefing, "BRIEFING");
-        menu_button(p, f, MenuAction::Lore, &format!("PILOT LOG  ({lore_n} / 8)"));
-        let gal = gallery_entries(&stats);
-        menu_button(p, f, MenuAction::Gallery, &format!("GALLERY  ({} / {})", gal.iter().filter(|e| e.4).count(), gal.len()));
-        menu_button(p, f, MenuAction::Achievements, &format!("ACHIEVEMENTS  ({done} / {})", ACHIEVEMENTS.len()));
+        // logo masthead above the wordmark. The menu carries SEVEN buttons now, so it earns its own
+        // breathing room: the masthead and wordmark are trimmed a little, and the buttons live in
+        // their OWN column with a wider gap. That keeps the overlay's shared tight `row_gap` (which
+        // the dense screens — Controls, Pilot Log — depend on to fit) untouched, while this screen
+        // reads open instead of stacked. Budget: ~720px of the 800px design height.
+        p.spawn((ImageNode::new(logo.0.clone()), Node { width: Val::Px(144.0), height: Val::Px(144.0), margin: UiRect::bottom(Val::Px(-16.0)), ..default() }));
+        p.spawn((MenuTitle { age: title_age }, text_f(f, 74.0, title_color(), "VIOLET EDGE")));
+        p.spawn(Node {
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Center,
+            row_gap: Val::Px(12.0), // the airiness lives here, not in the shared overlay gap
+            margin: UiRect::top(Val::Px(10.0)),
+            ..default()
+        })
+        .with_children(|m| {
+            menu_button(m, f, MenuAction::Play, "PLAY");
+            if stats.phantom {
+                // the second lap exists only for pilots who've finished the first — beat the game
+                // once (ever, any run) and NEW GAME+ is on the menu forever
+                menu_button(m, f, MenuAction::PlayPlus, "NEW GAME+");
+            }
+            menu_button(m, f, MenuAction::Controls, "CONTROLS");
+            menu_button(m, f, MenuAction::Briefing, "BRIEFING");
+            menu_button(m, f, MenuAction::Lore, &format!("PILOT LOG  ({lore_n} / 8)"));
+            let gal = gallery_entries(&stats);
+            menu_button(m, f, MenuAction::Gallery, &format!("GALLERY  ({} / {})", gal.iter().filter(|e| e.4).count(), gal.len()));
+            menu_button(m, f, MenuAction::Achievements, &format!("ACHIEVEMENTS  ({done} / {})", ACHIEVEMENTS.len()));
+        });
         if best > 0 {
-            p.spawn((text_f(f, 18.0, Color::srgb(0.72, 0.76, 0.95), &format!("BEST   {best}")), Node { margin: UiRect::top(Val::Px(8.0)), ..default() }));
+            p.spawn((text_f(f, 18.0, Color::srgb(0.72, 0.76, 0.95), &format!("BEST   {best}")), Node { margin: UiRect::top(Val::Px(14.0)), ..default() }));
         }
     });
 }
@@ -8640,29 +8653,40 @@ fn mark_seen(stats: &mut Stats, art: GalleryArt) -> bool {
     fresh
 }
 
+// GALLERY entry type: (art, name, role line, the field-report description, seen?).
+type GalleryEntry = (GalleryArt, &'static str, &'static str, &'static str, bool);
+
+// The book AS SHOWN: only subjects you've actually met. A page is ADDED when something is introduced
+// (user rule, 2026-07-31) — there are no blank/locked pages to leaf through, so the gallery can never
+// spoil what's still coming. `gallery_entries` keeps the full ordered table (bit numbering + the
+// "n of 18" counter live off it); this is what the screen pages through.
+fn gallery_book(s: &Stats) -> Vec<GalleryEntry> {
+    gallery_entries(s).into_iter().filter(|e| e.4).collect()
+}
+
 // (art, name, one-line role, the long description, unlocked?)
 // A page opens on its SEEN FLAG — set when the thing was first introduced to your field. No
 // inference, no kill thresholds: if you've laid eyes on it, it's in the book.
 fn gallery_entries(s: &Stats) -> Vec<(GalleryArt, &'static str, &'static str, &'static str, bool)> {
     vec![
-        (GalleryArt::Rock(RockKind::Blue), "DRIFT ROCK", "The Belt's bones", "The plain stuff, and most of what you'll ever shoot. One hit from anything breaks it. Act I only — by wave 11 the Belt has stopped sending anything this simple.", gallery_seen(s, GalleryArt::Rock(RockKind::Blue))),
-        (GalleryArt::Rock(RockKind::Green), "DENSE ROCK", "Tanky", "Packed tight: it takes a hit per size before it cracks, and its chunks stay dense. The mass shot was built for these. Bridges Act I into Act II, then retires at wave 20.", gallery_seen(s, GalleryArt::Rock(RockKind::Green))),
-        (GalleryArt::Rock(RockKind::Hunter), "HUNTER", "It comes to you", "The first rock that hunts. It steers at your ship and drives harder the longer it lives, so you can't sit still and farm — but it's always slower than you are, and breaking it resets the chase: the chunks inherit the hunt and start docile. Debuts wave 6.", gallery_seen(s, GalleryArt::Rock(RockKind::Hunter))),
-        (GalleryArt::Rock(RockKind::Orange), "EXPLOSIVE", "Don't stand near it", "Doesn't split — DETONATES, after a short fuse, in a blast that obliterates everything inside it and lights other oranges. Anything can set it off, including a mine or your own beam. Act II, peaking at wave 14.", gallery_seen(s, GalleryArt::Rock(RockKind::Orange))),
-        (GalleryArt::Rock(RockKind::Pulser), "PULSER", "Timing", "Beats between lit and dark on its own slow clock. While it's LIT nothing touches it — shots fizzle white. Hit it on the dark beat. Its fragments keep their own beats. Debuts wave 16.", gallery_seen(s, GalleryArt::Rock(RockKind::Pulser))),
-        (GalleryArt::Rock(RockKind::Red), "GROWER", "Eats the field", "Absorbs nearby rocks — other growers included — and swells a size each time. Soft, but a plain shot splits it into MORE growers, and those eat their way back up. Mass, warhead, chain or a mine kills one outright. Act III's backbone.", gallery_seen(s, GalleryArt::Rock(RockKind::Red))),
-        (GalleryArt::Rock(RockKind::Cluster), "CLUSTER", "Shatters", "Fractured through: break it and it bursts into a ring of tiny fast shards instead of two chunks, so point-blank kills punish you. The mass shot vaporizes it clean and the warp swallows it whole. Debuts wave 26.", gallery_seen(s, GalleryArt::Rock(RockKind::Cluster))),
-        (GalleryArt::Rock(RockKind::Beacon), "BEACON", "Shields the others", "Projects an aura: every rock inside it is immune to guns and the beam until the beacon itself falls. Blasts, the warp and grower-absorption ignore the aura. It turns a field into a question of what to shoot FIRST. Debuts wave 23.", gallery_seen(s, GalleryArt::Rock(RockKind::Beacon))),
-        (GalleryArt::Gold, "LIFE ROCK", "Reward", "Not a threat — a spare life, shimmering gold. Destroy the WHOLE lineage, it and every fragment, and you get it. Let a piece drift off the edge and the life is forfeit. Only your shots can break it: mines bounce, the Glutton won't eat it.", gallery_seen(s, GalleryArt::Gold)),
-        (GalleryArt::Mine, "MINE", "Proximity", "Drifts, arms when you're close, and detonates on a short fuse — the blast is small but lethal. Shooting one sets it off too, and the blast shatters every rock in reach. Points for the mine; none for the rubble.", gallery_seen(s, GalleryArt::Mine)),
-        (GalleryArt::Mob, "RAIDER", "Shoots back", "A small gunship that hovers at range and fires slow, dodgeable shots. It steers around rocks and bugs out if it lingers too long. Never many at once — the asteroids are the real fight.", gallery_seen(s, GalleryArt::Mob)),
-        (GalleryArt::Well, "GRAVITY WELL", "Pulls you", "An anti-warp: it drags your SHIP toward it. Deliberately weaker than your thrust, so you can always fly out — the danger is what it does to your dodging, not the well itself. Pops in and collapses. Waves 18+.", gallery_seen(s, GalleryArt::Well)),
-        (GalleryArt::Boss(BossKind::Warden), "THE WARDEN", "Boss 1 — wave 5", "Pens the field's rocks onto rotating arms and hurls them at you. The shield eats most shots, so you break the arms or catch the core between throws. Its fall leaves the chain beam.", gallery_seen(s, GalleryArt::Boss(BossKind::Warden))),
-        (GalleryArt::Boss(BossKind::Devourer), "THE GLUTTON", "Boss 2 — wave 10", "Hunts rocks to eat, growing and healing with every one. Starve it or outpace it: gorge it far enough and it overloads and bursts. Its fall leaves the mass shot.", gallery_seen(s, GalleryArt::Boss(BossKind::Devourer))),
-        (GalleryArt::Boss(BossKind::Slinger), "THE SLINGER", "Boss 3 — wave 15", "A gunship that doesn't throw rocks — it LOADS them, aims, and fires. Its core is exposed the whole fight; surviving the barrage is the fight. Its fall leaves the drone.", gallery_seen(s, GalleryArt::Boss(BossKind::Slinger))),
-        (GalleryArt::Boss(BossKind::Detonator), "THE DETONATOR", "Boss 4 — wave 20", "Armored except while it's priming a rock into a bomb. Those windows are your only opening, and the bombs it leaves are the arena. Its fall leaves the warhead rounds.", gallery_seen(s, GalleryArt::Boss(BossKind::Detonator))),
-        (GalleryArt::Boss(BossKind::Pulsar), "THE PULSAR", "Boss 5 — wave 25", "Beats like the rock that carries its name: invulnerable while lit, open while dark, and shockwaving the whole field outward on the pulse. Its fall leaves the Nova shield.", gallery_seen(s, GalleryArt::Boss(BossKind::Pulsar))),
-        (GalleryArt::Boss(BossKind::Phantom), "THE PHANTOM", "Boss 6 — wave 30", "The steersman. Three forms, each harder than anything before it: it possesses the field, tears the arena with a ray, and charges when it's desperate. Break it and the Belt goes still.", gallery_seen(s, GalleryArt::Boss(BossKind::Phantom))),
+        (GalleryArt::Rock(RockKind::Blue), "DRIFT ROCK", "Assay: mantle rock", "Cracks like slate and takes one hit from anything. I ran the composition twice: mantle stone, the kind you find a long way under a crust. Rocks that formed out here shouldn't have layers at all. Most of the Belt is this - and I try not to think about what that means.", gallery_seen(s, GalleryArt::Rock(RockKind::Blue))),
+        (GalleryArt::Rock(RockKind::Green), "DENSE ROCK", "Assay: core iron", "Packed so tight a standard round just chips it - hit it once per size, or open it in one with the mass shot, the beam, or a mine blast. The samples come back heavy with core iron. You do not get core iron without a world to take it from.", gallery_seen(s, GalleryArt::Rock(RockKind::Green))),
+        (GalleryArt::Rock(RockKind::Hunter), "HUNTER", "It knows where I am", "It turns. Nothing else out here turns. It comes on slowly at first and drives harder the longer I leave it alive, and while it's tracking, that bright ring on its face is pointed dead at my hull. It's slower than the Cutter, so I can always leave - but it never stops, and breaking it resets the chase rather than doubling it.", gallery_seen(s, GalleryArt::Rock(RockKind::Hunter))),
+        (GalleryArt::Rock(RockKind::Orange), "EXPLOSIVE", "Charged, not cracked", "This one doesn't split - it lights, and a heartbeat later it takes out everything inside the blast, including me and including its neighbours. Anything sets it off: my guns, my beam, a mine. Something loaded these. I cracked one open afterward and found pressure lines, laid in deliberate.", gallery_seen(s, GalleryArt::Rock(RockKind::Orange))),
+        (GalleryArt::Rock(RockKind::Pulser), "PULSER", "On somebody's clock", "It brightens and dims on a slow beat, and while it's lit nothing I have touches it - rounds just spark off. Hit it on the dark half. Its pieces keep the same beat. The unsettling part isn't the shield; it's that every one of them keeps time with all the others.", gallery_seen(s, GalleryArt::Rock(RockKind::Pulser))),
+        (GalleryArt::Rock(RockKind::Red), "GROWER", "Appetite", "It pulls in whatever drifts near and swells with it - other growers included. Shooting it plainly only makes two of them, and both start feeding again. The mass shot, a warhead, the beam or a mine ends one outright. It eats the way the big one in the deep field ate. I don't think that's coincidence.", gallery_seen(s, GalleryArt::Rock(RockKind::Red))),
+        (GalleryArt::Rock(RockKind::Cluster), "CLUSTER", "Fractured through", "Riddled with cracks before I ever fired. Break it close and it bursts into a ring of fast shards that will take the ship with it - keep your distance, vaporize it with the mass shot, or let the warp swallow it whole. Whatever shattered this did it a long way from here.", gallery_seen(s, GalleryArt::Rock(RockKind::Cluster))),
+        (GalleryArt::Rock(RockKind::Beacon), "BEACON", "A keeper, not a rock", "It holds a field around itself and everything inside goes untouchable - my rounds and my beam simply wash over them. Kill the beacon and the field drops. Blasts, the warp and a grower's appetite ignore it entirely. It isn't defending itself. It's defending the others, and something taught it to.", gallery_seen(s, GalleryArt::Rock(RockKind::Beacon))),
+        (GalleryArt::Gold, "LIFE ROCK", "Salvage", "Gold all the way through and worth more than the rest of the Belt combined: break the whole lineage, every last fragment, and there's enough intact hull plating in it to put a life back on the board. Let a piece drift past the edge and it's gone. Only my guns can open it - mines bounce off, and the big feeder won't touch it.", gallery_seen(s, GalleryArt::Gold)),
+        (GalleryArt::Mine, "MINE", "Not from the Belt", "Machined. Not grown, not broken off anything - machined, and left drifting where a ship would pass. It wakes when I get close and goes off a moment later. Shooting one detonates it early and takes the rocks around it with it. Somebody is seeding the ground I have to cross.", gallery_seen(s, GalleryArt::Mine)),
+        (GalleryArt::Mob, "RAIDER", "Crewed or not, it aims", "A small gunship that keeps its distance and fires slow enough to dodge. It steers around the rocks, which means it can see them, and it leaves when it's been out too long. I've never gotten close enough to know whether there's anyone inside.", gallery_seen(s, GalleryArt::Mob)),
+        (GalleryArt::Well, "GRAVITY WELL", "The warp, inverted", "A pocket of pull that opens without warning and drags the ship instead of the rocks. It's weaker than my thrust, so I can always climb out - the danger is what it does to a dodge I'd already committed to. Same shape as my own warp. Someone else has the technology, and they're using it on me.", gallery_seen(s, GalleryArt::Well)),
+        (GalleryArt::Boss(BossKind::Warden), "THE WARDEN", "Keeper - Belt station 1", "It had the rocks penned on its arms, wheeling them around itself like stock, and it threw them at me rather than let me through. The shield ate almost everything I fired. Since when does a belt need a keeper? Its wreck gave up the chain beam.", gallery_seen(s, GalleryArt::Boss(BossKind::Warden))),
+        (GalleryArt::Boss(BossKind::Devourer), "THE GLUTTON", "Keeper - Belt station 2", "It hunted the field and wore what it ate, healing as it grew. Starve it or overfeed it - past a certain point it can't hold what it's swallowed and comes apart. The debris it shed assayed as core minerals and mantle iron. That was the day I stopped believing these were asteroids.", gallery_seen(s, GalleryArt::Boss(BossKind::Devourer))),
+        (GalleryArt::Boss(BossKind::Slinger), "THE SLINGER", "Keeper - Belt station 3", "It didn't throw rocks. It LOADED them, aimed, and fired, then reloaded - and its core sat exposed the whole time, daring me to trade. These things aren't guarding the field. They're operating it, like instruments.", gallery_seen(s, GalleryArt::Boss(BossKind::Slinger))),
+        (GalleryArt::Boss(BossKind::Detonator), "THE DETONATOR", "Keeper - Belt station 4", "Armored shut except in the moments it was priming a rock into a bomb, and those windows were the only way in. It armed the field faster than I could clear it. It doesn't make the explosives - it finds them. That means they were already here, waiting.", gallery_seen(s, GalleryArt::Boss(BossKind::Detonator))),
+        (GalleryArt::Boss(BossKind::Pulsar), "THE PULSAR", "Keeper - Belt station 5", "It beats like the rocks that share its name: sealed while lit, open while dark, and shoving the whole field outward every pulse. The entire Belt moves to its rhythm - not drifting, DRIVEN. I plotted the heading it was driving them on. It points home.", gallery_seen(s, GalleryArt::Boss(BossKind::Pulsar))),
+        (GalleryArt::Boss(BossKind::Phantom), "THE PHANTOM", "The steersman", "The thing that was steering all of it. It wore the field against me, opened the arena with a ray, and threw itself at me at the end like something that had run out of options. It knew our world's name and called it an acquisition. I broke the mask - and what came out didn't die, it left.", gallery_seen(s, GalleryArt::Boss(BossKind::Phantom))),
     ]
 }
 
@@ -8720,7 +8744,10 @@ fn gallery_sightings(
 // same recognisable shape and only its colour + signature marks differ (the field's rocks are random
 // per-spawn, which is wrong for a reference page).
 fn gallery_rock_ring(c: Vec2, r: f32) -> Vec<Vec2> {
-    let bumps = [1.0f32, 0.86, 1.05, 0.9, 1.0, 0.82, 1.08, 0.92, 0.98];
+    // 14 vertices with SHALLOW variance: the sharp 9-gon joins were showing as bright notches across
+    // the outline under bloom (butt-capped segments meeting at steep angles). Near-collinear joins
+    // hide the seams while still reading as a rough rock.
+    let bumps = [1.0f32, 0.95, 1.03, 0.97, 1.0, 0.93, 1.04, 0.98, 1.01, 0.94, 1.02, 0.97, 1.0, 0.96];
     let mut pts: Vec<Vec2> = (0..bumps.len())
         .map(|i| {
             let a = i as f32 / bumps.len() as f32 * TAU;
@@ -8851,20 +8878,12 @@ fn draw_gallery_art(gizmos: &mut Gizmos, c: Vec2, t: f32, art: GalleryArt) {
 // The gallery's art layer: draws the current page's entry in world space, behind the UI text. Locked
 // entries get a dim question-mark silhouette instead — you can see the shape of what you haven't met.
 fn gallery_draw(time: Res<Time<Real>>, page: Res<GalleryPage>, stats: Res<Stats>, mut gizmos: Gizmos) {
-    let entries = gallery_entries(&stats);
-    let Some(&(art, .., unlocked)) = entries.get(page.0) else {
-        return;
-    };
-    let t = time.elapsed_secs();
-    let c = Vec2::new(0.0, GALLERY_ART_Y);
-    if unlocked {
-        draw_gallery_art(&mut gizmos, c, t, art);
-    } else {
-        // unmet: a dim shell, deliberately shapeless — meeting it is the reveal
-        let dimc = Color::srgb(0.35, 0.38, 0.5);
-        gizmos.circle_2d(Isometry2d::from_translation(c), 62.0, dimc);
-        gizmos.circle_2d(Isometry2d::from_translation(c), 30.0, dim(dimc, 0.5));
+    let book = gallery_book(&stats);
+    if book.is_empty() {
+        return; // nothing catalogued — the screen says so in text, no art to draw
     }
+    let &(art, ..) = &book[page.0.min(book.len() - 1)];
+    draw_gallery_art(&mut gizmos, Vec2::new(0.0, GALLERY_ART_Y), time.elapsed_secs(), art);
 }
 
 const GALLERY_ART_Y: f32 = 96.0; // world-space centre of the art, above the name/description block
@@ -8879,44 +8898,50 @@ fn spawn_gallery_ui(mut commands: Commands, page: Res<GalleryPage>, stats: Res<S
     spawn_frame(&mut commands, GalleryUi);
     let root = overlay(&mut commands, GalleryUi, 0.3); // light — the art is drawn behind this
     let f = &font.0;
-    let entries = gallery_entries(&stats);
-    let known = entries.iter().filter(|e| e.4).count();
-    let total = entries.len();
-    let i = page.0.min(total - 1);
-    let (_, name, role, desc, unlocked) = entries[i];
+    let book = gallery_book(&stats);
+    let total = gallery_entries(&stats).len(); // the full roster, for the "n of N" completion line
     let body = Color::srgb(0.76, 0.8, 0.96);
     let dimc = Color::srgb(0.45, 0.48, 0.6);
     commands.entity(root).with_children(|p| {
-        p.spawn(text_f(f, 36.0, title_color(), "GALLERY"));
-        p.spawn(text_f(f, 13.0, dimc, &format!("Encountered {known} of {total}")));
-        // the gap the art occupies (world-space `gallery_draw` renders into this band)
-        p.spawn(Node { height: Val::Px(268.0), ..default() });
-        if unlocked {
+        p.spawn(text_f(f, 34.0, title_color(), "GALLERY"));
+        p.spawn(text_f(f, 13.0, dimc, &format!("Catalogued {} of {total}", book.len())));
+        // the band the world-space art renders into (`gallery_draw`)
+        p.spawn(Node { height: Val::Px(262.0), ..default() });
+        if book.is_empty() {
+            // nothing met yet - the book doesn't exist, so say so rather than showing blank pages
+            p.spawn(text_f(f, 26.0, dimc, "NOTHING CATALOGUED"));
+            p.spawn(Node { width: Val::Px(620.0), margin: UiRect::top(Val::Px(10.0)), ..default() }).with_children(|d| {
+                d.spawn((
+                    text_f(f, 14.0, body, "The Cutter logs what it meets. Fly the Belt and this fills itself in - a page for every rock, hazard and keeper you come across."),
+                    Node { width: Val::Px(620.0), ..default() },
+                ));
+            });
+        } else {
+            let i = page.0.min(book.len() - 1);
+            let (_, name, role, desc, _) = book[i];
             p.spawn(text_f(f, 30.0, title_color(), name));
             p.spawn(text_f(f, 14.0, dimc, role));
-        } else {
-            p.spawn(text_f(f, 30.0, dimc, "UNIDENTIFIED"));
-            p.spawn(text_f(f, 14.0, dimc, "Not yet encountered"));
+            // the report, wrapped to a fixed column so long entries never run off the frame
+            p.spawn(Node { width: Val::Px(620.0), margin: UiRect::top(Val::Px(8.0)), ..default() }).with_children(|d| {
+                d.spawn((text_f(f, 14.0, body, desc), Node { width: Val::Px(620.0), ..default() }));
+            });
+            // paging - only worth showing once there's more than one page
+            if book.len() > 1 {
+                p.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    align_items: AlignItems::Center,
+                    column_gap: Val::Px(10.0),
+                    margin: UiRect::top(Val::Px(8.0)),
+                    ..default()
+                })
+                .with_children(|row| {
+                    menu_button(row, f, MenuAction::PagePrev, "<  PREV");
+                    row.spawn(text_f(f, 15.0, dimc, &format!("{} / {}", i + 1, book.len())));
+                    menu_button(row, f, MenuAction::PageNext, "NEXT  >");
+                });
+                p.spawn(text_f(f, 12.0, dimc, "A / D  or  ← →  to turn pages"));
+            }
         }
-        // the description, wrapped to a fixed column so long entries never run off the frame
-        p.spawn(Node { width: Val::Px(600.0), margin: UiRect::top(Val::Px(8.0)), ..default() }).with_children(|d| {
-            let text = if unlocked { desc } else { "Fly far enough to meet it and this page fills itself in." };
-            d.spawn((text_f(f, 14.0, body, text), Node { width: Val::Px(600.0), ..default() }));
-        });
-        // paging row
-        p.spawn(Node {
-            flex_direction: FlexDirection::Row,
-            align_items: AlignItems::Center,
-            column_gap: Val::Px(10.0),
-            margin: UiRect::top(Val::Px(10.0)),
-            ..default()
-        })
-        .with_children(|row| {
-            menu_button(row, f, MenuAction::PagePrev, "<  PREV");
-            row.spawn(text_f(f, 15.0, dimc, &format!("{} / {}", i + 1, total)));
-            menu_button(row, f, MenuAction::PageNext, "NEXT  >");
-        });
-        p.spawn(text_f(f, 12.0, dimc, "A / D  or  ← →  to turn pages"));
         menu_button(p, f, MenuAction::Back, "BACK");
     });
 }
@@ -8944,11 +8969,14 @@ fn gallery_page_turn(
     if !fwd && !back {
         return;
     }
-    let total = gallery_entries(&stats).len();
+    let pages = gallery_book(&stats).len();
+    if pages < 2 {
+        return; // nothing to turn to
+    }
     if fwd {
-        page.0 = (page.0 + 1) % total;
+        page.0 = (page.0.min(pages - 1) + 1) % pages;
     } else {
-        page.0 = (page.0 + total - 1) % total;
+        page.0 = (page.0.min(pages - 1) + pages - 1) % pages;
     }
     for e in &ui {
         commands.entity(e).despawn(); // rebuild the page for the new entry
@@ -12170,6 +12198,13 @@ mod tests {
             mark_seen(&mut all, art);
         }
         assert!(gallery_entries(&all).iter().all(|e| e.4), "every subject seen = every page open");
+        // THE BOOK GROWS (user rule): it contains ONLY what you've met — no blank pages to leaf
+        // through, so it can never spoil what's still coming. Empty is a valid state (the screen
+        // must not index into it — that used to underflow).
+        assert!(gallery_book(&Stats::default()).is_empty(), "a fresh pilot's book has no pages at all");
+        assert_eq!(gallery_book(&s).len(), 1, "one sighting = exactly one page");
+        assert!(gallery_book(&s).iter().all(|e| e.4), "every page in the book is one you've met");
+        assert_eq!(gallery_book(&all).len(), gallery_entries(&all).len(), "…and a full save shows the whole roster");
     }
     #[test]
     fn aegis_shards_grind_rocks_then_run_out() {
