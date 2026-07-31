@@ -114,6 +114,14 @@ The 30-wave run is done end-to-end (see [`DESIGN.md`](DESIGN.md) for the full de
 - **New Game+** — replay waves 1–30 harder (the victory screen already teases it).
 - Balance passes from playtesting.
 
+## License
+
+**Proprietary — © 2026 Baz Studios LLC, all rights reserved.** This repository is published for
+visibility and development history, not as an open-source project: you're welcome to read the code
+and build it locally to try, but redistribution and reuse of the code, art or audio need written
+permission. Third-party dependencies (Bevy and friends) keep their own licenses; the Orbitron font is
+used under the SIL OFL. See [LICENSE](LICENSE).
+
 ## Notes
 
 - **Purple is the player.** Reserved for the ship and its kit — nothing else uses it.

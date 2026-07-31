@@ -1,0 +1,39 @@
+VIOLET EDGE
+Copyright (c) 2026 Baz Studios LLC. All rights reserved.
+
+PROPRIETARY — NOT OPEN SOURCE
+
+This repository and everything in it — the source code, the game design, the
+artwork, the audio, and the text — is the proprietary property of Baz Studios
+LLC. It is published here for visibility and development history, NOT as an
+open-source project.
+
+No permission is granted to copy, modify, merge, publish, distribute,
+sublicense, sell, or create derivative works from any part of this repository,
+in whole or in part, without the prior written permission of Baz Studios LLC.
+
+You MAY:
+  - view and read this source code
+  - clone the repository and build it locally for your own personal,
+    non-commercial evaluation
+  - download and play the released builds
+
+You MAY NOT:
+  - redistribute this code or the built game, modified or unmodified
+  - use any part of the code, art, audio, or design in another project
+  - sell, sublicense, or commercially exploit any part of this work
+
+THIRD-PARTY COMPONENTS
+This project depends on third-party libraries (including the Bevy engine) which
+are covered by their own licenses; those licenses apply to those components, not
+to this work. The bundled font (Orbitron) is used under the SIL Open Font
+License — see assets/fonts/README.txt.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+For licensing enquiries: Baz Studios LLC.
