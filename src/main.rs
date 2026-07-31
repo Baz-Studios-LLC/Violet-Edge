@@ -91,7 +91,9 @@ const LAPSE_FADE_OUT: f32 = 0.9; // dissolving (still solid — it's on its way 
 const LAPSE_GONE_MIN: f32 = 1.5; // absent: invisible bar a faint scar, intangible, harmless
 const LAPSE_GONE_MAX: f32 = 3.0;
 const LAPSE_REAPPEAR_CLEAR: f32 = 170.0; // it never materializes closer than this to the ship
-const LAPSE_FADE_IN: f32 = 1.3; // the TELEGRAPH: a ghost outline brightening back into being
+const LAPSE_FADE_IN: f32 = 1.6; // the TELEGRAPH: a neon tube STRIKING back into being (see `lapse_glow`).
+// 1.6s, not 1.3: the strike's peaks worked out at 3.1 Hz over the shorter window, a hair over the
+// ≤3 flashes/sec photosensitivity rule — and a slower strike is the better look anyway.
 // The fade-in IS the fairness guarantee — a rock may only rematerialize after a window long enough
 // to read and fly out of. Enforced at compile time so nobody can tune it into a cheap death.
 const _: () = assert!(LAPSE_FADE_IN >= 1.0);
@@ -557,6 +559,29 @@ fn well_color() -> Color {
 fn pulser_lit(offset: f32, t: f32) -> bool {
     (t * PULSE_RATE + offset).sin() > PULSE_LIT_THRESHOLD
 }
+fn lapse_ignite_color() -> Color {
+    Color::srgb(6.2, 3.0, 1.2)
+} // the warm amber-white flash of a neon tube STRIKING — the lapse cools to its steel-blue from this
+
+// A LAPSE materializing doesn't fade up linearly — this is a neon game, so it comes back the way a
+// tube ignites: a few WARM stutters that settle into steady colour. Three strikes across
+// LAPSE_FADE_IN (~2.3 Hz — comfortably inside the ≤3 flashes/sec photosensitivity rule), each one
+// brief, over a slowly rising baseline so the shape is always legible between them.
+fn lapse_glow(l: &Lapse) -> Color {
+    match l.phase {
+        LapsePhase::Gone => dim(lapse_color(), 0.0),
+        LapsePhase::Solid => lapse_color(),
+        LapsePhase::FadingOut => dim(lapse_color(), l.presence()), // a dying tube just dims out
+        LapsePhase::FadingIn => {
+            let f = l.presence();
+            let strike = |at: f32, w: f32| (1.0 - ((f - at) / w).abs()).max(0.0).powi(2);
+            let b = 0.08 + 0.55 * f * f + 0.8 * strike(0.20, 0.08) + 0.9 * strike(0.50, 0.09) + 1.0 * strike(0.80, 0.11);
+            // warm at the strike, cooling to its own colour as the gas settles
+            dim(mix(lapse_ignite_color(), lapse_color(), f), b.min(1.3))
+        }
+    }
+}
+
 fn lapse_color() -> Color {
     Color::srgb(1.4, 3.0, 5.6)
 } // cold spectral STEEL-BLUE — the intermittent rock. Kept desaturated so its fade reads as absence
@@ -919,8 +944,10 @@ fn total_breaks(s: &Stats) -> u64 {
 
 // Credit a player rock-kill to its type's lifetime counter (the per-type achievements). One source
 // of truth for the priority order (beacon/pulser are ALSO dense internally, so they check first).
-fn credit_rock_kill(stats: &mut Stats, dense: bool, pulser: bool, red: bool, cluster: bool, beacon: bool, hunter: bool) {
-    if hunter {
+fn credit_rock_kill(stats: &mut Stats, dense: bool, pulser: bool, red: bool, cluster: bool, beacon: bool, hunter: bool, lapse: bool) {
+    if lapse {
+        stats.lapse += 1;
+    } else if hunter {
         stats.hunter += 1;
     } else if beacon {
         stats.beacon += 1;
@@ -1717,6 +1744,8 @@ enum Ach {
     IceBreaker,
     Keymaster,
     Whostheprey,
+    ObjectPermanence,
+    PlannedObsolescence,
     Minesweeper,
     GoldRush,
     WaveGoodbye,
@@ -1732,7 +1761,7 @@ enum Ach {
 // Order defines the index into `Achievements.unlocked` and the menu list: the boss ladder, the
 // rock-type grinds (one per type), the other lifetime grinds, the restart ladder, then the
 // beat-the-game capstones.
-const ACHIEVEMENTS: [Ach; 25] = [
+const ACHIEVEMENTS: [Ach; 27] = [
     Ach::FirstBlood,
     Ach::Warden,
     Ach::Glutton,
@@ -1747,6 +1776,8 @@ const ACHIEVEMENTS: [Ach; 25] = [
     Ach::IceBreaker,
     Ach::Keymaster,
     Ach::Whostheprey,
+    Ach::ObjectPermanence,
+    Ach::PlannedObsolescence,
     Ach::Minesweeper,
     Ach::GoldRush,
     Ach::WaveGoodbye,
@@ -1770,6 +1801,8 @@ const ACH_PULSER: u32 = 300; // every one is a timed dark-beat kill
 const ACH_RED: u32 = 400;
 const ACH_CLUSTER: u32 = 300;
 const ACH_BEACON: u32 = 100;
+const ACH_LAPSE: u32 = 500; // NG+-only and common there, but NG+ itself is earned — a long career
+const ACH_TENDERS: u32 = 100; // one at a time, late NG+ waves only: ~8-10 full second laps
 const ACH_HUNTER: u32 = 350; // hunters run waves 6-9 (and every NG+ wave past 5), so this accrues fast on lap two // the rarest rock — and each takes deliberate focus
 const ACH_MINES: u32 = 250;
 const ACH_GOLDS: u32 = 25;
@@ -1792,6 +1825,8 @@ fn ach_meta(a: Ach) -> (&'static str, &'static str) {
         Ach::IceBreaker => ("Ice Breaker", "Shatter 300 clusters"),
         Ach::Keymaster => ("Keymaster", "Crack 100 beacons"),
         Ach::Whostheprey => ("Who's the Prey Now", "Destroy 350 hunters"),
+        Ach::ObjectPermanence => ("Object Permanence", "Destroy 500 lapse rocks — catch them while they exist"),
+        Ach::PlannedObsolescence => ("Planned Obsolescence", "Scrap 100 Tender repair drones"),
         Ach::Minesweeper => ("Minesweeper", "Destroy 250 mines"),
         Ach::GoldRush => ("Gold Rush", "Earn 25 extra lives from gold rocks"),
         Ach::WaveGoodbye => ("Wave Goodbye", "Clear 250 waves, lifetime"),
@@ -1822,6 +1857,8 @@ fn ach_met(a: Ach, s: &Stats) -> bool {
         Ach::IceBreaker => s.cluster >= ACH_CLUSTER,
         Ach::Keymaster => s.beacon >= ACH_BEACON,
         Ach::Whostheprey => s.hunter >= ACH_HUNTER,
+        Ach::ObjectPermanence => s.lapse >= ACH_LAPSE,
+        Ach::PlannedObsolescence => s.tenders >= ACH_TENDERS,
         Ach::Minesweeper => s.mines >= ACH_MINES,
         Ach::GoldRush => s.golds >= ACH_GOLDS,
         Ach::WaveGoodbye => s.waves >= ACH_WAVES,
@@ -1850,6 +1887,8 @@ fn ach_progress(a: Ach, s: &Stats) -> Option<(u32, u32)> {
         Ach::IceBreaker => Some((s.cluster, ACH_CLUSTER)),
         Ach::Keymaster => Some((s.beacon, ACH_BEACON)),
         Ach::Whostheprey => Some((s.hunter, ACH_HUNTER)),
+        Ach::ObjectPermanence => Some((s.lapse, ACH_LAPSE)),
+        Ach::PlannedObsolescence => Some((s.tenders, ACH_TENDERS)),
         Ach::Minesweeper => Some((s.mines, ACH_MINES)),
         Ach::GoldRush => Some((s.golds, ACH_GOLDS)),
         Ach::WaveGoodbye => Some((s.waves, ACH_WAVES)),
@@ -1899,6 +1938,8 @@ struct Stats {
     best_wave: u32,    // deepest wave ever REACHED — the game-over screen's "you were close" marker
     pacifist: bool,    // ever survived two straight timer waves breaking nothing (and not dying)
     hunter: u32,       // hunter rocks destroyed (lifetime)
+    lapse: u32,        // lapse rocks destroyed (lifetime) — caught while SOLID, which is the trick
+    tenders: u32,      // Tender repair drones destroyed (lifetime)
     seen: u32,         // GALLERY sightings bitmask — one bit per subject, set the frame it first
                        // appears on your field (see `gallery_bit` / `gallery_sightings`)
 }
@@ -3625,7 +3666,7 @@ fn collisions(
                     if explosive.is_some() {
                         stats.orange += 1; // the round deletes an orange whole — still a player-credited kill
                     } else {
-                        credit_rock_kill(&mut stats, a.dense, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some());
+                        credit_rock_kill(&mut stats, a.dense, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), lapse.is_some());
                     }
                     warhead_blast_at = Some(ap); // AoE applied after this loop (can't nest a second &mut pass)
                     dead_b.insert(be);
@@ -3648,7 +3689,7 @@ fn collisions(
                     } else {
                         break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, a.dense, gold.is_some(), pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), lapse.is_some(), true);
                         sfx.write(SoundFx::Break(a.size));
-                        credit_rock_kill(&mut stats, a.dense, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some());
+                        credit_rock_kill(&mut stats, a.dense, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), lapse.is_some());
                     }
                 }
                 break;
@@ -3673,7 +3714,7 @@ fn collisions(
                     if explosive.is_some() {
                         stats.orange += 1; // the blast deletes an orange whole — yours
                     } else {
-                        credit_rock_kill(&mut stats, a.dense, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some());
+                        credit_rock_kill(&mut stats, a.dense, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), lapse.is_some());
                     }
                 }
             }
@@ -3719,7 +3760,7 @@ fn collisions(
                 commands.entity(be).despawn();
                 commands.entity(tde).despawn();
                 score.0 += TENDER_SCORE;
-                stats.enemies += 1; // a mob kill for the lifetime tally
+                stats.tenders += 1; // its own tally — a Tender isn't a raider, so it doesn't muddy that count
                 burst(&mut commands, tp, enemy_color(), 22, 300.0, &mut rng);
                 sfx.write(SoundFx::EnemyDie);
                 break;
@@ -5341,7 +5382,7 @@ fn chain_update(
                 // in one sweep: the beam is a clean answer to an aura)
                 break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, ast.size, 1.0, ast.dense, gold.is_some(), pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), lapse.is_some(), true); // chain shears rocks; a red splits into reds (they stay red + regrow)
                 sfx.write(SoundFx::Break(ast.size));
-                credit_rock_kill(&mut stats, ast.dense, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some());
+                credit_rock_kill(&mut stats, ast.dense, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), lapse.is_some());
             }
         }
         for (ee, et) in &enemies {
@@ -5948,7 +5989,7 @@ fn render(
         } else if let Some(l) = lapse {
             // presence IS the readout: full when solid, guttering out as it dissolves, a faint ghost
             // as it comes back. Smooth ramps only — no blinking (photosensitivity rule).
-            dim(lapse_color(), l.presence()) // 0 while absent — it is fully, completely gone
+            lapse_glow(l) // neon strike on the way in, smooth dim on the way out, nothing while gone
         } else if let Some(h) = hunter {
             dim(hunter_color(), 0.62 + 0.38 * h.charge) // dull when it spawns, burning once it's locked on
         } else if cluster.is_some() {
@@ -5980,9 +6021,10 @@ fn render(
                 LapsePhase::Gone => {}
                 LapsePhase::FadingIn => {
                     // MATERIALIZING: an inner ring closing in as it solidifies — the countdown you
-                    // read to decide whether to leave. Bright enough to notice, not yet lethal.
+                    // read to decide whether to leave. It rides the SAME strike envelope as the body
+                    // (`lapse_glow`) so the two read as one tube lighting, not two effects.
                     let f = l.presence();
-                    gizmos.linestrip_2d(ring(0.25 + 0.7 * f), dim(lapse_color(), 0.3 + 0.5 * f));
+                    gizmos.linestrip_2d(ring(0.25 + 0.7 * f), dim(lapse_glow(l), 0.75));
                 }
                 _ => {}
             }
@@ -9803,12 +9845,14 @@ fn read_progress() -> Option<Stats> {
         pacifist: flag(22),
         hunter: num(23),
         seen: num(24),
+        lapse: num(25),
+        tenders: num(26),
     })
 }
 #[cfg(not(test))]
 fn save_progress(s: &Stats) {
     let line = format!(
-        "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+        "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
         s.blue,
         s.green,
         s.enemies,
@@ -9833,7 +9877,9 @@ fn save_progress(s: &Stats) {
         s.best_wave,
         s.pacifist as u8,
         s.hunter,
-        s.seen
+        s.seen,
+        s.lapse,
+        s.tenders
     );
     let _ = std::fs::write(SAVE_PATH, line); // best-effort — never block gameplay on I/O
 }
@@ -11949,16 +11995,16 @@ mod tests {
         // beacon/pulser/red/cluster rocks are ALSO dense internally (2-hp bodies), so the helper must
         // check the special kinds BEFORE falling through to the plain green/blue split.
         let mut s = Stats::default();
-        credit_rock_kill(&mut s, true, false, false, false, true, false); // dense + beacon
+        credit_rock_kill(&mut s, true, false, false, false, true, false, false); // dense + beacon
         assert_eq!((s.beacon, s.green), (1, 0), "a beacon credits beacon, not green");
-        credit_rock_kill(&mut s, true, true, false, false, false, false); // dense + pulser
+        credit_rock_kill(&mut s, true, true, false, false, false, false, false); // dense + pulser
         assert_eq!((s.pulser, s.green), (1, 0), "a pulser credits pulser, not green");
-        credit_rock_kill(&mut s, true, false, true, false, false, false); // dense + red
+        credit_rock_kill(&mut s, true, false, true, false, false, false, false); // dense + red
         assert_eq!((s.red, s.green), (1, 0), "a red credits red, not green");
-        credit_rock_kill(&mut s, true, false, false, true, false, false); // dense + cluster
+        credit_rock_kill(&mut s, true, false, false, true, false, false, false); // dense + cluster
         assert_eq!((s.cluster, s.green), (1, 0), "a cluster credits cluster, not green");
-        credit_rock_kill(&mut s, true, false, false, false, false, false); // plain dense
-        credit_rock_kill(&mut s, false, false, false, false, false, false); // plain blue
+        credit_rock_kill(&mut s, true, false, false, false, false, false, false); // plain dense
+        credit_rock_kill(&mut s, false, false, false, false, false, false, false); // plain blue
         assert_eq!((s.green, s.blue), (1, 1), "plain rocks split on the dense flag");
     }
 
@@ -11993,10 +12039,12 @@ mod tests {
             pacifist: true,
             hunter: 15,
             seen: 0b1010_1010,
+            lapse: 17,
+            tenders: 19,
         };
         // mirror save_progress's field order (the real fn is a test no-op so runs can't clobber saves)
         let line = format!(
-            "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+            "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
             s.blue,
             s.green,
             s.enemies,
@@ -12021,10 +12069,12 @@ mod tests {
             s.best_wave,
             s.pacifist as u8,
             s.hunter,
-            s.seen
+            s.seen,
+            s.lapse,
+            s.tenders
         );
         let n: Vec<&str> = line.split_whitespace().collect();
-        assert_eq!(n.len(), 25, "the save line carries all 25 fields");
+        assert_eq!(n.len(), 27, "the save line carries all 27 fields");
         let flag = |i: usize| n[i] == "1";
         let num = |i: usize| n[i].parse::<u32>().unwrap();
         assert_eq!((num(0), num(1), num(2)), (s.blue, s.green, s.enemies));
@@ -12037,7 +12087,8 @@ mod tests {
         assert_eq!(num(21), s.best_wave, "best_wave rides in slot 21");
         assert!(flag(22), "pacifist rides in slot 22");
         assert_eq!(num(23), s.hunter, "hunter kills ride in slot 23");
-        assert_eq!(num(24), s.seen, "the gallery sightings bitmask rides in the final slot");
+        assert_eq!(num(24), s.seen, "the gallery sightings bitmask rides in slot 24");
+        assert_eq!((num(25), num(26)), (s.lapse, s.tenders), "the lapse + tender tallies ride in the final slots");
         // an OLD 12-field save (pre-expansion) must still load — new counters default to zero
         let old = "5 4 3 1 0 0 1 0 0 0 2 1";
         assert_eq!(old.split_whitespace().count(), 12);
@@ -12220,7 +12271,8 @@ mod tests {
         // boss flags and capstones never appear, even on a maxed save — they're binary, not progress
         let done = Stats {
             blue: ACH_BLUE, green: ACH_GREEN, orange: ACH_ORANGE, pulser: ACH_PULSER, red: ACH_RED,
-            cluster: ACH_CLUSTER, beacon: ACH_BEACON, hunter: ACH_HUNTER, mines: ACH_MINES,
+            cluster: ACH_CLUSTER, beacon: ACH_BEACON, hunter: ACH_HUNTER, lapse: ACH_LAPSE,
+            tenders: ACH_TENDERS, mines: ACH_MINES,
             golds: ACH_GOLDS, waves: ACH_WAVES, warps: ACH_WARPS, runs: 50, ..default()
         };
         assert!(nearest_grind(&done).is_none(), "with every counter capped the ticker goes quiet");
@@ -12922,6 +12974,35 @@ mod tests {
         app.world_mut().entity_mut(rock).insert(Lapse { phase: LapsePhase::Solid, t: 5.0 });
         app.update();
         assert_eq!(app.world().resource::<Run>().lives, 2, "solid again = lethal again");
+    }
+
+    #[test]
+    fn the_lapse_strike_stays_inside_the_photosensitivity_budget() {
+        // The materialize is a NEON TUBE STRIKE, not a linear fade — but it's still large-area
+        // flashing, so it must stay at or under 3 flashes/sec. Count the brightness peaks across the
+        // whole fade-in and check the implied rate.
+        let mut peaks = 0;
+        let (mut prev, mut rising) = (0.0f32, false);
+        for i in 0..=400 {
+            let f = i as f32 / 400.0;
+            let l = Lapse { phase: LapsePhase::FadingIn, t: LAPSE_FADE_IN * (1.0 - f) };
+            let c = lapse_glow(&l).to_srgba();
+            let b = c.red + c.green + c.blue;
+            if b > prev && !rising {
+                rising = true;
+            } else if b < prev && rising {
+                peaks += 1;
+                rising = false;
+            }
+            prev = b;
+        }
+        let hz = peaks as f32 / LAPSE_FADE_IN;
+        assert!(hz <= 3.0, "the strike flickers at {hz:.1} Hz — over the 3 flashes/sec limit");
+        assert!(peaks >= 2, "…but it should still read as a STRIKE, not a plain fade (got {peaks} peaks)");
+        // and it ignites WARM, settling to its own cold colour
+        let early = lapse_glow(&Lapse { phase: LapsePhase::FadingIn, t: LAPSE_FADE_IN * 0.8 }).to_srgba();
+        let late = lapse_glow(&Lapse { phase: LapsePhase::Solid, t: 1.0 }).to_srgba();
+        assert!(early.red / early.blue.max(0.01) > late.red / late.blue.max(0.01), "the strike is warmer than the settled tube");
     }
 
     #[test]

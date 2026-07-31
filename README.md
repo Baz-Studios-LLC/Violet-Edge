@@ -96,7 +96,7 @@ whole rock**. Shoot it, or either fragment, or the field stops shrinking.
 - **Gallery** — a bestiary of every rock, hazard and boss, one page each, drawn as real vector art
   with a field report in the pilot's voice. Pages are added as you meet things, so it never spoils
   what's ahead.
-- **25 achievements** with unlock toasts (boss ladder, per-rock lifetime grinds, a restart ladder,
+- **27 achievements** with unlock toasts (boss ladder, per-rock lifetime grinds, a restart ladder,
   and the wave-30 capstones).
 - **NEW GAME+** — unlocked for good once you beat the game: a denser field, tougher bosses, the
   **Aegis Shards** from the Warden+ (an exclusive powerup), and a new roster of rocks from wave 6 on.
