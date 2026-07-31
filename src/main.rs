@@ -5788,11 +5788,20 @@ fn render(
     let sc = ship_color();
     for (s, st, trail) in &ships {
         let c = st.translation.truncate();
-        // DEV invincibility: a steady shield ring so it's obvious god-mode is on.
+        // DEV invincibility indicator. Deliberately a BROKEN reticle (four short arcs) well outside
+        // the hull, not a solid ring: the old solid circle sat at SHIP_R*2.2 = 29.7px, which is
+        // essentially AEGIS_ORBIT_R (30) — so with the shards up it looked like a track joining them
+        // and read as part of the ship's kit. A dashed ring at a clearly different radius can never
+        // be mistaken for gameplay. Still obvious on sight, because god-mode must never be subtle.
         // Drawn before the blink skip so it stays visible through respawn flicker.
         if dev.invincible {
             let pulse = 1.0 + 0.06 * (t * 4.0).sin();
-            gizmos.circle_2d(Isometry2d::from_translation(c), SHIP_R * 2.2 * pulse, dim(sc, 0.6));
+            let r = SHIP_R * 3.4 * pulse;
+            for k in 0..4 {
+                let base = t * 0.5 + k as f32 / 4.0 * TAU;
+                let arc: Vec<Vec2> = (0..7).map(|i| c + Vec2::from_angle(base + i as f32 / 6.0 * 0.9) * r).collect();
+                gizmos.linestrip_2d(arc, dim(sc, 0.55));
+            }
         }
         // Nova Shield shell — the SHIP'S OWN silhouette scaled out (a second hull layer that turns with
         // you), in glassy pale violet. UP: a gentle amplitude-only breathe. In the regen's final stretch
