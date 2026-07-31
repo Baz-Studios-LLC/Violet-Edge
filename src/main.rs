@@ -90,6 +90,7 @@ const LAPSE_SOLID_MAX: f32 = 7.0;
 const LAPSE_FADE_OUT: f32 = 0.9; // dissolving (still solid — it's on its way out, not gone)
 const LAPSE_GONE_MIN: f32 = 1.5; // absent: invisible bar a faint scar, intangible, harmless
 const LAPSE_GONE_MAX: f32 = 3.0;
+const LAPSE_REAPPEAR_CLEAR: f32 = 170.0; // it never materializes closer than this to the ship
 const LAPSE_FADE_IN: f32 = 1.3; // the TELEGRAPH: a ghost outline brightening back into being
 // The fade-in IS the fairness guarantee — a rock may only rematerialize after a window long enough
 // to read and fly out of. Enforced at compile time so nobody can tune it into a cheap death.
@@ -2261,11 +2262,11 @@ enum RockKind {
 // Which flavor should a rock spawned for `level` be? One roll shared by every edge-spawn caller,
 // so a wave's whole rock mix is defined here. Fractions are the tuning knobs for wave feel.
 fn roll_rock_kind(level: i32, plus: bool, rng: &mut impl Rng) -> RockKind {
-    // NEW GAME+ runs its own bestiary. Waves 1-5 open on the finale's all-types mix (the pilot has
-    // seen it all — no teaching rosters on a lap that assumes mastery); from wave 6 the OLD ROSTER
-    // RETIRES entirely and lap two runs new rock types only (see `roll_ngplus_kind`).
+    // NEW GAME+ runs its own bestiary. Waves 1-5 recap the OLD roster (`roll_ngplus_opener` — the
+    // pilot has seen it all, so no teaching rosters, but the NEW types are held back); from wave 6
+    // the old roster RETIRES entirely and lap two runs new rock types only (`roll_ngplus_kind`).
     if plus {
-        return if content_wave(level) <= 5 { roll_finale_kind(rng) } else { roll_ngplus_kind(rng) };
+        return if content_wave(level) <= 5 { roll_ngplus_opener(rng) } else { roll_ngplus_kind(rng) };
     }
     let cw = content_wave(level);
     // Beacon (aura warden) — RARE, rolled first so nothing eats its slice. Debuts w23 (target-order
@@ -2408,6 +2409,24 @@ fn roll_finale_kind(rng: &mut impl Rng) -> RockKind {
 // greatest-hits mix through wave 5, then sheds every rock the first lap taught you and runs the NEW
 // bestiary instead. ⚠️ Only the Hunter exists so far, so NG+ 6-30 is currently a single-type field;
 // each new rock type added here widens it.
+// NG+ waves 1-5: a greatest-hits of LAP ONE — the OLD roster only. The new bestiary is held back
+// until wave 6 (user rule, 2026-07-31) so the opener is pure recap and the roster switch at 6 lands
+// as a distinct event. Deliberately NOT `roll_finale_kind`: that one now includes the Hunter (a
+// base-game Act I rock), which would leak the new roster into the opener.
+fn roll_ngplus_opener(rng: &mut impl Rng) -> RockKind {
+    if rng.gen_bool(0.08) {
+        return RockKind::Beacon; // the rare spice, same as the finale mix
+    }
+    match rng.gen_range(0..6) {
+        0 => RockKind::Blue,
+        1 => RockKind::Green,
+        2 => RockKind::Orange,
+        3 => RockKind::Pulser,
+        4 => RockKind::Red,
+        _ => RockKind::Cluster,
+    }
+}
+
 fn roll_ngplus_kind(rng: &mut impl Rng) -> RockKind {
     // The lap-two bestiary. Widen this as new types land; the roster rule (old roster retires after
     // wave 5) means everything the second lap throws at you comes from here.
@@ -2647,10 +2666,16 @@ fn hunter_update(
 
 // Drive every LAPSE rock's phase clock. Randomized spells so a field of them never falls into lockstep
 // (which would make the whole wave blink as one — both ugly and unfair).
-fn lapse_update(time: Res<Time>, mut q: Query<&mut Lapse>) {
+fn lapse_update(
+    time: Res<Time>,
+    arena: Res<Arena>,
+    ships: Query<&Transform, (With<Ship>, Without<Lapse>)>,
+    mut q: Query<(&mut Lapse, &mut Transform), Without<Ship>>,
+) {
     let dt = time.delta_secs();
     let mut rng = rand::thread_rng();
-    for mut l in &mut q {
+    let ship = ships.iter().next().map(|t| t.translation.truncate());
+    for (mut l, mut tf) in &mut q {
         l.t -= dt;
         if l.t > 0.0 {
             continue;
@@ -2658,7 +2683,23 @@ fn lapse_update(time: Res<Time>, mut q: Query<&mut Lapse>) {
         let (phase, t) = match l.phase {
             LapsePhase::Solid => (LapsePhase::FadingOut, LAPSE_FADE_OUT),
             LapsePhase::FadingOut => (LapsePhase::Gone, rng.gen_range(LAPSE_GONE_MIN..LAPSE_GONE_MAX)),
-            LapsePhase::Gone => (LapsePhase::FadingIn, LAPSE_FADE_IN),
+            LapsePhase::Gone => {
+                // it comes back SOMEWHERE ELSE (user's design): pick a fresh spot on the field rather
+                // than reappearing where it left. Kept clear of the ship by LAPSE_REAPPEAR_CLEAR so
+                // the slow materialize is always a warning you can act on, never a spawn on your hull.
+                let h = arena.half;
+                let mut spot = Vec2::new(rng.gen_range(-h.x * 0.9..h.x * 0.9), rng.gen_range(-h.y * 0.9..h.y * 0.9));
+                if let Some(sp) = ship {
+                    let away = (spot - sp).normalize_or_zero();
+                    let away = if away == Vec2::ZERO { Vec2::X } else { away };
+                    if spot.distance(sp) < LAPSE_REAPPEAR_CLEAR {
+                        spot = sp + away * LAPSE_REAPPEAR_CLEAR;
+                    }
+                }
+                tf.translation.x = spot.x.clamp(-h.x, h.x);
+                tf.translation.y = spot.y.clamp(-h.y, h.y);
+                (LapsePhase::FadingIn, LAPSE_FADE_IN)
+            }
             LapsePhase::FadingIn => (LapsePhase::Solid, rng.gen_range(LAPSE_SOLID_MIN..LAPSE_SOLID_MAX)),
         };
         l.phase = phase;
@@ -5834,8 +5875,12 @@ fn render(
         }
     };
     const SUBDIV: usize = 14;
+    // OFF-RUN the grid is invisible (its colour dims to black) — so SKIP it entirely rather than
+    // stroking black lines across the screen. Those strokes were painting over the GALLERY's artwork
+    // (this system runs in PostUpdate, after the gallery's art layer) and reading as black gashes
+    // through the rocks. Drawing nothing is both correct and cheaper.
     let mut i = 0;
-    let mut x = -(h.x / GRID_CELL).floor() * GRID_CELL;
+    let mut x = if show_run { -(h.x / GRID_CELL).floor() * GRID_CELL } else { h.x + 1.0 };
     while x <= h.x {
         let sh = 0.5 + GRID_SHIMMER_AMP * (0.5 + 0.5 * (i as f32 * 0.7 + t * 1.2).sin());
         let col = dim(grid, sh * warp_flick(i as f32));
@@ -5851,7 +5896,7 @@ fn render(
         i += 1;
     }
     let mut j = 0;
-    let mut y = -(h.y / GRID_CELL).floor() * GRID_CELL;
+    let mut y = if show_run { -(h.y / GRID_CELL).floor() * GRID_CELL } else { h.y + 1.0 };
     while y <= h.y {
         let sh = 0.5 + GRID_SHIMMER_AMP * (0.5 + 0.5 * (j as f32 * 0.7 + t * 1.2 + 1.7).sin());
         let col = dim(grid, sh * warp_flick(j as f32 + 5.0));
@@ -5895,7 +5940,7 @@ fn render(
         } else if let Some(l) = lapse {
             // presence IS the readout: full when solid, guttering out as it dissolves, a faint ghost
             // as it comes back. Smooth ramps only — no blinking (photosensitivity rule).
-            dim(lapse_color(), 0.12 + 0.88 * l.presence())
+            dim(lapse_color(), l.presence()) // 0 while absent — it is fully, completely gone
         } else if let Some(h) = hunter {
             dim(hunter_color(), 0.62 + 0.38 * h.charge) // dull when it spawns, burning once it's locked on
         } else if cluster.is_some() {
@@ -5921,14 +5966,10 @@ fn render(
             gizmos.linestrip_2d(ring(0.35 + 0.3 * frac), col);
         } else if let Some(l) = lapse {
             match l.phase {
-                LapsePhase::Gone => {
-                    // absent — leave a SCAR so it's never a total ambush: a faint tick where it is,
-                    // which is also the honest tell that it's still drifting somewhere.
-                    let sc = dim(lapse_color(), 0.16);
-                    let r = asteroid_radius(a.size) * 0.22;
-                    gizmos.line_2d(c - Vec2::X * r, c + Vec2::X * r, sc);
-                    gizmos.line_2d(c - Vec2::Y * r, c + Vec2::Y * r, sc);
-                }
+                // GONE means gone (user's call): nothing is drawn at all — no scar, no hint. It
+                // reappears somewhere else entirely, and the slow materialize is the only warning
+                // you get (and the only one you need, since it's harmless until it finishes).
+                LapsePhase::Gone => {}
                 LapsePhase::FadingIn => {
                     // MATERIALIZING: an inner ring closing in as it solidifies — the countdown you
                     // read to decide whether to leave. Bright enough to notice, not yet lethal.
@@ -9245,13 +9286,21 @@ fn draw_gallery_art(gizmos: &mut Gizmos, c: Vec2, t: f32, art: GalleryArt) {
             gizmos.linestrip_2d(gallery_rock_ring(c, 34.0), g);
         }
         GalleryArt::Mine => {
+            // MUST match the field mine exactly (user caught a mismatch): a crimson DIAMOND with a
+            // small core — same construction as the in-game draw, just scaled up for the page.
             let col = mine_color();
-            gizmos.circle_2d(Isometry2d::from_translation(c), 34.0, col);
-            for i in 0..8 {
-                let d = Vec2::from_angle(i as f32 / 8.0 * TAU + t * 0.4);
-                gizmos.line_2d(c + d * 34.0, c + d * 52.0, col); // the spikes
-            }
-            gizmos.circle_2d(Isometry2d::from_translation(c), 78.0, dim(col, 0.22)); // lethal reach
+            let r = 40.0;
+            let pts = [
+                c + Vec2::new(0.0, r),
+                c + Vec2::new(r, 0.0),
+                c + Vec2::new(0.0, -r),
+                c + Vec2::new(-r, 0.0),
+                c + Vec2::new(0.0, r),
+            ];
+            gizmos.linestrip_2d(pts, col);
+            gizmos.circle_2d(Isometry2d::from_translation(c), r * 0.4, col);
+            // its lethal reach, to scale against the body (MINE_BLAST_R / MINE_R ≈ 2.9)
+            gizmos.circle_2d(Isometry2d::from_translation(c), r * (MINE_BLAST_R / MINE_R), dim(col, 0.2));
         }
         GalleryArt::Tender => {
             let col = enemy_color();
@@ -9275,25 +9324,33 @@ fn draw_gallery_art(gizmos: &mut Gizmos, c: Vec2, t: f32, art: GalleryArt) {
             }
         }
         GalleryArt::Mob => {
+            // matches the field raider: a throbbing yellow orb with a concentric inner ring
             let col = enemy_color();
-            let rot = Vec2::from_angle(-TAU / 4.0);
-            let hull = [Vec2::new(0.0, 30.0), Vec2::new(24.0, -18.0), Vec2::new(0.0, -8.0), Vec2::new(-24.0, -18.0), Vec2::new(0.0, 30.0)];
-            gizmos.linestrip_2d(hull.map(|v| c + rot.rotate(v) * 1.3), col);
+            let throb = 1.0 + 0.1 * (t * 6.0).sin();
+            gizmos.circle_2d(Isometry2d::from_translation(c), 40.0 * throb, col);
+            gizmos.circle_2d(Isometry2d::from_translation(c), 40.0 * 0.45 * throb, col);
+            // one of its slow shots, so "it shoots back" reads without motion
+            let sp = c + Vec2::new(0.0, -66.0);
+            gizmos.circle_2d(Isometry2d::from_translation(sp), 7.0, col);
+            gizmos.circle_2d(Isometry2d::from_translation(sp), 3.5, Color::srgb(5.0, 5.0, 4.0));
         }
         GalleryArt::Well => {
-            // the drain: arms spiralling into a tight core (material along the path, per the vortex rule)
+            // matches the field well: SEVEN arms sweeping inward (a whirlpool, not a cross) + a hot core
             let col = warp_color();
-            for arm in 0..3 {
-                let base = t * 0.9 + arm as f32 / 3.0 * TAU;
-                let pts: Vec<Vec2> = (0..26)
-                    .map(|i| {
-                        let f = i as f32 / 25.0;
-                        c + Vec2::from_angle(base + f * 3.2) * (10.0 + f * 62.0)
+            let r = 64.0;
+            let (arms, segs) = (7, 10);
+            for a in 0..arms {
+                let a0 = a as f32 / arms as f32 * TAU;
+                let pts: Vec<Vec2> = (0..=segs)
+                    .map(|s| {
+                        let p = s as f32 / segs as f32;
+                        c + Vec2::from_angle(a0 + 5.0 * p + t * 0.9) * (r * (1.0 - 0.85 * p))
                     })
                     .collect();
-                gizmos.linestrip_2d(pts, dim(col, 0.9 - 0.4 * arm as f32 / 3.0));
+                gizmos.linestrip_2d(pts, dim(col, 0.7));
             }
-            gizmos.circle_2d(Isometry2d::from_translation(c), 11.0, col);
+            gizmos.circle_2d(Isometry2d::from_translation(c), r * 0.28, col);
+            gizmos.circle_2d(Isometry2d::from_translation(c), r * 0.125, Color::srgb(6.0, 2.0, 3.5));
         }
     }
 }
@@ -12800,7 +12857,8 @@ mod tests {
     fn the_lapse_phase_clock_cycles_in_order() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        let e = app.world_mut().spawn(Lapse { phase: LapsePhase::Solid, t: 0.0 }).id();
+        app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
+        let e = app.world_mut().spawn((Lapse { phase: LapsePhase::Solid, t: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0))).id();
         app.add_systems(Update, lapse_update);
         // each tick with an expired timer advances exactly one phase, in cycle order
         for expect in [LapsePhase::FadingOut, LapsePhase::Gone, LapsePhase::FadingIn, LapsePhase::Solid] {
@@ -12808,6 +12866,14 @@ mod tests {
             assert!(app.world().entity(e).get::<Lapse>().unwrap().phase == expect, "phases advance in order");
             app.world_mut().entity_mut(e).get_mut::<Lapse>().unwrap().t = 0.0; // expire it again
         }
+        // it comes back ELSEWHERE: leaving the Gone phase relocates it, and never onto the ship
+        app.world_mut().spawn((Ship { angle: 0.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0)));
+        app.world_mut().entity_mut(e).insert(Lapse { phase: LapsePhase::Gone, t: 0.0 });
+        app.world_mut().entity_mut(e).insert(Transform::from_xyz(0.0, 0.0, 0.0));
+        app.update();
+        let moved = app.world().entity(e).get::<Transform>().unwrap().translation.truncate();
+        assert!(app.world().entity(e).get::<Lapse>().unwrap().phase == LapsePhase::FadingIn, "Gone → FadingIn");
+        assert!(moved.length() >= LAPSE_REAPPEAR_CLEAR - 1.0, "it materializes clear of the ship, got {moved:?}");
         // and every phase it lands in has a real, positive duration (no zero-length flicker)
         app.world_mut().entity_mut(e).insert(Lapse { phase: LapsePhase::Solid, t: 0.0 });
         for _ in 0..4 {
@@ -12864,6 +12930,13 @@ mod tests {
         // ACT OWNERSHIP: the hunter dies with Act I — nothing past wave 10 (the finale rolls its own mix)
         for level in [11, 14, 19, 23, 26] {
             assert_eq!(count(level, 300, &mut rng), 0, "no hunters in wave {level} — Act I owns them");
+        }
+        // NG+ waves 1-5 recap the OLD roster ONLY — the new bestiary is held back until wave 6
+        for _ in 0..400 {
+            match roll_rock_kind(3, true, &mut rng) {
+                RockKind::Hunter | RockKind::Lapse => panic!("the new roster must not appear in NG+ waves 1-5"),
+                _ => {}
+            }
         }
         // NEW GAME+ retires the OLD roster after wave 5 instead: lap two runs the new bestiary, and
         // EVERY roll past wave 5 must come from it — no old-roster rock may leak back in.
