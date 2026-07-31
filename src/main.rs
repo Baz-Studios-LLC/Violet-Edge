@@ -596,8 +596,16 @@ fn split_children(size: u8, gold: bool, red: bool, rng: &mut impl Rng) -> usize 
     if size <= 1 {
         return 0; // smallest rocks always die clean
     }
-    if gold || red {
-        return 2; // exempt lineages keep the guaranteed split (see the block comment above)
+    if gold {
+        // THE 1UP HUNT MAKES NO SMALL FRAGMENTS (2026-07-31 — user: life rocks were too unforgiving).
+        // Smalls were the problem: a large gold used to become 2 mids and then FOUR smalls, and a
+        // small that crosses an edge past its grace is gone for good 85% of the time, forfeiting the
+        // life. Now a large sheds two MIDS and those die clean: three hittable targets instead of
+        // seven with tiny stragglers, and mids only wander off 35% of the time (larges never do).
+        return if size >= 3 { 2 } else { 0 };
+    }
+    if red {
+        return 2; // a broken red always begets two reds — splitting-and-regrowing IS its identity
     }
     if size >= 3 {
         if rng.gen_bool(SPLIT_LARGE_TWO_CHANCE) { 2 } else { 1 }
@@ -10672,11 +10680,12 @@ mod tests {
         app.insert_resource(RunFlags::default());
         app.insert_resource(Score(0));
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
-        // a dense size-2 rock = 2 hp: the first hit only cracks it. GOLD so the final break is a
-        // GUARANTEED pair (the split economy rolls otherwise) — this test is about chip + inheritance.
+        // a dense size-2 rock = 2 hp: the first hit only cracks it. RED so the final break is a
+        // GUARANTEED pair (the split economy rolls otherwise, and gold no longer makes smalls) —
+        // this test is about the chip and the density inheritance.
         app.world_mut().spawn((
             Asteroid { size: 2, verts: vec![Vec2::X * 40.0], rot: 0.0, spin: 0.0, dense: true, hp: 2 },
-            Gold,
+            Red { cool: RED_ABSORB_EVERY },
             Velocity(Vec2::ZERO),
             Transform::from_xyz(0.0, 0.0, 0.0),
         ));
@@ -10706,10 +10715,10 @@ mod tests {
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());
         app.insert_resource(Score(0));
-        // a size-2 GOLD rock (guaranteed pair — this test is about the PAIR's geometry) with a bullet on it
+        // a size-2 RED rock (guaranteed pair — this test is about the PAIR's geometry) with a bullet on it
         app.world_mut().spawn((
             Asteroid { size: 2, verts: vec![Vec2::X * 40.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
-            Gold,
+            Red { cool: RED_ABSORB_EVERY },
             Velocity(Vec2::ZERO),
             Transform::from_xyz(0.0, 0.0, 0.0),
         ));
@@ -10963,31 +10972,44 @@ mod tests {
     }
 
     #[test]
-    fn a_gold_rock_breaks_into_two_gold_chunks_same_as_normal() {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins);
-        app.add_event::<SoundFx>();
-        app.insert_resource(Stats::default());
-        app.insert_resource(RunFlags::default());
-        app.insert_resource(Score(0));
-        // a size-2 GOLD rock with a bullet on it
-        app.world_mut().spawn((
-            Asteroid { size: 2, verts: vec![Vec2::X * 40.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
-            Velocity(Vec2::ZERO),
-            Transform::from_xyz(0.0, 0.0, 0.0),
-            Gold,
-        ));
-        app.world_mut().spawn((
-            Bullet { life: 1.0, trail: Vec::new(), mass: false },
-            Velocity(Vec2::ZERO),
-            Transform::from_xyz(0.0, 0.0, 0.0),
-        ));
-        app.add_systems(Update, collisions);
-        app.update();
-        let total = app.world_mut().query::<&Asteroid>().iter(app.world()).count();
-        let gold = app.world_mut().query_filtered::<(), With<Gold>>().iter(app.world()).count();
-        assert_eq!(total, 2, "a size-2 rock breaks into exactly two chunks — gold is no different");
-        assert_eq!(gold, 2, "both chunks stay gold, so the whole lineage must still be cleared");
+    fn a_gold_lineage_is_short_and_makes_no_small_fragments() {
+        // The 1UP hunt: a LARGE gold sheds two MID golds (lineage stays gold, so it must all be
+        // cleared) and those mids die CLEAN. Three hittable targets, and crucially no smalls — the
+        // tiny stragglers that used to drift off the edge and forfeit the life.
+        fn break_gold(size: u8) -> (usize, usize, Vec<u8>) {
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins);
+            app.add_event::<SoundFx>();
+            app.insert_resource(Stats::default());
+            app.insert_resource(RunFlags::default());
+            app.insert_resource(Score(0));
+            let r = asteroid_radius(size);
+            app.world_mut().spawn((
+                Asteroid { size, verts: vec![Vec2::X * r], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+                Velocity(Vec2::ZERO),
+                Transform::from_xyz(0.0, 0.0, 0.0),
+                Gold,
+            ));
+            app.world_mut().spawn((
+                Bullet { life: 1.0, trail: Vec::new(), mass: false },
+                Velocity(Vec2::ZERO),
+                Transform::from_xyz(0.0, 0.0, 0.0),
+            ));
+            app.add_systems(Update, collisions);
+            app.update();
+            let sizes: Vec<u8> = {
+                let mut q = app.world_mut().query::<&Asteroid>();
+                q.iter(app.world()).map(|a| a.size).collect()
+            };
+            let gold = app.world_mut().query_filtered::<(), With<Gold>>().iter(app.world()).count();
+            (sizes.len(), gold, sizes)
+        }
+        let (total, gold, sizes) = break_gold(3);
+        assert_eq!(total, 2, "a LARGE gold sheds exactly two chunks");
+        assert_eq!(gold, 2, "both stay gold, so the whole lineage must still be cleared");
+        assert!(sizes.iter().all(|&s| s == 2), "…and they're MIDS, not smalls: {sizes:?}");
+        let (total, ..) = break_gold(2);
+        assert_eq!(total, 0, "a gold MID dies clean — the hunt never leaves small stragglers");
     }
 
     #[test]
@@ -13023,7 +13045,10 @@ mod tests {
         assert!(m0 > 0 && m2 > 0, "medium breaks vary between dying clean and 2 smalls ({m0}/{m2})");
         assert_eq!(split_children(1, false, false, &mut rng), 0, "smalls always die clean");
         for _ in 0..50 {
-            assert_eq!(split_children(2, true, false, &mut rng), 2, "GOLD keeps the guaranteed pair (hunt economy)");
+            // GOLD: a large sheds two mids, and mids die CLEAN — the hunt never makes smalls, which
+            // were the fragments that slipped off the edge and forfeited the life.
+            assert_eq!(split_children(3, true, false, &mut rng), 2, "a large gold sheds two mids");
+            assert_eq!(split_children(2, true, false, &mut rng), 0, "a gold MID dies clean — no small stragglers");
             assert_eq!(split_children(2, false, true, &mut rng), 2, "RED keeps the guaranteed pair (regrow identity)");
         }
     }
