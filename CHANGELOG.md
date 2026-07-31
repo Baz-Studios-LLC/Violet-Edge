@@ -3,6 +3,13 @@
 Patch notes for the Rust + Bevy build. Newest first. (Releases are cut to GitHub and picked up by the
 Baz Studios launcher.) **Keep this current with every change** — it's the record testers read.
 
+## Unreleased
+
+- **Smaller download.** The two embedded logos were far larger than anything that gets displayed —
+  the game logo was a 1254px image used at 144px, the studio logo 2526px used at 560px. Resized to
+  512px and 1120px: **556 KB off every platform build**, with no visible change (both stay sharp on
+  HiDPI, and transparency is preserved).
+
 ## v0.5.1 — The Gallery, the NG+ bestiary, and a kinder 1UP (2026-07-31)
 
 - **AEGIS SHARDS — a NEW GAME+ exclusive powerup.** Beat the Warden+ on lap two and it gives up its
