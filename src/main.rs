@@ -98,6 +98,15 @@ const LAPSE_FADE_IN: f32 = 1.6; // the TELEGRAPH: a neon tube STRIKING back into
 // to read and fly out of. Enforced at compile time so nobody can tune it into a cheap death.
 const _: () = assert!(LAPSE_FADE_IN >= 1.0);
 
+// FACET (NG+ roster): a mirrored rock. Its faces REFLECT your rounds — and a reflected round is
+// live, so your own fire can kill you. Exactly ONE face is open, and it rotates with the rock, so the
+// counter is to read the gap and time the shot rather than to hold the trigger down. Blasts, the
+// beam and the warp ignore the mirror entirely (they aren't rounds), which keeps it from being a
+// hard wall. The ricochet is deliberately SLOWER than your shot so it can be dodged on the way back.
+const FACET_OPEN_ARC: f32 = 1.15; // radians of vulnerable face (~66°) — wide enough to hit on purpose
+const FACET_RICOCHET_SPEED: f32 = 0.62; // reflected rounds keep this fraction of their speed
+const FACET_RICOCHET_LIFE: f32 = 1.1; // s a ricochet stays lethal before it fizzles out
+
 // Beacon (waves 23+): a teal warden rock projecting an AURA — rocks inside it are immune to gunfire
 // and the chain until the beacon falls (blasts, the warp, and red-absorption all bypass it: the
 // counterplay). Spawns dense (hp = size), never splits — it dies clean when cracked.
@@ -559,6 +568,11 @@ fn well_color() -> Color {
 fn pulser_lit(offset: f32, t: f32) -> bool {
     (t * PULSE_RATE + offset).sin() > PULSE_LIT_THRESHOLD
 }
+fn facet_color() -> Color {
+    Color::srgb(4.6, 4.9, 5.4)
+} // hard SILVER-WHITE — a mirror. Its identity is the flat faces + the open notch (silhouette, not
+  // hue: the neon palette is full — see the palette policy in DESIGN.md)
+
 fn lapse_ignite_color() -> Color {
     Color::srgb(6.2, 3.0, 1.2)
 } // the warm amber-white flash of a neon tube STRIKING — the lapse cools to its steel-blue from this
@@ -958,6 +972,7 @@ struct Flavor {
     beacon: bool,
     hunter: bool,
     lapse: bool,
+    facet: bool,
 }
 
 // Build it from the optional components every rock query already carries.
@@ -971,6 +986,7 @@ fn flavor(
     beacon: Option<&Beacon>,
     hunter: Option<&Hunter>,
     lapse: Option<&Lapse>,
+    facet: Option<&Facet>,
 ) -> Flavor {
     Flavor {
         dense,
@@ -981,13 +997,16 @@ fn flavor(
         beacon: beacon.is_some(),
         hunter: hunter.is_some(),
         lapse: lapse.is_some(),
+        facet: facet.is_some(),
     }
 }
 
 fn credit_rock_kill(stats: &mut Stats, f: Flavor) {
     let (dense, pulser, red, cluster, beacon, hunter, lapse) =
         (f.dense, f.pulser, f.red, f.cluster, f.beacon, f.hunter, f.lapse);
-    if lapse {
+    if f.facet {
+        stats.facet += 1;
+    } else if lapse {
         stats.lapse += 1;
     } else if hunter {
         stats.hunter += 1;
@@ -1412,6 +1431,18 @@ struct Beacon;
 // and `charge` ramps 0→1 over HUNTER_RAMP seconds, so the longer one lives the harder it drives —
 // you cannot park and farm. Breaking one resets the hunt: children inherit the marker at charge 0
 // (see `break_asteroid`), so a split buys you real breathing room instead of doubling the pressure.
+// A FACET rock: mirrored but for one open face. `open` is that face's angle RELATIVE to the rock's
+// own rotation, so the vulnerable side sweeps as the rock spins and you have to track it.
+#[derive(Component, Clone, Copy)]
+struct Facet {
+    open: f32,
+}
+
+// A player round that has been REFLECTED off a facet. It is now live against the ship — your own
+// shot, coming back. Times out so the arena never fills with strays.
+#[derive(Component)]
+struct Ricochet(f32);
+
 // A LAPSE rock's phase clock. `t` counts down within the current phase; `phase` cycles
 // Solid → FadingOut → Gone → FadingIn → Solid. TANGIBLE (hittable AND lethal) only while Solid or
 // FadingOut — so the whole return is a free warning, which is the point.
@@ -1845,6 +1876,7 @@ enum Ach {
     Keymaster,
     Whostheprey,
     ObjectPermanence,
+    ThroughTheCracks,
     PlannedObsolescence,
     Minesweeper,
     GoldRush,
@@ -1861,7 +1893,7 @@ enum Ach {
 // Order defines the index into `Achievements.unlocked` and the menu list: the boss ladder, the
 // rock-type grinds (one per type), the other lifetime grinds, the restart ladder, then the
 // beat-the-game capstones.
-const ACHIEVEMENTS: [Ach; 27] = [
+const ACHIEVEMENTS: [Ach; 28] = [
     Ach::FirstBlood,
     Ach::Warden,
     Ach::Glutton,
@@ -1877,6 +1909,7 @@ const ACHIEVEMENTS: [Ach; 27] = [
     Ach::Keymaster,
     Ach::Whostheprey,
     Ach::ObjectPermanence,
+    Ach::ThroughTheCracks,
     Ach::PlannedObsolescence,
     Ach::Minesweeper,
     Ach::GoldRush,
@@ -1901,6 +1934,7 @@ const ACH_PULSER: u32 = 300; // every one is a timed dark-beat kill
 const ACH_RED: u32 = 400;
 const ACH_CLUSTER: u32 = 300;
 const ACH_BEACON: u32 = 100;
+const ACH_FACET: u32 = 400; // each one has to go through a MOVING gap — a real career
 const ACH_LAPSE: u32 = 500; // NG+-only and common there, but NG+ itself is earned — a long career
 const ACH_TENDERS: u32 = 100; // one at a time, late NG+ waves only: ~8-10 full second laps
 const ACH_HUNTER: u32 = 350; // hunters run waves 6-9 (and every NG+ wave past 5), so this accrues fast on lap two // the rarest rock — and each takes deliberate focus
@@ -1926,6 +1960,7 @@ fn ach_meta(a: Ach) -> (&'static str, &'static str) {
         Ach::Keymaster => ("Keymaster", "Crack 100 beacons"),
         Ach::Whostheprey => ("Who's the Prey Now", "Destroy 350 hunters"),
         Ach::ObjectPermanence => ("Object Permanence", "Destroy 500 lapse rocks — catch them while they exist"),
+        Ach::ThroughTheCracks => ("Through the Cracks", "Crack 400 facets — every one through its open face"),
         Ach::PlannedObsolescence => ("Planned Obsolescence", "Scrap 100 Tender repair drones"),
         Ach::Minesweeper => ("Minesweeper", "Destroy 250 mines"),
         Ach::GoldRush => ("Gold Rush", "Earn 25 extra lives from gold rocks"),
@@ -1958,6 +1993,7 @@ fn ach_met(a: Ach, s: &Stats) -> bool {
         Ach::Keymaster => s.beacon >= ACH_BEACON,
         Ach::Whostheprey => s.hunter >= ACH_HUNTER,
         Ach::ObjectPermanence => s.lapse >= ACH_LAPSE,
+        Ach::ThroughTheCracks => s.facet >= ACH_FACET,
         Ach::PlannedObsolescence => s.tenders >= ACH_TENDERS,
         Ach::Minesweeper => s.mines >= ACH_MINES,
         Ach::GoldRush => s.golds >= ACH_GOLDS,
@@ -1988,6 +2024,7 @@ fn ach_progress(a: Ach, s: &Stats) -> Option<(u32, u32)> {
         Ach::Keymaster => Some((s.beacon, ACH_BEACON)),
         Ach::Whostheprey => Some((s.hunter, ACH_HUNTER)),
         Ach::ObjectPermanence => Some((s.lapse, ACH_LAPSE)),
+        Ach::ThroughTheCracks => Some((s.facet, ACH_FACET)),
         Ach::PlannedObsolescence => Some((s.tenders, ACH_TENDERS)),
         Ach::Minesweeper => Some((s.mines, ACH_MINES)),
         Ach::GoldRush => Some((s.golds, ACH_GOLDS)),
@@ -2038,7 +2075,8 @@ struct Stats {
     best_wave: u32,    // deepest wave ever REACHED — the game-over screen's "you were close" marker
     pacifist: bool,    // ever survived two straight timer waves breaking nothing (and not dying)
     hunter: u32,       // hunter rocks destroyed (lifetime)
-    lapse: u32,        // lapse rocks destroyed (lifetime) — caught while SOLID, which is the trick
+    lapse: u32,        // lapse rocks destroyed (lifetime)
+    facet: u32,        // facet rocks cracked (lifetime) — every one through its open face — caught while SOLID, which is the trick
     tenders: u32,      // Tender repair drones destroyed (lifetime)
     seen: u32,         // GALLERY sightings bitmask — one bit per subject, set the frame it first
                        // appears on your field (see `gallery_bit` / `gallery_sightings`)
@@ -2401,6 +2439,7 @@ enum RockKind {
     Green,   // dense / tanky (takes `hp` hits)
     Hunter,  // vermillion predator (Act I, w6+) — HOMES on the ship, accelerating the longer it lives
     Lapse,   // NG+ roster — phases OUT of existence and materializes again elsewhere
+    Facet,   // NG+ roster — mirrored: reflects your rounds off every face but one
     Orange,  // explosive (detonates instead of splitting)
     Pulser,  // pulses lit (invulnerable) ↔ dark (vulnerable) — hit it on the dark beat
     Red,     // growing (Act III) — absorbs nearby rocks to swell; a plain shot splits it into more reds
@@ -2415,7 +2454,7 @@ fn roll_rock_kind(level: i32, plus: bool, rng: &mut impl Rng) -> RockKind {
     // pilot has seen it all, so no teaching rosters, but the NEW types are held back); from wave 6
     // the old roster RETIRES entirely and lap two runs new rock types only (`roll_ngplus_kind`).
     if plus {
-        return if content_wave(level) <= 5 { roll_ngplus_opener(rng) } else { roll_ngplus_kind(rng) };
+        return if content_wave(level) <= 5 { roll_ngplus_opener(rng) } else { roll_ngplus_kind(level, rng) };
     }
     let cw = content_wave(level);
     // Beacon (aura warden) — RARE, rolled first so nothing eats its slice. Debuts w23 (target-order
@@ -2527,6 +2566,9 @@ fn spawn_kind_rock(commands: &mut Commands, pos: Vec2, size: u8, vel: Vec2, rng:
         RockKind::Hunter => {
             commands.entity(e).insert(Hunter { charge: 0.0, look: Vec2::X }); // starts docile, ramps into a chaser
         }
+        RockKind::Facet => {
+            commands.entity(e).insert(Facet { open: rng.gen_range(0.0..TAU) });
+        }
         RockKind::Lapse => {
             // a randomized opening spell, so a field of them phases out of step
             commands.entity(e).insert(Lapse { phase: LapsePhase::Solid, t: rng.gen_range(LAPSE_SOLID_MIN..LAPSE_SOLID_MAX) });
@@ -2576,9 +2618,14 @@ fn roll_ngplus_opener(rng: &mut impl Rng) -> RockKind {
     }
 }
 
-fn roll_ngplus_kind(rng: &mut impl Rng) -> RockKind {
-    // The lap-two bestiary. Widen this as new types land; the roster rule (old roster retires after
-    // wave 5) means everything the second lap throws at you comes from here.
+fn roll_ngplus_kind(level: i32, rng: &mut impl Rng) -> RockKind {
+    // The lap-two bestiary, introduced IN ORDER so the second lap still teaches: Hunter and Lapse
+    // carry waves 6-7, the Facet debuts at 8 (wave 8 is mostly mirrors — its teaching wave).
+    // The roster rule means everything past wave 5 comes from here; widen as new types land.
+    let cw = content_wave(level);
+    if cw >= 8 && rng.gen_bool(if cw == 8 { 0.6 } else { 0.32 }) {
+        return RockKind::Facet;
+    }
     if rng.gen_bool(0.45) { RockKind::Lapse } else { RockKind::Hunter }
 }
 
@@ -2646,6 +2693,7 @@ fn spawn_asteroid(commands: &mut Commands, pos: Vec2, size: u8, vel: Vec2, rng: 
 fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score, e: Entity, pos: Vec2, size: u8, chunk_mult: f32, f: Flavor, chunks: bool) {
     let (dense, gold, pulser, red, cluster, beacon, hunter, lapse) =
         (f.dense, f.gold, f.pulser, f.red, f.cluster, f.beacon, f.hunter, f.lapse);
+    let facet = f.facet;
     commands.entity(e).despawn();
     let base = match size {
         3 => 20,
@@ -2663,6 +2711,8 @@ fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score
         cluster_color()
     } else if beacon {
         beacon_color()
+    } else if facet {
+        facet_color()
     } else if lapse {
         lapse_color()
     } else if hunter {
@@ -2733,6 +2783,11 @@ fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score
                 // ramp again, so breaking a charged hunter genuinely relieves the pressure
                 commands.entity(child).insert(Hunter { charge: 0.0, look: Vec2::X });
             }
+            if facet {
+                // chunks stay mirrored, each with its own open face — breaking one doesn't hand you
+                // a free kill on the pieces
+                commands.entity(child).insert(Facet { open: rng.gen_range(0.0..TAU) });
+            }
             if lapse {
                 // chunks keep phasing, each on its own fresh clock (they scatter out of step)
                 commands.entity(child).insert(Lapse { phase: LapsePhase::Solid, t: rng.gen_range(LAPSE_SOLID_MIN..LAPSE_SOLID_MAX) });
@@ -2748,7 +2803,7 @@ fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score
 fn blast_asteroids(
     commands: &mut Commands,
     rng: &mut impl Rng,
-    asteroids: &Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>), (Without<Mine>, Without<Shielded>)>,
+    asteroids: &Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>, Option<&Facet>), (Without<Mine>, Without<Shielded>)>,
     broken: &mut HashSet<Entity>,
     center: Vec2,
     t: f32,
@@ -2758,7 +2813,7 @@ fn blast_asteroids(
     let mut unscored = Score(0);
     let score = &mut unscored;
     // shared &Query → iterates read-only, so we just read size/dense/gold/explosive here
-    for (ae, at, a, gold, explosive, pulser, red, cluster, beacon, hunter, lapse) in asteroids {
+    for (ae, at, a, gold, explosive, pulser, red, cluster, beacon, hunter, lapse, facet) in asteroids {
         if broken.contains(&ae) {
             continue;
         }
@@ -2780,7 +2835,7 @@ fn blast_asteroids(
             } else {
                 // mine flings chunks (ignores hp + the beacon aura — blasts are the counterplay); never gold;
                 // a mined red splits into reds; a mined CLUSTER shatters spectacularly (fast shard ring)
-                break_asteroid(commands, rng, score, ae, ap, a.size, MINE_CHUNK_MULT, flavor(a.dense, None, pulser, red, cluster, beacon, hunter, lapse), true);
+                break_asteroid(commands, rng, score, ae, ap, a.size, MINE_CHUNK_MULT, flavor(a.dense, None, pulser, red, cluster, beacon, hunter, lapse, facet), true);
             }
         }
     }
@@ -3676,8 +3731,8 @@ fn bullet_bounds(
 fn collisions(
     mut commands: Commands,
     time: Res<Time>,
-    bullets: Query<(Entity, &Transform, &Bullet, Has<WarheadShot>)>,
-    mut asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>), (Without<Mine>, Without<Shielded>)>,
+    bullets: Query<(Entity, &Transform, &Bullet, &Velocity, Has<WarheadShot>)>,
+    mut asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>, Option<&Facet>), (Without<Mine>, Without<Shielded>)>,
     mines: Query<(Entity, &Transform), With<Mine>>,
     enemies: Query<(Entity, &Transform), With<Enemy>>,
     tenders: Query<(Entity, &Transform), With<Tender>>,
@@ -3709,12 +3764,12 @@ fn collisions(
     // falls. Zones are collected in a read-only pass so the mutable bullet loop below can test them.
     let beacon_zones: Vec<Vec2> = asteroids
         .iter()
-        .filter(|(.., beacon, _, _)| beacon.is_some())
+        .filter(|(.., beacon, _, _, _)| beacon.is_some())
         .map(|(_, at, ..)| at.translation.truncate())
         .collect();
     let beacon_shielded =
         |p: Vec2, is_beacon: bool| !is_beacon && beacon_zones.iter().any(|z| z.distance_squared(p) < BEACON_AURA_R * BEACON_AURA_R);
-    for (be, bt, b, is_warhead) in &bullets {
+    for (be, bt, b, bvel, is_warhead) in &bullets {
         if dead_b.contains(&be) {
             continue;
         }
@@ -3722,13 +3777,40 @@ fn collisions(
         let br = bullet_radius(b.mass); // mass shots are fatter…
         let power = bullet_boss_power(b.mass); // …and (vs a boss/mob) hit a bit harder; vs free rocks, see below
         let mut warhead_blast_at: Option<Vec2> = None; // set when a warhead round detonates on a rock
-        for (ae, at, mut a, gold, explosive, pulser, red, cluster, beacon, hunter, lapse) in &mut asteroids {
+        for (ae, at, mut a, gold, explosive, pulser, red, cluster, beacon, hunter, lapse, facet) in &mut asteroids {
             if dead_a.contains(&ae) {
                 continue;
             }
             let ap = at.translation.truncate();
             let rr = asteroid_radius(a.size) + br;
             if bp.distance_squared(ap) < rr * rr {
+                // ── THE MIRROR ── a FACET reflects any round that lands on a closed face, and the
+                // reflection is LIVE: it can come back and kill you. Only the one open face (which
+                // sweeps with the rock's spin) takes damage. Blasts/beam/warp are unaffected — they
+                // aren't rounds, and they're the answer when you can't get the angle.
+                if let Some(fc) = facet {
+                    let hit_ang = (bp - ap).to_angle();
+                    let open_ang = a.rot + fc.open;
+                    let off = (hit_ang - open_ang + TAU * 0.5).rem_euclid(TAU) - TAU * 0.5; // signed angle to the gap
+                    if off.abs() > FACET_OPEN_ARC * 0.5 {
+                        // closed face: bounce the round off the surface normal and hand it back
+                        let n = (bp - ap).normalize_or_zero();
+                        let v = bvel.0;
+                        let refl = (v - n * 2.0 * v.dot(n)) * FACET_RICOCHET_SPEED;
+                        commands
+                            .entity(be)
+                            .insert((Velocity(refl), Ricochet(FACET_RICOCHET_LIFE)))
+                            .remove::<WarheadShot>(); // a bounced warhead is just a stray round
+                        // shove it clear of the surface so it can't re-collide on the next frame
+                        commands.entity(be).insert(Transform::from_xyz(
+                            ap.x + n.x * (asteroid_radius(a.size) + br + 2.0),
+                            ap.y + n.y * (asteroid_radius(a.size) + br + 2.0),
+                            0.0,
+                        ));
+                        burst(&mut commands, bp, facet_color(), 4, 150.0, &mut rng);
+                        break; // this round is spent on the mirror — it belongs to the field now
+                    }
+                }
                 // an ABSENT / still-materializing lapse rock isn't physically here: rounds pass
                 // straight through it, and it can't be damaged until it's solid again
                 if lapse.is_some_and(|l| !l.tangible()) {
@@ -3759,7 +3841,7 @@ fn collisions(
                     // it struck dies outright, and the violet ring is now a REAL blast: everything
                     // within WARHEAD_BLAST_R is destroyed in the after-pass below.
                     dead_a.insert(ae);
-                    break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, flavor(a.dense, gold, pulser, red, cluster, beacon, hunter, lapse), false);
+                    break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, flavor(a.dense, gold, pulser, red, cluster, beacon, hunter, lapse, facet), false);
                     commands.spawn((
                         Shockwave { age: 0.0, ttl: 0.28, max_r: WARHEAD_BLAST_R, color: warhead_color() },
                         Transform::from_xyz(ap.x, ap.y, 0.0),
@@ -3768,7 +3850,7 @@ fn collisions(
                     if explosive.is_some() {
                         stats.orange += 1; // the round deletes an orange whole — still a player-credited kill
                     } else {
-                        credit_rock_kill(&mut stats, flavor(a.dense, gold, pulser, red, cluster, beacon, hunter, lapse));
+                        credit_rock_kill(&mut stats, flavor(a.dense, gold, pulser, red, cluster, beacon, hunter, lapse, facet));
                     }
                     warhead_blast_at = Some(ap); // AoE applied after this loop (can't nest a second &mut pass)
                     dead_b.insert(be);
@@ -3789,9 +3871,9 @@ fn collisions(
                         commands.entity(ae).insert(Detonating { fuse: ORANGE_FUSE, friendly: false }); // orange detonates + chains
                         stats.orange += 1; // you lit it — the kill is yours
                     } else {
-                        break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, flavor(a.dense, gold, pulser, red, cluster, beacon, hunter, lapse), true);
+                        break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, flavor(a.dense, gold, pulser, red, cluster, beacon, hunter, lapse, facet), true);
                         sfx.write(SoundFx::Break(a.size));
-                        credit_rock_kill(&mut stats, flavor(a.dense, gold, pulser, red, cluster, beacon, hunter, lapse));
+                        credit_rock_kill(&mut stats, flavor(a.dense, gold, pulser, red, cluster, beacon, hunter, lapse, facet));
                     }
                 }
                 break;
@@ -3801,7 +3883,7 @@ fn collisions(
         // Blast rules apply, same as a mine's: gold is spared (only aimed shots may break the 1UP),
         // a LIT pulser shrugs it off, and the beacon aura does NOT protect (blasts are its counter).
         if let Some(c) = warhead_blast_at {
-            for (ae, at, a, gold, explosive, pulser, red, cluster, beacon, hunter, lapse) in &mut asteroids {
+            for (ae, at, a, gold, explosive, pulser, red, cluster, beacon, hunter, lapse, facet) in &mut asteroids {
                 if dead_a.contains(&ae) || gold.is_some() {
                     continue;
                 }
@@ -3812,11 +3894,11 @@ fn collisions(
                 let rr = WARHEAD_BLAST_R + asteroid_radius(a.size);
                 if c.distance_squared(ap) < rr * rr {
                     dead_a.insert(ae);
-                    break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, flavor(a.dense, None, pulser, red, cluster, beacon, hunter, lapse), false);
+                    break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, flavor(a.dense, None, pulser, red, cluster, beacon, hunter, lapse, facet), false);
                     if explosive.is_some() {
                         stats.orange += 1; // the blast deletes an orange whole — yours
                     } else {
-                        credit_rock_kill(&mut stats, flavor(a.dense, gold, pulser, red, cluster, beacon, hunter, lapse));
+                        credit_rock_kill(&mut stats, flavor(a.dense, gold, pulser, red, cluster, beacon, hunter, lapse, facet));
                     }
                 }
             }
@@ -4155,7 +4237,7 @@ fn top_up_asteroids(
             // its finale is NOT the all-types mix. (Without this the wave-30 field was inconsistent
             // with itself — `wave_timer`'s opening fill goes through `roll_rock_kind`, which already
             // respects the rule, while this trickle didn't.)
-            let kind = if plus.0 { roll_ngplus_kind(&mut rng) } else { roll_finale_kind(&mut rng) };
+            let kind = if plus.0 { roll_ngplus_kind(wave.level, &mut rng) } else { roll_finale_kind(&mut rng) };
             spawn_edge_asteroid(&mut commands, arena.half, &mut rng, kind, false);
             clock.0 = FINALE_TRICKLE;
         } else {
@@ -4246,7 +4328,7 @@ fn mine_update(
     ships: Query<(Entity, &Transform, &Ship), Without<Mine>>,
     mut mines: Query<(Entity, &mut Transform, &mut Velocity, &mut Mine)>,
     // &mut to match blast_asteroids' type; only read here (iter + shared borrow)
-    asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>), (Without<Mine>, Without<Shielded>)>,
+    asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>, Option<&Facet>), (Without<Mine>, Without<Shielded>)>,
 ) {
     let dt = time.delta_secs();
     let h = arena.half;
@@ -5465,7 +5547,7 @@ fn chain_update(
     mut sfx: EventWriter<SoundFx>,
     mut stats: ResMut<Stats>,
     mut chains: Query<(Entity, &Transform, &mut ChainShot)>,
-    asteroids: Query<(Entity, &Transform, &Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>), (Without<Mine>, Without<Shielded>)>,
+    asteroids: Query<(Entity, &Transform, &Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>, Option<&Facet>), (Without<Mine>, Without<Shielded>)>,
     enemies: Query<(Entity, &Transform), With<Enemy>>,
     mines: Query<(Entity, &Transform), With<Mine>>,
 ) {
@@ -5485,10 +5567,10 @@ fn chain_update(
         // beacon auras block the beam too — collect the zones once per beam sweep
         let beacon_zones: Vec<Vec2> = asteroids
             .iter()
-            .filter(|(.., beacon, _, _)| beacon.is_some())
+            .filter(|(.., beacon, _, _, _)| beacon.is_some())
             .map(|(_, at, ..)| at.translation.truncate())
             .collect();
-        for (ae, at, ast, gold, explosive, pulser, red, cluster, beacon, hunter, lapse) in &asteroids {
+        for (ae, at, ast, gold, explosive, pulser, red, cluster, beacon, hunter, lapse, facet) in &asteroids {
             if dead.contains(&ae) {
                 continue;
             }
@@ -5515,9 +5597,9 @@ fn chain_update(
                 }
                 // chain beam shears dense rocks outright — the beam ignores hp, like a mine (a BEACON dies
                 // in one sweep: the beam is a clean answer to an aura)
-                break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, ast.size, 1.0, flavor(ast.dense, gold, pulser, red, cluster, beacon, hunter, lapse), true); // chain shears rocks; a red splits into reds (they stay red + regrow)
+                break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, ast.size, 1.0, flavor(ast.dense, gold, pulser, red, cluster, beacon, hunter, lapse, facet), true); // chain shears rocks; a red splits into reds (they stay red + regrow)
                 sfx.write(SoundFx::Break(ast.size));
-                credit_rock_kill(&mut stats, flavor(ast.dense, gold, pulser, red, cluster, beacon, hunter, lapse));
+                credit_rock_kill(&mut stats, flavor(ast.dense, gold, pulser, red, cluster, beacon, hunter, lapse, facet));
             }
         }
         for (ee, et) in &enemies {
@@ -5991,7 +6073,7 @@ fn render(
     wf: Res<WarpField>,
     stars: Query<(&Star, &Transform)>,
     ships: Query<(&Ship, &Transform, Option<&ShipTrail>)>,
-    asteroids: Query<(&Asteroid, &Transform, Option<&Gold>, Option<&Explosive>, Option<&Detonating>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>)>,
+    asteroids: Query<(&Asteroid, &Transform, Option<&Gold>, Option<&Explosive>, Option<&Detonating>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>, Option<&Facet>)>,
     bullets: Query<(&Bullet, &Transform, Has<WarheadShot>, &Velocity)>,
     particles: Query<(&Particle, &Transform)>,
     holes: Query<(&BlackHole, &Transform)>,
@@ -6100,7 +6182,7 @@ fn render(
     // they're chipped, so their tanky state reads at a glance.
     let rock = rock_color();
     let dense = dense_color();
-    for (a, at, gold, explosive, det, pulser, red, cluster, beacon, hunter, lapse) in &asteroids {
+    for (a, at, gold, explosive, det, pulser, red, cluster, beacon, hunter, lapse, facet) in &asteroids {
         let c = at.translation.truncate();
         let rot = Vec2::from_angle(a.rot);
         // colour by type: a lit orange flashes white-hot as its fuse burns; a live orange pulses; gold
@@ -6121,6 +6203,8 @@ fn render(
             dim(red_color(), 0.7 + 0.3 * (t * 4.0).sin()) // a slow, menacing throb — it's alive and hungry
         } else if beacon.is_some() {
             dim(beacon_color(), 0.8 + 0.2 * (t * 2.0).sin()) // steady teal breathe — the aura's living key
+        } else if facet.is_some() {
+            facet_color()
         } else if let Some(l) = lapse {
             // presence IS the readout: full when solid, guttering out as it dissolves, a faint ghost
             // as it comes back. Smooth ramps only — no blinking (photosensitivity rule).
@@ -6148,6 +6232,16 @@ fn render(
             gizmos.circle_2d(Isometry2d::from_translation(c), BEACON_AURA_R, dim(col, 0.22 + 0.06 * (t * 2.0).sin()));
             let frac = a.hp.max(1) as f32 / a.size.max(1) as f32;
             gizmos.linestrip_2d(ring(0.35 + 0.3 * frac), col);
+        } else if let Some(fc) = facet {
+            // THE OPEN FACE: a bright inward wedge marking the one angle that takes damage. It
+            // sweeps with the rock's own spin, so tracking the gap IS the fight.
+            let ang = a.rot + fc.open;
+            let rad = asteroid_radius(a.size);
+            let e0 = Vec2::from_angle(ang - FACET_OPEN_ARC * 0.5);
+            let e1 = Vec2::from_angle(ang + FACET_OPEN_ARC * 0.5);
+            gizmos.line_2d(c + e0 * rad, c + e0 * rad * 0.55, dim(facet_color(), 0.9));
+            gizmos.line_2d(c + e1 * rad, c + e1 * rad * 0.55, dim(facet_color(), 0.9));
+            gizmos.line_2d(c + e0 * rad * 0.72, c + e1 * rad * 0.72, dim(Color::srgb(6.0, 5.4, 3.0), 0.85));
         } else if let Some(l) = lapse {
             match l.phase {
                 // GONE means gone (user's call): nothing is drawn at all — no scar, no hint. It
@@ -9264,6 +9358,7 @@ fn gallery_bit(art: GalleryArt) -> u32 {
         GalleryArt::Rock(RockKind::Green) => 1,
         GalleryArt::Rock(RockKind::Hunter) => 2,
         GalleryArt::Rock(RockKind::Lapse) => 18,
+        GalleryArt::Rock(RockKind::Facet) => 20,
         GalleryArt::Rock(RockKind::Orange) => 3,
         GalleryArt::Rock(RockKind::Pulser) => 4,
         GalleryArt::Rock(RockKind::Red) => 5,
@@ -9321,6 +9416,8 @@ fn gallery_entries(s: &Stats) -> Vec<(GalleryArt, &'static str, &'static str, &'
         (GalleryArt::Rock(RockKind::Red), "GROWER", "Appetite", "It pulls in whatever drifts near and swells with it - other growers included. Shooting it plainly only makes two of them, and both start feeding again. The mass shot, a warhead, the beam or a mine ends one outright. It eats the way the big one in the deep field ate. I don't think that's coincidence.", gallery_seen(s, GalleryArt::Rock(RockKind::Red))),
         (GalleryArt::Rock(RockKind::Cluster), "CLUSTER", "Fractured through", "Riddled with cracks before I ever fired. Break it close and it bursts into a ring of fast shards that will take the ship with it - keep your distance, vaporize it with the mass shot, or let the warp swallow it whole. Whatever shattered this did it a long way from here.", gallery_seen(s, GalleryArt::Rock(RockKind::Cluster))),
         (GalleryArt::Rock(RockKind::Beacon), "BEACON", "A keeper, not a rock", "It holds a field around itself and everything inside goes untouchable - my rounds and my beam simply wash over them. Kill the beacon and the field drops. Blasts, the warp and a grower's appetite ignore it entirely. It isn't defending itself. It's defending the others, and something taught it to.", gallery_seen(s, GalleryArt::Rock(RockKind::Beacon))),
+        (GalleryArt::Rock(RockKind::Facet), "FACET", "It gives the shot back",
+         "Faces like cut glass, and they throw my rounds straight back - I have put my own fire through my own hull twice learning that. There is exactly ONE open face and it travels as the rock turns, so it is a matter of waiting for the gap rather than leaning on the trigger. The beam and any blast go through it regardless; they are not rounds, and whatever polished those faces did not plan for them.", gallery_seen(s, GalleryArt::Rock(RockKind::Facet))),
         (GalleryArt::Rock(RockKind::Lapse), "LAPSE", "Here, then not",
          "It thins out until there's nothing where it was, waits somewhere I can't see it, then comes back - and it drifts the whole time it's gone, so it never returns where I lost it. While it's coming back it's only an outline; nothing I fire touches it and it can't touch me until it's finished. That's the only reason I'm still flying. Whatever the Belt is, parts of it are not always present.", gallery_seen(s, GalleryArt::Rock(RockKind::Lapse))),
         (GalleryArt::Gold, "LIFE ROCK", "Salvage", "Gold all the way through and worth more than the rest of the Belt combined: break the whole lineage, every last fragment, and there's enough intact hull plating in it to put a life back on the board. Let a piece drift past the edge and it's gone. Only my guns can open it - mines bounce off, and the big feeder won't touch it.", gallery_seen(s, GalleryArt::Gold)),
@@ -9345,17 +9442,19 @@ fn gallery_entries(s: &Stats) -> Vec<(GalleryArt, &'static str, &'static str, &'
 // Persists ONLY on a change, so this never touches the disk on a normal frame.
 fn gallery_sightings(
     mut stats: ResMut<Stats>,
-    rocks: Query<(Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>, &Asteroid)>,
+    rocks: Query<(Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>, Option<&Facet>, &Asteroid)>,
     mines: Query<(), With<Mine>>,
     mobs: Query<(), With<Enemy>>,
     tenders: Query<(), With<Tender>>,
     wells: Query<(), With<Well>>,
 ) {
     let mut fresh = false;
-    for (gold, explosive, pulser, red, cluster, beacon, hunter, lapse, a) in &rocks {
+    for (gold, explosive, pulser, red, cluster, beacon, hunter, lapse, facet, a) in &rocks {
         // one rock, one subject — mirrors `credit_rock_kill`'s priority so the tags can't double up
         let art = if gold.is_some() {
             GalleryArt::Gold
+        } else if facet.is_some() {
+            GalleryArt::Rock(RockKind::Facet)
         } else if lapse.is_some() {
             GalleryArt::Rock(RockKind::Lapse)
         } else if hunter.is_some() {
@@ -9447,6 +9546,7 @@ fn draw_gallery_art(gizmos: &mut Gizmos, c: Vec2, t: f32, art: GalleryArt, zoom:
                 RockKind::Green => dense_color(),
                 RockKind::Hunter => hunter_color(),
                 RockKind::Lapse => lapse_color(),
+                RockKind::Facet => facet_color(),
                 RockKind::Orange => orange_color(),
                 RockKind::Pulser => Color::srgb(6.0, 6.2, 7.0),
                 RockKind::Red => red_color(),
@@ -9489,6 +9589,28 @@ fn draw_gallery_art(gizmos: &mut Gizmos, c: Vec2, t: f32, art: GalleryArt, zoom:
                         let a = t * 0.7 + i as f32 * TAU / 2.0;
                         gizmos.linestrip_2d(gallery_rock_ring(c + Vec2::from_angle(a) * r * 1.7, 13.0 * zoom), dim(col, 0.6));
                     }
+                }
+                RockKind::Facet => {
+                    // flat mirror faces with ONE open notch — the whole mechanic as a silhouette
+                    let n = 7usize;
+                    let open = 2usize;
+                    for k in 0..n {
+                        if k == open {
+                            continue; // the gap: the only way in
+                        }
+                        let a0 = k as f32 / n as f32 * TAU + t * 0.25;
+                        let a1 = (k + 1) as f32 / n as f32 * TAU + t * 0.25;
+                        gizmos.line_2d(c + Vec2::from_angle(a0) * r, c + Vec2::from_angle(a1) * r, col);
+                    }
+                    for k in [open, open + 1] {
+                        let a0 = k as f32 / n as f32 * TAU + t * 0.25;
+                        gizmos.line_2d(c + Vec2::from_angle(a0) * r, c + Vec2::from_angle(a0) * r * 0.62, dim(col, 0.8));
+                    }
+                    // a round arriving and being thrown straight back
+                    let ba = 4.4f32;
+                    let hit = c + Vec2::from_angle(ba) * r;
+                    gizmos.line_2d(hit + Vec2::from_angle(ba) * r * 0.75, hit, dim(bullet_color(), 0.9));
+                    gizmos.line_2d(hit, hit + Vec2::from_angle(ba + 2.0) * r * 0.75, bullet_color());
                 }
                 RockKind::Lapse => {
                     // caught mid-dissolve: the solid arc on one side, the ghost of it on the other
@@ -9927,6 +10049,45 @@ fn lore_watch(
     }
 }
 
+// A reflected round is YOUR shot, coming back. While its `Ricochet` timer runs it kills the ship on
+// contact; when it expires the round goes inert again (it stays a normal bullet and dies to its own
+// lifetime), so the arena never accumulates permanent hazards.
+fn ricochet_update(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut run: ResMut<Run>,
+    mut next: ResMut<NextState<GameState>>,
+    mut sfx: EventWriter<SoundFx>,
+    dev: Res<Dev>,
+    ships: Query<(Entity, &Transform, &Ship)>,
+    mut shots: Query<(Entity, &Transform, &mut Ricochet)>,
+) {
+    let dt = time.delta_secs();
+    let mut rng = rand::thread_rng();
+    for (re, rt, mut r) in &mut shots {
+        r.0 -= dt;
+        if r.0 <= 0.0 {
+            commands.entity(re).remove::<Ricochet>(); // spent — inert from here
+            continue;
+        }
+        if run.respawn > 0.0 {
+            continue;
+        }
+        let p = rt.translation.truncate();
+        for (se, st, sh) in &ships {
+            if immune(sh, &dev) {
+                continue;
+            }
+            let sp = st.translation.truncate();
+            if p.distance(sp) < SHIP_R + BULLET_R {
+                commands.entity(re).despawn();
+                kill_ship(&mut commands, &mut run, &mut next, &mut sfx, se, sp, &mut rng);
+                break;
+            }
+        }
+    }
+}
+
 // Toasts pop for a few seconds, then vanish.
 fn toast_update(time: Res<Time>, mut commands: Commands, mut toasts: Query<(Entity, &mut Toast)>) {
     let dt = time.delta_secs();
@@ -10016,12 +10177,13 @@ fn read_progress() -> Option<Stats> {
         seen: num(24),
         lapse: num(25),
         tenders: num(26),
+        facet: num(27),
     })
 }
 #[cfg(not(test))]
 fn save_progress(s: &Stats) {
     let line = format!(
-        "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+        "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
         s.blue,
         s.green,
         s.enemies,
@@ -10048,7 +10210,8 @@ fn save_progress(s: &Stats) {
         s.hunter,
         s.seen,
         s.lapse,
-        s.tenders
+        s.tenders,
+        s.facet
     );
     let _ = std::fs::write(SAVE_PATH, line); // best-effort — never block gameplay on I/O
 }
@@ -10695,6 +10858,7 @@ fn main() {
                     red_growth,
                     hunter_update,
                     lapse_update,
+                    ricochet_update,
                     gallery_sightings,
                     detonate,
                 )
@@ -12210,10 +12374,11 @@ mod tests {
             seen: 0b1010_1010,
             lapse: 17,
             tenders: 19,
+            facet: 21,
         };
         // mirror save_progress's field order (the real fn is a test no-op so runs can't clobber saves)
         let line = format!(
-            "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+            "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
             s.blue,
             s.green,
             s.enemies,
@@ -12240,10 +12405,11 @@ mod tests {
             s.hunter,
             s.seen,
             s.lapse,
-            s.tenders
+            s.tenders,
+            s.facet
         );
         let n: Vec<&str> = line.split_whitespace().collect();
-        assert_eq!(n.len(), 27, "the save line carries all 27 fields");
+        assert_eq!(n.len(), 28, "the save line carries all 28 fields");
         let flag = |i: usize| n[i] == "1";
         let num = |i: usize| n[i].parse::<u32>().unwrap();
         assert_eq!((num(0), num(1), num(2)), (s.blue, s.green, s.enemies));
@@ -12257,7 +12423,7 @@ mod tests {
         assert!(flag(22), "pacifist rides in slot 22");
         assert_eq!(num(23), s.hunter, "hunter kills ride in slot 23");
         assert_eq!(num(24), s.seen, "the gallery sightings bitmask rides in slot 24");
-        assert_eq!((num(25), num(26)), (s.lapse, s.tenders), "the lapse + tender tallies ride in the final slots");
+        assert_eq!((num(25), num(26), num(27)), (s.lapse, s.tenders, s.facet), "the lapse / tender / facet tallies ride in the final slots");
         // an OLD 12-field save (pre-expansion) must still load — new counters default to zero
         let old = "5 4 3 1 0 0 1 0 0 0 2 1";
         assert_eq!(old.split_whitespace().count(), 12);
@@ -12441,7 +12607,7 @@ mod tests {
         let done = Stats {
             blue: ACH_BLUE, green: ACH_GREEN, orange: ACH_ORANGE, pulser: ACH_PULSER, red: ACH_RED,
             cluster: ACH_CLUSTER, beacon: ACH_BEACON, hunter: ACH_HUNTER, lapse: ACH_LAPSE,
-            tenders: ACH_TENDERS, mines: ACH_MINES,
+            tenders: ACH_TENDERS, facet: ACH_FACET, mines: ACH_MINES,
             golds: ACH_GOLDS, waves: ACH_WAVES, warps: ACH_WARPS, runs: 50, ..default()
         };
         assert!(nearest_grind(&done).is_none(), "with every counter capped the ticker goes quiet");
@@ -12852,7 +13018,7 @@ mod tests {
                 RockKind::Cluster => cluster += 1,
                 RockKind::Beacon => beacon += 1,
                 RockKind::Hunter => hunter += 1,
-                RockKind::Lapse => panic!("the Lapse is NG+-only and must never appear in the base finale mix"),
+                RockKind::Lapse | RockKind::Facet => panic!("Lapse/Facet are NG+-only and must never appear in the base finale mix"),
             }
         }
         for (name, n) in [("blue", blue), ("green", green), ("orange", orange), ("pulser", pulser), ("red", red), ("cluster", cluster), ("beacon", beacon), ("hunter", hunter)] {
@@ -12875,7 +13041,7 @@ mod tests {
                     // Hunter (Act I) + the Act III-only kinds; covered by their own tests. The Lapse is
                     // NG+-only, so a base-game roll must never produce one.
                     RockKind::Hunter | RockKind::Red | RockKind::Cluster | RockKind::Beacon => {}
-                    RockKind::Lapse => panic!("the Lapse is NG+-only and must never appear in a base-game wave"),
+                    RockKind::Lapse | RockKind::Facet => panic!("Lapse/Facet are NG+-only and must never appear in a base-game wave"),
                 }
             }
             (blue, green, orange, pulser)
@@ -13106,6 +13272,47 @@ mod tests {
     }
 
     #[test]
+    fn a_facet_reflects_closed_faces_and_takes_the_open_one() {
+        // The whole mechanic: a round on a CLOSED face comes back live; a round through the OPEN
+        // face kills the rock normally. `open` is relative to the rock's rotation, so the gap moves.
+        fn shoot(open: f32, from: Vec2) -> (usize, usize, bool) {
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins);
+            app.add_event::<SoundFx>();
+            app.insert_resource(Stats::default());
+            app.insert_resource(Score(0));
+            app.world_mut().spawn((
+                Asteroid { size: 2, verts: vec![Vec2::X * 46.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+                Facet { open },
+                Velocity(Vec2::ZERO),
+                Transform::from_xyz(0.0, 0.0, 0.0),
+            ));
+            app.world_mut().spawn((
+                Bullet { life: 1.0, trail: Vec::new(), mass: false },
+                Velocity(-from.normalize() * BULLET_SPEED), // flying inward at the rock
+                Transform::from_xyz(from.x, from.y, 0.0),
+            ));
+            app.add_systems(Update, collisions);
+            app.update();
+            let rocks = app.world_mut().query::<&Asteroid>().iter(app.world()).count();
+            let bullets = app.world_mut().query::<&Bullet>().iter(app.world()).count();
+            let ricochets = app.world_mut().query::<&Ricochet>().iter(app.world()).count() > 0;
+            (rocks, bullets, ricochets)
+        }
+        // hit the face OPPOSITE the gap → reflected, rock survives, and the round is now live
+        let (rocks, bullets, ric) = shoot(0.0, Vec2::new(-30.0, 0.0));
+        assert_eq!(rocks, 1, "a closed face takes no damage");
+        assert_eq!(bullets, 1, "the round isn't consumed — it's handed back");
+        assert!(ric, "…and it comes back LIVE (a ricochet that can kill you)");
+        // hit THROUGH the gap → normal kill, no ricochet
+        let (rocks, _b, ric) = shoot(0.0, Vec2::new(30.0, 0.0));
+        assert!(rocks != 1, "the open face takes damage like any rock");
+        assert!(!ric, "and nothing bounces back off it");
+        // the ricochet is slower than the shot that made it, so it can be dodged on the way back
+        assert!(FACET_RICOCHET_SPEED < 1.0, "a ricochet must be outrunnable");
+    }
+
+    #[test]
     fn a_lapse_rock_is_harmless_and_unhittable_until_it_is_really_there() {
         // THE FAIRNESS CONTRACT: absent or still materializing = it cannot kill you and you cannot
         // hit it. That's what makes a rock reappearing on your hull always avoidable rather than a
@@ -13255,7 +13462,7 @@ mod tests {
         // NG+ waves 1-5 recap the OLD roster ONLY — the new bestiary is held back until wave 6
         for _ in 0..400 {
             match roll_rock_kind(3, true, &mut rng) {
-                RockKind::Hunter | RockKind::Lapse => panic!("the new roster must not appear in NG+ waves 1-5"),
+                RockKind::Hunter | RockKind::Lapse | RockKind::Facet => panic!("the new roster must not appear in NG+ waves 1-5"),
                 _ => {}
             }
         }
@@ -13266,6 +13473,7 @@ mod tests {
             match roll_rock_kind(12, true, &mut rng) {
                 RockKind::Hunter => hunters += 1,
                 RockKind::Lapse => lapses += 1,
+                RockKind::Facet => {} // debuts at wave 8; counted by its own test
                 other => panic!("an OLD-roster rock leaked into NG+ past wave 5: {:?}", other as u8),
             }
         }

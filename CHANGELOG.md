@@ -5,6 +5,14 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
+- **THE FACET — a rock that gives your shot back** (NG+, debuts wave 8). Its faces are mirrors: a
+  round that lands on one is **reflected, and the reflection is live** — your own fire can kill you.
+  Exactly one face is open, and it sweeps as the rock turns, so the counter is to read the gap and
+  time the shot instead of holding the trigger. The chain beam, blasts and the warp all ignore the
+  mirror entirely — they aren't rounds — so there's always an answer when you can't get the angle.
+  Ricochets fly slower than the shot that made them and go inert after a moment. New achievement:
+  **Through the Cracks** (crack 400 facets).
+
 - **THE WARDEN+ WHIRLS.** Its new charged attack turns the thing it already is — a keeper with rocks
   penned on its arms — into a weapon: it winds up, extends the arms, and rips the whole ring around
   at speed, sweeping a lethal circle. **Fully telegraphed**: for a long beat beforehand the ring
