@@ -18,6 +18,20 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
   inherit it but start docile, so a split really does buy breathing room. Wave 6 is its teaching
   wave, it garnishes 7-9, and it retires with Act I at wave 10. It joins the wave-30 all-types
   finale, and has its own achievement (**Who's the Prey Now** — 350 hunters).
+- **THE LAPSE — a rock that isn't always there** (NG+ roster). It thins out until nothing's where it
+  was, spends a spell absent — still drifting, so it never comes back where you lost it — then
+  materializes again on a randomized clock. The whole return is a **free warning**: while it's gone
+  *and* the entire time it's fading back in, it can't hit you and you can't hit it, and the fade-in
+  is long enough to read and fly out of (compile-time asserted, so it can never be tuned into a
+  cheap death). Its chunks keep phasing on their own clocks.
+- **THE TENDER — the Belt's repair crew** (NG+, late waves). It doesn't shoot. It finds two of the
+  fragments you left behind, takes hold of both with tractor beams, and **fuses them back into a
+  whole rock** — a split run backwards. Shoot the drone or either fragment and the weld fails; leave
+  it alone and the field stops shrinking. One hit kills it, one at a time on the field, and it never
+  touches you directly: it's the first mob that's a genuine priority target rather than a nuisance.
+- **NG+ density eased**: +6 rocks per wave → **+3**. With homing, phasing and *reconstituting*
+  pressure in the roster, the rock types carry lap two's difficulty and raw volume doesn't have to —
+  which also leaves headroom for those mechanics instead of walling the screen.
 - **Menu breathes again.** Seven buttons had it packed shoulder to shoulder: the masthead and
   wordmark are trimmed a little and the buttons now live in their own column with a wider gap, so
   the screen reads open instead of stacked. (The overlay's shared tight spacing is untouched — the

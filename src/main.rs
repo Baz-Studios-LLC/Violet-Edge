@@ -78,6 +78,23 @@ const HUNTER_RAMP: f32 = 14.0; // s of life to reach full aggression (fresh chun
 // is flying away. Enforced at compile time — raise it past MAX_SPEED and the build fails.
 const _: () = assert!(HUNTER_MAX_SPEED < MAX_SPEED);
 
+// LAPSE (NG+ roster): a rock that goes INTERMITTENT — it dissolves, spends a spell absent, then
+// materializes again on a randomized clock. Deliberately NOT a gotcha: while it's gone AND all the
+// way through the fade back IN it is intangible and harmless (you can't hit it, it can't hit you),
+// and the fade-in is slow enough to read as a warning, so a rock rematerializing on your hull is
+// always something you had time to leave. It keeps drifting while absent, so it comes back somewhere
+// you weren't watching. Distinct from the Pulser: that one STAYS and toggles invulnerability; this
+// one actually leaves. All transitions are ≥0.9s ramps — nowhere near the 3 Hz photosensitivity line.
+const LAPSE_SOLID_MIN: f32 = 4.0; // seconds present and dangerous
+const LAPSE_SOLID_MAX: f32 = 7.0;
+const LAPSE_FADE_OUT: f32 = 0.9; // dissolving (still solid — it's on its way out, not gone)
+const LAPSE_GONE_MIN: f32 = 1.5; // absent: invisible bar a faint scar, intangible, harmless
+const LAPSE_GONE_MAX: f32 = 3.0;
+const LAPSE_FADE_IN: f32 = 1.3; // the TELEGRAPH: a ghost outline brightening back into being
+// The fade-in IS the fairness guarantee — a rock may only rematerialize after a window long enough
+// to read and fly out of. Enforced at compile time so nobody can tune it into a cheap death.
+const _: () = assert!(LAPSE_FADE_IN >= 1.0);
+
 // Beacon (waves 23+): a teal warden rock projecting an AURA — rocks inside it are immune to gunfire
 // and the chain until the beacon falls (blasts, the warp, and red-absorption all bypass it: the
 // counterplay). Spawns dense (hp = size), never splits — it dies clean when cracked.
@@ -149,6 +166,21 @@ const ENEMY_BULLET_LIFE: f32 = 4.5; // s
 const ENEMY_LIFETIME: f32 = 11.0; // s on-screen before it flees (never overstays)
 const ENEMY_SCORE: u32 = 300;
 const ENEMY_SPAWN_INTERVAL: f32 = 3.0;
+
+// THE TENDER (NG+ only): the thing that maintains the Belt. It doesn't shoot — it REPAIRS the field,
+// hauling two of your leftover fragments together with a tractor beam and FUSING them back into a
+// whole rock. It undoes your work, which makes it the first mob that's a genuine priority target.
+// Fragile on purpose (one hit) and it never touches the player directly: the threat is entirely that
+// the field stops shrinking while it lives.
+const TENDER_R: f32 = 14.0;
+const TENDER_SPEED: f32 = 95.0; // unhurried — it's a maintenance drone, not a hunter
+const TENDER_ACCEL: f32 = 420.0;
+const TENDER_REACH: f32 = 300.0; // how far it will look for a pair of fragments to salvage
+const TENDER_FUSE_SECS: f32 = 2.6; // beam time to drag a pair together — long enough to interrupt
+const TENDER_HAUL: f32 = 150.0; // px/s it reels its two targets toward their midpoint
+const TENDER_SCORE: u32 = 250; // worth more than a raider: killing one protects your progress
+const TENDER_LIFETIME: f32 = 22.0; // longer than a raider's — it has work to do
+const TENDER_COOL: f32 = 1.2; // pause between salvage jobs
 
 // (The Limpet parasite mob was REMOVED 2026-07-28 — the asteroids are the star, and the bosses carry
 // the spectacle; waves 12-13 are pure rock waves now.)
@@ -524,6 +556,10 @@ fn well_color() -> Color {
 fn pulser_lit(offset: f32, t: f32) -> bool {
     (t * PULSE_RATE + offset).sin() > PULSE_LIT_THRESHOLD
 }
+fn lapse_color() -> Color {
+    Color::srgb(1.4, 3.0, 5.6)
+} // cold spectral STEEL-BLUE — the intermittent rock. Kept desaturated so its fade reads as absence
+  // rather than as another neon type; its identity is the dissolve, not the hue.
 fn hunter_color() -> Color {
     Color::srgb(6.0, 1.1, 0.35)
 } // hazard VERMILLION — the wave-6 predator. Distinct from orange (yellower, and an Act II type) and
@@ -929,6 +965,7 @@ type GameplayEntity = Or<(
     With<Ship>,
     With<Asteroid>,
     With<Bullet>,
+    With<Tender>,
     With<Particle>,
     With<BlackHole>,
     With<WarpMissile>,
@@ -1002,6 +1039,18 @@ struct Enemy {
     strafe: f32,   // ±1 orbit direction
     entered: bool, // has it finished gliding onto the screen?
     fleeing: bool, // lifetime elapsed → heading for the nearest edge
+}
+
+// A TENDER drone. `job` holds the pair of fragments it's currently fusing plus the beam's progress;
+// it's dropped the moment either target dies, so shooting one of them interrupts the salvage.
+#[derive(Component)]
+struct Tender {
+    life: f32,
+    entered: bool,
+    fleeing: bool,
+    cool: f32,
+    job: Option<(Entity, Entity)>,
+    progress: f32,
 }
 
 // A slow enemy shot. Distinct from the player's `Bullet` (never purple).
@@ -1243,6 +1292,39 @@ struct Beacon;
 // and `charge` ramps 0→1 over HUNTER_RAMP seconds, so the longer one lives the harder it drives —
 // you cannot park and farm. Breaking one resets the hunt: children inherit the marker at charge 0
 // (see `break_asteroid`), so a split buys you real breathing room instead of doubling the pressure.
+// A LAPSE rock's phase clock. `t` counts down within the current phase; `phase` cycles
+// Solid → FadingOut → Gone → FadingIn → Solid. TANGIBLE (hittable AND lethal) only while Solid or
+// FadingOut — so the whole return is a free warning, which is the point.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LapsePhase {
+    Solid,
+    FadingOut,
+    Gone,
+    FadingIn,
+}
+
+#[derive(Component, Clone, Copy)]
+struct Lapse {
+    phase: LapsePhase,
+    t: f32,
+}
+
+impl Lapse {
+    // Can it be shot, and can it kill? Only when it's really here.
+    fn tangible(&self) -> bool {
+        matches!(self.phase, LapsePhase::Solid | LapsePhase::FadingOut)
+    }
+    // 0..1 presence, for drawing the dissolve and the materialize.
+    fn presence(&self) -> f32 {
+        match self.phase {
+            LapsePhase::Solid => 1.0,
+            LapsePhase::FadingOut => (self.t / LAPSE_FADE_OUT).clamp(0.0, 1.0),
+            LapsePhase::Gone => 0.0,
+            LapsePhase::FadingIn => 1.0 - (self.t / LAPSE_FADE_IN).clamp(0.0, 1.0),
+        }
+    }
+}
+
 #[derive(Component)]
 #[derive(Clone, Copy)]
 struct Hunter {
@@ -1521,7 +1603,10 @@ struct Wave {
 // restarting a run keeps the mode, launching normal PLAY clears it.
 #[derive(Resource, Default, Clone, Copy)]
 struct NewGamePlus(bool);
-const NGP_POP_BONUS: i32 = 6; // extra rocks over the normal curve, every wave (the density dial)
+const NGP_POP_BONUS: i32 = 3; // extra rocks over the normal curve, every wave (the density dial).
+// Cut 6 → 3 (2026-07-31) when the NG+ roster grew its own teeth: homing/phasing rocks and a mob that
+// FUSES your debris back together are difficulty at the SOURCE, so raw volume doesn't have to be —
+// and a thinner field leaves headroom for those mechanics without walling the screen.
 const NGP_BOSS_HP_MULT: f32 = 1.5; // boss cores half again as tough
 // The WARDEN+ (NG+ boss 1): the old kit at a meaner cadence, plus a new trick — every rock it
 // hurls is PRIMED (a live bomb on a fuse): shoot it out of the air or clear the blast radius.
@@ -1565,6 +1650,10 @@ struct MineClock(f32);
 // Throttles enemy-ship spawns.
 #[derive(Resource, Default)]
 struct EnemyClock(f32);
+
+// Throttles Tender spawns (NG+ late waves).
+#[derive(Resource, Default)]
+struct TenderClock(f32);
 
 
 // Throttles gravity-well spawns.
@@ -2161,6 +2250,7 @@ enum RockKind {
     Blue,    // plain
     Green,   // dense / tanky (takes `hp` hits)
     Hunter,  // vermillion predator (Act I, w6+) — HOMES on the ship, accelerating the longer it lives
+    Lapse,   // NG+ roster — phases OUT of existence and materializes again elsewhere
     Orange,  // explosive (detonates instead of splitting)
     Pulser,  // pulses lit (invulnerable) ↔ dark (vulnerable) — hit it on the dark beat
     Red,     // growing (Act III) — absorbs nearby rocks to swell; a plain shot splits it into more reds
@@ -2287,6 +2377,10 @@ fn spawn_kind_rock(commands: &mut Commands, pos: Vec2, size: u8, vel: Vec2, rng:
         RockKind::Hunter => {
             commands.entity(e).insert(Hunter { charge: 0.0, look: Vec2::X }); // starts docile, ramps into a chaser
         }
+        RockKind::Lapse => {
+            // a randomized opening spell, so a field of them phases out of step
+            commands.entity(e).insert(Lapse { phase: LapsePhase::Solid, t: rng.gen_range(LAPSE_SOLID_MIN..LAPSE_SOLID_MAX) });
+        }
         RockKind::Blue | RockKind::Green => {} // plain / dense — no extra tag
     }
     e
@@ -2314,8 +2408,10 @@ fn roll_finale_kind(rng: &mut impl Rng) -> RockKind {
 // greatest-hits mix through wave 5, then sheds every rock the first lap taught you and runs the NEW
 // bestiary instead. ⚠️ Only the Hunter exists so far, so NG+ 6-30 is currently a single-type field;
 // each new rock type added here widens it.
-fn roll_ngplus_kind(_rng: &mut impl Rng) -> RockKind {
-    RockKind::Hunter
+fn roll_ngplus_kind(rng: &mut impl Rng) -> RockKind {
+    // The lap-two bestiary. Widen this as new types land; the roster rule (old roster retires after
+    // wave 5) means everything the second lap throws at you comes from here.
+    if rng.gen_bool(0.45) { RockKind::Lapse } else { RockKind::Hunter }
 }
 
 fn spawn_edge_asteroid(commands: &mut Commands, half: Vec2, rng: &mut impl Rng, kind: RockKind, force_big: bool) -> Entity {
@@ -2379,7 +2475,7 @@ fn spawn_asteroid(commands: &mut Commands, pos: Vec2, size: u8, vel: Vec2, rng: 
 #[allow(clippy::too_many_arguments)]
 // `chunks`: whether a size>1 rock spawns its two smaller fragments. True for every normal break; the
 // mass shot passes false to VAPORIZE a rock outright (its field-clearing identity — no rubble left).
-fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score, e: Entity, pos: Vec2, size: u8, chunk_mult: f32, dense: bool, gold: bool, pulser: bool, red: bool, cluster: bool, beacon: bool, hunter: bool, chunks: bool) {
+fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score, e: Entity, pos: Vec2, size: u8, chunk_mult: f32, dense: bool, gold: bool, pulser: bool, red: bool, cluster: bool, beacon: bool, hunter: bool, lapse: bool, chunks: bool) {
     commands.entity(e).despawn();
     let base = match size {
         3 => 20,
@@ -2397,6 +2493,8 @@ fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score
         cluster_color()
     } else if beacon {
         beacon_color()
+    } else if lapse {
+        lapse_color()
     } else if hunter {
         hunter_color()
     } else if dense {
@@ -2465,6 +2563,10 @@ fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score
                 // ramp again, so breaking a charged hunter genuinely relieves the pressure
                 commands.entity(child).insert(Hunter { charge: 0.0, look: Vec2::X });
             }
+            if lapse {
+                // chunks keep phasing, each on its own fresh clock (they scatter out of step)
+                commands.entity(child).insert(Lapse { phase: LapsePhase::Solid, t: rng.gen_range(LAPSE_SOLID_MIN..LAPSE_SOLID_MAX) });
+            }
         }
     }
 }
@@ -2476,7 +2578,7 @@ fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score
 fn blast_asteroids(
     commands: &mut Commands,
     rng: &mut impl Rng,
-    asteroids: &Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>), (Without<Mine>, Without<Shielded>)>,
+    asteroids: &Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>), (Without<Mine>, Without<Shielded>)>,
     broken: &mut HashSet<Entity>,
     center: Vec2,
     t: f32,
@@ -2486,7 +2588,7 @@ fn blast_asteroids(
     let mut unscored = Score(0);
     let score = &mut unscored;
     // shared &Query → iterates read-only, so we just read size/dense/gold/explosive here
-    for (ae, at, a, gold, explosive, pulser, red, cluster, beacon, hunter) in asteroids {
+    for (ae, at, a, gold, explosive, pulser, red, cluster, beacon, hunter, lapse) in asteroids {
         if broken.contains(&ae) {
             continue;
         }
@@ -2495,6 +2597,9 @@ fn blast_asteroids(
         }
         if pulser.is_some_and(|pl| pulser_lit(pl.offset, t)) {
             continue; // a LIT pulser is invulnerable — the blast can't crack it either
+        }
+        if lapse.is_some_and(|l| !l.tangible()) {
+            continue; // absent / materializing: the blast passes through it
         }
         let ap = at.translation.truncate();
         let br = MINE_BLAST_R + asteroid_radius(a.size);
@@ -2505,7 +2610,7 @@ fn blast_asteroids(
             } else {
                 // mine flings chunks (ignores hp + the beacon aura — blasts are the counterplay); never gold;
                 // a mined red splits into reds; a mined CLUSTER shatters spectacularly (fast shard ring)
-                break_asteroid(commands, rng, score, ae, ap, a.size, MINE_CHUNK_MULT, a.dense, false, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), true);
+                break_asteroid(commands, rng, score, ae, ap, a.size, MINE_CHUNK_MULT, a.dense, false, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), lapse.is_some(), true);
             }
         }
     }
@@ -2537,6 +2642,27 @@ fn hunter_update(
         if v.0.length() > cap {
             v.0 = v.0.normalize() * cap;
         }
+    }
+}
+
+// Drive every LAPSE rock's phase clock. Randomized spells so a field of them never falls into lockstep
+// (which would make the whole wave blink as one — both ugly and unfair).
+fn lapse_update(time: Res<Time>, mut q: Query<&mut Lapse>) {
+    let dt = time.delta_secs();
+    let mut rng = rand::thread_rng();
+    for mut l in &mut q {
+        l.t -= dt;
+        if l.t > 0.0 {
+            continue;
+        }
+        let (phase, t) = match l.phase {
+            LapsePhase::Solid => (LapsePhase::FadingOut, LAPSE_FADE_OUT),
+            LapsePhase::FadingOut => (LapsePhase::Gone, rng.gen_range(LAPSE_GONE_MIN..LAPSE_GONE_MAX)),
+            LapsePhase::Gone => (LapsePhase::FadingIn, LAPSE_FADE_IN),
+            LapsePhase::FadingIn => (LapsePhase::Solid, rng.gen_range(LAPSE_SOLID_MIN..LAPSE_SOLID_MAX)),
+        };
+        l.phase = phase;
+        l.t = t;
     }
 }
 
@@ -3098,7 +3224,7 @@ fn ship_death(
     // Include the boss's rocks, but a rock still being REELED IN (grab in progress) is exempt — it
     // mustn't kill the player as the boss drags it across the field. A SETTLED shield rock (orbiting
     // the boss) still hurts, and free / thrown rocks always do (a thrown rock drops Shielded).
-    asteroids: Query<(Entity, &Transform, &Asteroid, Option<&Shielded>)>,
+    asteroids: Query<(Entity, &Transform, &Asteroid, Option<&Shielded>, Option<&Lapse>)>,
 ) {
     if run.respawn > 0.0 {
         return; // already dead/respawning
@@ -3108,9 +3234,15 @@ fn ship_death(
             continue;
         }
         let sp = t.translation.truncate();
-        for (ae, at, a, shielded) in &asteroids {
+        for (ae, at, a, shielded, lapse) in &asteroids {
             if shielded.is_some_and(|sh| sh.grab < BOSS_GRAB_TIME) {
                 continue; // mid-grab: harmless while it reels across the field
+            }
+            // A LAPSE rock only kills while it's really here. It is harmless the entire time it's
+            // absent AND all the way through materializing, so a rock coming back on top of you is
+            // always something you were shown and had time to leave — never an unavoidable death.
+            if lapse.is_some_and(|l| !l.tangible()) {
+                continue;
             }
             let rr = asteroid_radius(a.size) + SHIP_R * 0.6;
             if sp.distance_squared(at.translation.truncate()) < rr * rr {
@@ -3353,9 +3485,10 @@ fn collisions(
     mut commands: Commands,
     time: Res<Time>,
     bullets: Query<(Entity, &Transform, &Bullet, Has<WarheadShot>)>,
-    mut asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>), (Without<Mine>, Without<Shielded>)>,
+    mut asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>), (Without<Mine>, Without<Shielded>)>,
     mines: Query<(Entity, &Transform), With<Mine>>,
     enemies: Query<(Entity, &Transform), With<Enemy>>,
+    tenders: Query<(Entity, &Transform), With<Tender>>,
     mut shield_rocks: Query<(Entity, &Transform, &mut Asteroid), With<Shielded>>,
     // the five boss cores bundled into one param — five separate queries would exceed Bevy's 16-param system limit
     boss_cores: (
@@ -3377,13 +3510,14 @@ fn collisions(
     let mut dead_a: HashSet<Entity> = HashSet::new();
     let mut dead_m: HashSet<Entity> = HashSet::new();
     let mut dead_e: HashSet<Entity> = HashSet::new();
+    let mut dead_t: HashSet<Entity> = HashSet::new(); // tenders shot this pass
     let mut dead_s: HashSet<Entity> = HashSet::new();
     let mut dead_v: HashSet<Entity> = HashSet::new(); // p2 vessels broken this pass
     // BEACON auras: any non-beacon rock inside a beacon's aura is immune to gunfire until the beacon
     // falls. Zones are collected in a read-only pass so the mutable bullet loop below can test them.
     let beacon_zones: Vec<Vec2> = asteroids
         .iter()
-        .filter(|(.., beacon, _)| beacon.is_some())
+        .filter(|(.., beacon, _, _)| beacon.is_some())
         .map(|(_, at, ..)| at.translation.truncate())
         .collect();
     let beacon_shielded =
@@ -3396,13 +3530,18 @@ fn collisions(
         let br = bullet_radius(b.mass); // mass shots are fatter…
         let power = bullet_boss_power(b.mass); // …and (vs a boss/mob) hit a bit harder; vs free rocks, see below
         let mut warhead_blast_at: Option<Vec2> = None; // set when a warhead round detonates on a rock
-        for (ae, at, mut a, gold, explosive, pulser, red, cluster, beacon, hunter) in &mut asteroids {
+        for (ae, at, mut a, gold, explosive, pulser, red, cluster, beacon, hunter, lapse) in &mut asteroids {
             if dead_a.contains(&ae) {
                 continue;
             }
             let ap = at.translation.truncate();
             let rr = asteroid_radius(a.size) + br;
             if bp.distance_squared(ap) < rr * rr {
+                // an ABSENT / still-materializing lapse rock isn't physically here: rounds pass
+                // straight through it, and it can't be damaged until it's solid again
+                if lapse.is_some_and(|l| !l.tangible()) {
+                    continue;
+                }
                 // a LIT pulser is invulnerable — every shot fizzles on its shield (a WARHEAD round
                 // doesn't detonate on an invulnerable shield either; it flies on past)
                 if pulser.is_some_and(|pl| pulser_lit(pl.offset, time.elapsed_secs())) {
@@ -3428,7 +3567,7 @@ fn collisions(
                     // it struck dies outright, and the violet ring is now a REAL blast: everything
                     // within WARHEAD_BLAST_R is destroyed in the after-pass below.
                     dead_a.insert(ae);
-                    break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, a.dense, gold.is_some(), pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), false);
+                    break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, a.dense, gold.is_some(), pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), lapse.is_some(), false);
                     commands.spawn((
                         Shockwave { age: 0.0, ttl: 0.28, max_r: WARHEAD_BLAST_R, color: warhead_color() },
                         Transform::from_xyz(ap.x, ap.y, 0.0),
@@ -3458,7 +3597,7 @@ fn collisions(
                         commands.entity(ae).insert(Detonating { fuse: ORANGE_FUSE, friendly: false }); // orange detonates + chains
                         stats.orange += 1; // you lit it — the kill is yours
                     } else {
-                        break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, a.dense, gold.is_some(), pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), true);
+                        break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, a.dense, gold.is_some(), pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), lapse.is_some(), true);
                         sfx.write(SoundFx::Break(a.size));
                         credit_rock_kill(&mut stats, a.dense, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some());
                     }
@@ -3470,7 +3609,7 @@ fn collisions(
         // Blast rules apply, same as a mine's: gold is spared (only aimed shots may break the 1UP),
         // a LIT pulser shrugs it off, and the beacon aura does NOT protect (blasts are its counter).
         if let Some(c) = warhead_blast_at {
-            for (ae, at, a, gold, explosive, pulser, red, cluster, beacon, hunter) in &mut asteroids {
+            for (ae, at, a, gold, explosive, pulser, red, cluster, beacon, hunter, lapse) in &mut asteroids {
                 if dead_a.contains(&ae) || gold.is_some() {
                     continue;
                 }
@@ -3481,7 +3620,7 @@ fn collisions(
                 let rr = WARHEAD_BLAST_R + asteroid_radius(a.size);
                 if c.distance_squared(ap) < rr * rr {
                     dead_a.insert(ae);
-                    break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, a.dense, false, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), false);
+                    break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, a.dense, false, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), lapse.is_some(), false);
                     if explosive.is_some() {
                         stats.orange += 1; // the blast deletes an orange whole — yours
                     } else {
@@ -3516,6 +3655,29 @@ fn collisions(
         }
         if dead_b.contains(&be) {
             continue; // bullet already spent on a mine
+        }
+        // TENDERS: one hit ends the salvage crew, and any fusion it was holding dies with it.
+        // Worth more than a raider — killing one protects work you've already done.
+        for (tde, tdt) in &tenders {
+            if dead_t.contains(&tde) {
+                continue;
+            }
+            let tp = tdt.translation.truncate();
+            let rr = TENDER_R + br;
+            if bp.distance_squared(tp) < rr * rr {
+                dead_b.insert(be);
+                dead_t.insert(tde);
+                commands.entity(be).despawn();
+                commands.entity(tde).despawn();
+                score.0 += TENDER_SCORE;
+                stats.enemies += 1; // a mob kill for the lifetime tally
+                burst(&mut commands, tp, enemy_color(), 22, 300.0, &mut rng);
+                sfx.write(SoundFx::EnemyDie);
+                break;
+            }
+        }
+        if dead_b.contains(&be) {
+            continue; // round spent on a tender
         }
         for (ene, ent) in &enemies {
             if dead_e.contains(&ene) {
@@ -3892,7 +4054,7 @@ fn mine_update(
     ships: Query<(Entity, &Transform, &Ship), Without<Mine>>,
     mut mines: Query<(Entity, &mut Transform, &mut Velocity, &mut Mine)>,
     // &mut to match blast_asteroids' type; only read here (iter + shared borrow)
-    asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>), (Without<Mine>, Without<Shielded>)>,
+    asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>), (Without<Mine>, Without<Shielded>)>,
 ) {
     let dt = time.delta_secs();
     let h = arena.half;
@@ -4108,6 +4270,41 @@ fn spawn_edge_enemy(commands: &mut Commands, half: Vec2, rng: &mut impl Rng) {
 }
 
 // Stream enemies in (wave 3+), capped as a fraction of the asteroids; not during calm.
+// TENDERS only exist on lap two, and only late (content wave 26+): by then you've learned to break
+// rocks efficiently, so something that puts them back together is a real counter to your habits.
+// Hard-capped at ONE at a time — two would be a chore, not a threat.
+fn top_up_tenders(
+    time: Res<Time>,
+    mut clock: ResMut<TenderClock>,
+    wave: Res<Wave>,
+    arena: Res<Arena>,
+    plus: Res<NewGamePlus>,
+    mut commands: Commands,
+    tenders: Query<(), With<Tender>>,
+) {
+    if !plus.0 || wave.calm > 0.0 || is_boss_wave(wave.level) || content_wave(wave.level) < 26 {
+        return;
+    }
+    clock.0 -= time.delta_secs();
+    if clock.0 > 0.0 || !tenders.is_empty() {
+        return;
+    }
+    let mut rng = rand::thread_rng();
+    let inward = TENDER_SPEED * 1.6;
+    let (pos, vel) = match rng.gen_range(0..4) {
+        0 => (Vec2::new(-arena.half.x - TENDER_R, rng.gen_range(-arena.half.y..arena.half.y)), Vec2::new(inward, 0.0)),
+        1 => (Vec2::new(arena.half.x + TENDER_R, rng.gen_range(-arena.half.y..arena.half.y)), Vec2::new(-inward, 0.0)),
+        2 => (Vec2::new(rng.gen_range(-arena.half.x..arena.half.x), -arena.half.y - TENDER_R), Vec2::new(0.0, inward)),
+        _ => (Vec2::new(rng.gen_range(-arena.half.x..arena.half.x), arena.half.y + TENDER_R), Vec2::new(0.0, -inward)),
+    };
+    commands.spawn((
+        Tender { life: TENDER_LIFETIME, entered: false, fleeing: false, cool: 0.0, job: None, progress: 0.0 },
+        Velocity(vel),
+        Transform::from_xyz(pos.x, pos.y, 0.0),
+    ));
+    clock.0 = 9.0; // a long gap — one shift at a time
+}
+
 fn top_up_enemies(
     time: Res<Time>,
     mut clock: ResMut<EnemyClock>,
@@ -4131,6 +4328,118 @@ fn top_up_enemies(
         clock.0 = ENEMY_SPAWN_INTERVAL;
     } else {
         clock.0 = 1.0;
+    }
+}
+
+// THE TENDER'S SALVAGE LOOP. It glides in, hunts for two SMALL (size-1) fragments within reach,
+// then holds a tractor beam on both and reels them toward their midpoint. When they meet it fuses
+// them into one MID rock — the exact inverse of a split, so an unattended Tender slowly rebuilds
+// everything you broke. The job aborts the instant either fragment dies (shoot one to interrupt),
+// and the drone itself dies to a single hit. It never harms the ship directly.
+fn tender_update(
+    time: Res<Time>,
+    mut commands: Commands,
+    arena: Res<Arena>,
+    mut score: ResMut<Score>,
+    mut sfx: EventWriter<SoundFx>,
+    ships: Query<&Transform, With<Ship>>,
+    mut rocks: Query<(Entity, &mut Transform, &Asteroid), (Without<Tender>, Without<Ship>, Without<Shielded>, Without<Gold>, Without<Cannonball>)>,
+    mut tenders: Query<(Entity, &mut Transform, &mut Velocity, &mut Tender), (Without<Asteroid>, Without<Ship>)>,
+) {
+    let dt = time.delta_secs();
+    let h = arena.half;
+    let mut rng = rand::thread_rng();
+    let ship = ships.iter().next().map(|t| t.translation.truncate());
+    for (te, mut tt, mut tv, mut tender) in &mut tenders {
+        let p = tt.translation.truncate();
+        // ── glide in, then work; bug out when its shift ends ──
+        if !tender.entered {
+            if p.x.abs() < h.x - TENDER_R && p.y.abs() < h.y - TENDER_R {
+                tender.entered = true;
+            }
+            continue; // `integrate` carries it in
+        }
+        tender.life -= dt;
+        if tender.life <= 0.0 && !tender.fleeing {
+            tender.fleeing = true;
+            tender.job = None;
+        }
+        if tender.fleeing {
+            // head for the nearest edge and leave
+            let out = if p.x.abs() > p.y.abs() { Vec2::new(p.x.signum(), 0.0) } else { Vec2::new(0.0, p.y.signum()) };
+            tv.0 += out * TENDER_ACCEL * dt;
+            if p.x.abs() > h.x + TENDER_R * 3.0 || p.y.abs() > h.y + TENDER_R * 3.0 {
+                commands.entity(te).despawn();
+            }
+            continue;
+        }
+
+        // ── an active salvage job: verify both fragments still exist, then reel them together ──
+        if let Some((a, b)) = tender.job {
+            let both = rocks.get(a).is_ok() && rocks.get(b).is_ok();
+            if !both {
+                tender.job = None; // interrupted — one of them was destroyed
+                tender.progress = 0.0;
+                tender.cool = TENDER_COOL;
+                continue;
+            }
+            let pa = rocks.get(a).map(|(_, t, _)| t.translation.truncate()).unwrap_or_default();
+            let pb = rocks.get(b).map(|(_, t, _)| t.translation.truncate()).unwrap_or_default();
+            let mid = (pa + pb) * 0.5;
+            tender.progress += dt;
+            // haul both inward; the drone hangs back at the midpoint so the beam reads clearly
+            for (e, from) in [(a, pa), (b, pb)] {
+                if let Ok((_, mut rt, _)) = rocks.get_mut(e) {
+                    let step = (mid - from).clamp_length_max(TENDER_HAUL * dt);
+                    rt.translation.x += step.x;
+                    rt.translation.y += step.y;
+                }
+            }
+            tv.0 += (mid - p).clamp_length_max(TENDER_ACCEL * dt);
+            if tv.0.length() > TENDER_SPEED {
+                tv.0 = tv.0.normalize() * TENDER_SPEED;
+            }
+            // fused: the two fragments become one MID rock — a split, run backwards
+            if tender.progress >= TENDER_FUSE_SECS || pa.distance(pb) < asteroid_radius(1) * 1.6 {
+                commands.entity(a).despawn();
+                commands.entity(b).despawn();
+                let vel = Vec2::from_angle(rng.gen_range(0.0..TAU)) * rng.gen_range(30.0..70.0);
+                spawn_asteroid(&mut commands, mid, 2, vel, &mut rng, false);
+                burst(&mut commands, mid, enemy_color(), 14, 200.0, &mut rng);
+                sfx.write(SoundFx::Mine); // a heavy mechanical clunk as it welds
+                tender.job = None;
+                tender.progress = 0.0;
+                tender.cool = TENDER_COOL;
+            }
+            continue;
+        }
+
+        // ── idle: find the closest PAIR of small fragments in reach ──
+        tender.cool -= dt;
+        if tender.cool <= 0.0 {
+            let mut smalls: Vec<(Entity, Vec2)> = rocks
+                .iter()
+                .filter(|(_, _, a)| a.size == 1)
+                .map(|(e, t, _)| (e, t.translation.truncate()))
+                .filter(|(_, rp)| rp.distance(p) < TENDER_REACH)
+                .collect();
+            if smalls.len() >= 2 {
+                smalls.sort_by(|x, y| x.1.distance_squared(p).total_cmp(&y.1.distance_squared(p)));
+                tender.job = Some((smalls[0].0, smalls[1].0));
+                tender.progress = 0.0;
+            } else if let Some(sp) = ship {
+                // nothing to salvage: drift wide of the player rather than engaging (it isn't a fighter)
+                let away = (p - sp).normalize_or_zero();
+                tv.0 += away * TENDER_ACCEL * 0.25 * dt;
+            }
+        }
+        if tv.0.length() > TENDER_SPEED {
+            tv.0 = tv.0.normalize() * TENDER_SPEED;
+        }
+        // keep it on the field
+        tt.translation.x = p.x.clamp(-h.x + TENDER_R, h.x - TENDER_R);
+        tt.translation.y = p.y.clamp(-h.y + TENDER_R, h.y - TENDER_R);
+        let _ = &mut score; // scoring happens where it's shot (collisions), not here
     }
 }
 
@@ -4931,7 +5240,7 @@ fn chain_update(
     mut sfx: EventWriter<SoundFx>,
     mut stats: ResMut<Stats>,
     mut chains: Query<(Entity, &Transform, &mut ChainShot)>,
-    asteroids: Query<(Entity, &Transform, &Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>), (Without<Mine>, Without<Shielded>)>,
+    asteroids: Query<(Entity, &Transform, &Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>), (Without<Mine>, Without<Shielded>)>,
     enemies: Query<(Entity, &Transform), With<Enemy>>,
     mines: Query<(Entity, &Transform), With<Mine>>,
 ) {
@@ -4951,16 +5260,20 @@ fn chain_update(
         // beacon auras block the beam too — collect the zones once per beam sweep
         let beacon_zones: Vec<Vec2> = asteroids
             .iter()
-            .filter(|(.., beacon, _)| beacon.is_some())
+            .filter(|(.., beacon, _, _)| beacon.is_some())
             .map(|(_, at, ..)| at.translation.truncate())
             .collect();
-        for (ae, at, ast, gold, explosive, pulser, red, cluster, beacon, hunter) in &asteroids {
+        for (ae, at, ast, gold, explosive, pulser, red, cluster, beacon, hunter, lapse) in &asteroids {
             if dead.contains(&ae) {
                 continue;
             }
             let ap = at.translation.truncate();
             let rr = asteroid_radius(ast.size) + CHAIN_R;
             if seg_dist2(ap, a, b) < rr * rr {
+                // an absent / materializing lapse rock isn't there for the beam to shear
+                if lapse.is_some_and(|l| !l.tangible()) {
+                    continue;
+                }
                 // a LIT pulser is invulnerable — the beam passes over it (don't mark it dead)
                 if pulser.is_some_and(|pl| pulser_lit(pl.offset, time.elapsed_secs())) {
                     continue;
@@ -4977,7 +5290,7 @@ fn chain_update(
                 }
                 // chain beam shears dense rocks outright — the beam ignores hp, like a mine (a BEACON dies
                 // in one sweep: the beam is a clean answer to an aura)
-                break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, ast.size, 1.0, ast.dense, gold.is_some(), pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), true); // chain shears rocks; a red splits into reds (they stay red + regrow)
+                break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, ast.size, 1.0, ast.dense, gold.is_some(), pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), lapse.is_some(), true); // chain shears rocks; a red splits into reds (they stay red + regrow)
                 sfx.write(SoundFx::Break(ast.size));
                 credit_rock_kill(&mut stats, ast.dense, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some());
             }
@@ -5453,7 +5766,7 @@ fn render(
     wf: Res<WarpField>,
     stars: Query<(&Star, &Transform)>,
     ships: Query<(&Ship, &Transform, Option<&ShipTrail>)>,
-    asteroids: Query<(&Asteroid, &Transform, Option<&Gold>, Option<&Explosive>, Option<&Detonating>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>)>,
+    asteroids: Query<(&Asteroid, &Transform, Option<&Gold>, Option<&Explosive>, Option<&Detonating>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>)>,
     bullets: Query<(&Bullet, &Transform, Has<WarheadShot>, &Velocity)>,
     particles: Query<(&Particle, &Transform)>,
     holes: Query<(&BlackHole, &Transform)>,
@@ -5558,7 +5871,7 @@ fn render(
     // they're chipped, so their tanky state reads at a glance.
     let rock = rock_color();
     let dense = dense_color();
-    for (a, at, gold, explosive, det, pulser, red, cluster, beacon, hunter) in &asteroids {
+    for (a, at, gold, explosive, det, pulser, red, cluster, beacon, hunter, lapse) in &asteroids {
         let c = at.translation.truncate();
         let rot = Vec2::from_angle(a.rot);
         // colour by type: a lit orange flashes white-hot as its fuse burns; a live orange pulses; gold
@@ -5579,6 +5892,10 @@ fn render(
             dim(red_color(), 0.7 + 0.3 * (t * 4.0).sin()) // a slow, menacing throb — it's alive and hungry
         } else if beacon.is_some() {
             dim(beacon_color(), 0.8 + 0.2 * (t * 2.0).sin()) // steady teal breathe — the aura's living key
+        } else if let Some(l) = lapse {
+            // presence IS the readout: full when solid, guttering out as it dissolves, a faint ghost
+            // as it comes back. Smooth ramps only — no blinking (photosensitivity rule).
+            dim(lapse_color(), 0.12 + 0.88 * l.presence())
         } else if let Some(h) = hunter {
             dim(hunter_color(), 0.62 + 0.38 * h.charge) // dull when it spawns, burning once it's locked on
         } else if cluster.is_some() {
@@ -5602,6 +5919,24 @@ fn render(
             gizmos.circle_2d(Isometry2d::from_translation(c), BEACON_AURA_R, dim(col, 0.22 + 0.06 * (t * 2.0).sin()));
             let frac = a.hp.max(1) as f32 / a.size.max(1) as f32;
             gizmos.linestrip_2d(ring(0.35 + 0.3 * frac), col);
+        } else if let Some(l) = lapse {
+            match l.phase {
+                LapsePhase::Gone => {
+                    // absent — leave a SCAR so it's never a total ambush: a faint tick where it is,
+                    // which is also the honest tell that it's still drifting somewhere.
+                    let sc = dim(lapse_color(), 0.16);
+                    let r = asteroid_radius(a.size) * 0.22;
+                    gizmos.line_2d(c - Vec2::X * r, c + Vec2::X * r, sc);
+                    gizmos.line_2d(c - Vec2::Y * r, c + Vec2::Y * r, sc);
+                }
+                LapsePhase::FadingIn => {
+                    // MATERIALIZING: an inner ring closing in as it solidifies — the countdown you
+                    // read to decide whether to leave. Bright enough to notice, not yet lethal.
+                    let f = l.presence();
+                    gizmos.linestrip_2d(ring(0.25 + 0.7 * f), dim(lapse_color(), 0.3 + 0.5 * f));
+                }
+                _ => {}
+            }
         } else if let Some(h) = hunter {
             // THE EYE — the hunter's signature, and the one visual nothing else in the game has: a
             // bright iris that sits toward whatever it's chasing and opens wider as its charge builds.
@@ -7541,6 +7876,8 @@ fn render_extras(
     time: Res<Time>,
     chains: Query<(&Transform, &ChainShot)>,
     pickups: Query<(&Transform, &Pickup)>,
+    tenders: Query<(&Tender, &Transform)>,
+    tender_targets: Query<&Transform, With<Asteroid>>,
     drones: Query<(&Drone, &Transform)>,
     wells: Query<(&Well, &Transform)>,
 ) {
@@ -7565,6 +7902,41 @@ fn render_extras(
         gizmos.linestrip_2d(pts, cc);
         gizmos.circle_2d(Isometry2d::from_translation(a), 4.0, white);
         gizmos.circle_2d(Isometry2d::from_translation(b), 4.0, white);
+    }
+    // TENDERS — a squat maintenance frame (deliberately MACHINED-looking: hard angles, no organic
+    // curves, so it reads as built rather than grown) plus the two tractor beams when it's working.
+    for (tender, tt, ) in &tenders {
+        let c = tt.translation.truncate();
+        let col = enemy_color();
+        let spin = t * 0.7;
+        // outer frame: a hexagonal cage
+        let cage: Vec<Vec2> = (0..=6).map(|i| c + Vec2::from_angle(spin + i as f32 / 6.0 * TAU) * TENDER_R).collect();
+        gizmos.linestrip_2d(cage, col);
+        // inner core + three struts, machined and symmetrical
+        gizmos.circle_2d(Isometry2d::from_translation(c), TENDER_R * 0.35, dim(col, 0.9));
+        for i in 0..3 {
+            let d = Vec2::from_angle(-spin * 1.4 + i as f32 / 3.0 * TAU);
+            gizmos.line_2d(c + d * TENDER_R * 0.35, c + d * TENDER_R * 0.95, dim(col, 0.75));
+        }
+        // the TRACTOR BEAMS: two dashed lines to whatever it's hauling — the tell that a fusion is
+        // in progress, and that shooting either fragment (or the drone) will stop it.
+        if let Some((a, b)) = tender.job {
+            let pulse = 0.55 + 0.45 * (t * 5.0).sin().abs();
+            for target in [a, b] {
+                if let Ok(rt) = tender_targets.get(target) {
+                    let to = rt.translation.truncate();
+                    let n = 7;
+                    for k in 0..n {
+                        if k % 2 == 1 {
+                            continue; // dashed
+                        }
+                        let f0 = k as f32 / n as f32;
+                        let f1 = (k as f32 + 0.9) / n as f32;
+                        gizmos.line_2d(c + (to - c) * f0, c + (to - c) * f1, dim(col, 0.35 + 0.4 * pulse));
+                    }
+                }
+            }
+        }
     }
     // reward orb — a pulsing hexagon with a bright core, tinted for the weapon it grants
     for (pt, pk) in &pickups {
@@ -8620,6 +8992,7 @@ enum GalleryArt {
     Mine,
     Well,
     Mob,
+    Tender,
     Boss(BossKind),
 }
 
@@ -8630,6 +9003,7 @@ fn gallery_bit(art: GalleryArt) -> u32 {
         GalleryArt::Rock(RockKind::Blue) => 0,
         GalleryArt::Rock(RockKind::Green) => 1,
         GalleryArt::Rock(RockKind::Hunter) => 2,
+        GalleryArt::Rock(RockKind::Lapse) => 18,
         GalleryArt::Rock(RockKind::Orange) => 3,
         GalleryArt::Rock(RockKind::Pulser) => 4,
         GalleryArt::Rock(RockKind::Red) => 5,
@@ -8639,6 +9013,7 @@ fn gallery_bit(art: GalleryArt) -> u32 {
         GalleryArt::Mine => 9,
         GalleryArt::Mob => 10,
         GalleryArt::Well => 11,
+        GalleryArt::Tender => 19,
         GalleryArt::Boss(BossKind::Warden) => 12,
         GalleryArt::Boss(BossKind::Devourer) => 13,
         GalleryArt::Boss(BossKind::Slinger) => 14,
@@ -8686,9 +9061,13 @@ fn gallery_entries(s: &Stats) -> Vec<(GalleryArt, &'static str, &'static str, &'
         (GalleryArt::Rock(RockKind::Red), "GROWER", "Appetite", "It pulls in whatever drifts near and swells with it - other growers included. Shooting it plainly only makes two of them, and both start feeding again. The mass shot, a warhead, the beam or a mine ends one outright. It eats the way the big one in the deep field ate. I don't think that's coincidence.", gallery_seen(s, GalleryArt::Rock(RockKind::Red))),
         (GalleryArt::Rock(RockKind::Cluster), "CLUSTER", "Fractured through", "Riddled with cracks before I ever fired. Break it close and it bursts into a ring of fast shards that will take the ship with it - keep your distance, vaporize it with the mass shot, or let the warp swallow it whole. Whatever shattered this did it a long way from here.", gallery_seen(s, GalleryArt::Rock(RockKind::Cluster))),
         (GalleryArt::Rock(RockKind::Beacon), "BEACON", "A keeper, not a rock", "It holds a field around itself and everything inside goes untouchable - my rounds and my beam simply wash over them. Kill the beacon and the field drops. Blasts, the warp and a grower's appetite ignore it entirely. It isn't defending itself. It's defending the others, and something taught it to.", gallery_seen(s, GalleryArt::Rock(RockKind::Beacon))),
+        (GalleryArt::Rock(RockKind::Lapse), "LAPSE", "Here, then not",
+         "It thins out until there's nothing where it was, waits somewhere I can't see it, then comes back - and it drifts the whole time it's gone, so it never returns where I lost it. While it's coming back it's only an outline; nothing I fire touches it and it can't touch me until it's finished. That's the only reason I'm still flying. Whatever the Belt is, parts of it are not always present.", gallery_seen(s, GalleryArt::Rock(RockKind::Lapse))),
         (GalleryArt::Gold, "LIFE ROCK", "Salvage", "Gold all the way through and worth more than the rest of the Belt combined: break the whole lineage, every last fragment, and there's enough intact hull plating in it to put a life back on the board. Let a piece drift past the edge and it's gone. Only my guns can open it - mines bounce off, and the big feeder won't touch it.", gallery_seen(s, GalleryArt::Gold)),
         (GalleryArt::Mine, "MINE", "Not from the Belt", "Machined. Not grown, not broken off anything - machined, and left drifting where a ship would pass. It wakes when I get close and goes off a moment later. Shooting one detonates it early and takes the rocks around it with it. Somebody is seeding the ground I have to cross.", gallery_seen(s, GalleryArt::Mine)),
         (GalleryArt::Mob, "RAIDER", "Crewed or not, it aims", "A small gunship that keeps its distance and fires slow enough to dodge. It steers around the rocks, which means it can see them, and it leaves when it's been out too long. I've never gotten close enough to know whether there's anyone inside.", gallery_seen(s, GalleryArt::Mob)),
+        (GalleryArt::Tender, "TENDER", "It puts the Belt back",
+         "It doesn't shoot at me. It finds two pieces of what I've already broken, takes hold of both with a beam, and drags them together until they're one rock again. I watched it undo a minute of work in under three seconds. Shoot the drone or shoot either piece and the weld fails - but leave it alone and the field stops shrinking. Something out here MAINTAINS this. That's the part I can't get past.", gallery_seen(s, GalleryArt::Tender)),
         (GalleryArt::Well, "GRAVITY WELL", "The warp, inverted", "A pocket of pull that opens without warning and drags the ship instead of the rocks. It's weaker than my thrust, so I can always climb out - the danger is what it does to a dodge I'd already committed to. Same shape as my own warp. Someone else has the technology, and they're using it on me.", gallery_seen(s, GalleryArt::Well)),
         (GalleryArt::Boss(BossKind::Warden), "THE WARDEN", "Keeper - Belt station 1", "It had the rocks penned on its arms, wheeling them around itself like stock, and it threw them at me rather than let me through. The shield ate almost everything I fired. Since when does a belt need a keeper? Its wreck gave up the chain beam.", gallery_seen(s, GalleryArt::Boss(BossKind::Warden))),
         (GalleryArt::Boss(BossKind::Devourer), "THE GLUTTON", "Keeper - Belt station 2", "It hunted the field and wore what it ate, healing as it grew. Starve it or overfeed it - past a certain point it can't hold what it's swallowed and comes apart. The debris it shed assayed as core minerals and mantle iron. That was the day I stopped believing these were asteroids.", gallery_seen(s, GalleryArt::Boss(BossKind::Devourer))),
@@ -8706,16 +9085,19 @@ fn gallery_entries(s: &Stats) -> Vec<(GalleryArt, &'static str, &'static str, &'
 // Persists ONLY on a change, so this never touches the disk on a normal frame.
 fn gallery_sightings(
     mut stats: ResMut<Stats>,
-    rocks: Query<(Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, &Asteroid)>,
+    rocks: Query<(Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>, &Asteroid)>,
     mines: Query<(), With<Mine>>,
     mobs: Query<(), With<Enemy>>,
+    tenders: Query<(), With<Tender>>,
     wells: Query<(), With<Well>>,
 ) {
     let mut fresh = false;
-    for (gold, explosive, pulser, red, cluster, beacon, hunter, a) in &rocks {
+    for (gold, explosive, pulser, red, cluster, beacon, hunter, lapse, a) in &rocks {
         // one rock, one subject — mirrors `credit_rock_kill`'s priority so the tags can't double up
         let art = if gold.is_some() {
             GalleryArt::Gold
+        } else if lapse.is_some() {
+            GalleryArt::Rock(RockKind::Lapse)
         } else if hunter.is_some() {
             GalleryArt::Rock(RockKind::Hunter)
         } else if beacon.is_some() {
@@ -8740,6 +9122,9 @@ fn gallery_sightings(
     }
     if !mobs.is_empty() {
         fresh |= mark_seen(&mut stats, GalleryArt::Mob);
+    }
+    if !tenders.is_empty() {
+        fresh |= mark_seen(&mut stats, GalleryArt::Tender);
     }
     if !wells.is_empty() {
         fresh |= mark_seen(&mut stats, GalleryArt::Well);
@@ -8800,6 +9185,7 @@ fn draw_gallery_art(gizmos: &mut Gizmos, c: Vec2, t: f32, art: GalleryArt) {
                 RockKind::Blue => rock_color(),
                 RockKind::Green => dense_color(),
                 RockKind::Hunter => hunter_color(),
+                RockKind::Lapse => lapse_color(),
                 RockKind::Orange => orange_color(),
                 RockKind::Pulser => Color::srgb(6.0, 6.2, 7.0),
                 RockKind::Red => red_color(),
@@ -8843,6 +9229,13 @@ fn draw_gallery_art(gizmos: &mut Gizmos, c: Vec2, t: f32, art: GalleryArt) {
                         gizmos.linestrip_2d(gallery_rock_ring(c + Vec2::from_angle(a) * r * 1.7, 13.0), dim(col, 0.6));
                     }
                 }
+                RockKind::Lapse => {
+                    // caught mid-dissolve: the solid arc on one side, the ghost of it on the other
+                    let ring = gallery_rock_ring(c, r);
+                    let half = ring.len() / 2;
+                    gizmos.linestrip_2d(ring[..half].to_vec(), dim(col, 0.25));
+                    gizmos.linestrip_2d(gallery_rock_ring(c, r * 0.55), dim(col, 0.45));
+                }
                 RockKind::Blue => {}
             }
         }
@@ -8859,6 +9252,27 @@ fn draw_gallery_art(gizmos: &mut Gizmos, c: Vec2, t: f32, art: GalleryArt) {
                 gizmos.line_2d(c + d * 34.0, c + d * 52.0, col); // the spikes
             }
             gizmos.circle_2d(Isometry2d::from_translation(c), 78.0, dim(col, 0.22)); // lethal reach
+        }
+        GalleryArt::Tender => {
+            let col = enemy_color();
+            let spin = t * 0.7;
+            let cage: Vec<Vec2> = (0..=6).map(|i| c + Vec2::from_angle(spin + i as f32 / 6.0 * TAU) * 34.0).collect();
+            gizmos.linestrip_2d(cage, col);
+            gizmos.circle_2d(Isometry2d::from_translation(c), 12.0, dim(col, 0.9));
+            for i in 0..3 {
+                let d = Vec2::from_angle(-spin * 1.4 + i as f32 / 3.0 * TAU);
+                gizmos.line_2d(c + d * 12.0, c + d * 32.0, dim(col, 0.75));
+            }
+            // two fragments under tow, mid-fusion — the whole mechanic in one picture
+            for s in [-1.0f32, 1.0] {
+                let to = c + Vec2::new(s * 78.0, -6.0);
+                gizmos.linestrip_2d(gallery_rock_ring(to, 14.0), rock_color());
+                for k in [0, 2, 4] {
+                    let f0 = k as f32 / 6.0;
+                    let f1 = (k as f32 + 0.9) / 6.0;
+                    gizmos.line_2d(c + (to - c) * f0, c + (to - c) * f1, dim(col, 0.6));
+                }
+            }
         }
         GalleryArt::Mob => {
             let col = enemy_color();
@@ -9873,6 +10287,7 @@ fn main() {
         .insert_resource(LoreSeen::default())
         .insert_resource(SplashClock::default())
         .insert_resource(GalleryPage::default())
+        .insert_resource(TenderClock::default())
         .insert_resource(NewGamePlus::default())
         .insert_resource(PacifistWatch::default())
         .insert_resource(RunFlags::default())
@@ -9929,18 +10344,24 @@ fn main() {
                     aegis_tick, // death checks, so a shield that came back this tick can save you
                     ship_death,
                     mine_update,
+                    tender_update,
                     enemy_update,
                     enemy_bullets,
                     well_update,
-                    boss_director,
-                    boss_update,
-                    devourer_update,
-                    slinger_update,
-                    detonator_update,
-                    pulsar_update,
-                    phantom_update,
-                    boss_shield,
-                    shield_deflect,
+                    // the boss systems nested as one unit: Bevy caps a tuple at 20 systems, and
+                    // `.chain()` on the outer tuple still runs these in exactly this order
+                    (
+                        boss_director,
+                        boss_update,
+                        devourer_update,
+                        slinger_update,
+                        detonator_update,
+                        pulsar_update,
+                        phantom_update,
+                        boss_shield,
+                        shield_deflect,
+                    )
+                        .chain(),
                     chain_update,
                     pickup_update,
                     drone_update,
@@ -9956,15 +10377,14 @@ fn main() {
                     bullet_bounds,
                     collisions,
                     wave_timer,
-                    top_up_asteroids,
-                    top_up_mines,
-                    top_up_enemies,
-                    top_up_wells,
+                    // the spawners nested for the same 20-system tuple limit; order preserved
+                    (top_up_asteroids, top_up_mines, top_up_enemies, top_up_tenders, top_up_wells).chain(),
                     clear_calm_field,
                     gold_spawn,
                     gold_rush_update,
                     red_growth,
                     hunter_update,
+                    lapse_update,
                     gallery_sightings,
                     detonate,
                 )
@@ -12102,6 +12522,7 @@ mod tests {
                 RockKind::Cluster => cluster += 1,
                 RockKind::Beacon => beacon += 1,
                 RockKind::Hunter => hunter += 1,
+                RockKind::Lapse => panic!("the Lapse is NG+-only and must never appear in the base finale mix"),
             }
         }
         for (name, n) in [("blue", blue), ("green", green), ("orange", orange), ("pulser", pulser), ("red", red), ("cluster", cluster), ("beacon", beacon), ("hunter", hunter)] {
@@ -12121,8 +12542,10 @@ mod tests {
                     RockKind::Green => green += 1,
                     RockKind::Orange => orange += 1,
                     RockKind::Pulser => pulser += 1,
-                    // Hunter (Act I) + the Act III-only kinds; covered by their own tests
+                    // Hunter (Act I) + the Act III-only kinds; covered by their own tests. The Lapse is
+                    // NG+-only, so a base-game roll must never produce one.
                     RockKind::Hunter | RockKind::Red | RockKind::Cluster | RockKind::Beacon => {}
+                    RockKind::Lapse => panic!("the Lapse is NG+-only and must never appear in a base-game wave"),
                 }
             }
             (blue, green, orange, pulser)
@@ -12262,6 +12685,140 @@ mod tests {
     }
 
     #[test]
+    fn a_tender_fuses_two_fragments_back_into_one_rock() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_event::<SoundFx>();
+        app.insert_resource(Score(0));
+        app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
+        // an ARRIVED tender with two small fragments in reach
+        let tender = app
+            .world_mut()
+            .spawn((
+                Tender { life: TENDER_LIFETIME, entered: true, fleeing: false, cool: 0.0, job: None, progress: 0.0 },
+                Velocity(Vec2::ZERO),
+                Transform::from_xyz(0.0, 0.0, 0.0),
+            ))
+            .id();
+        // placed already close enough to weld, so the fusion resolves on the proximity branch —
+        // MinimalPlugins barely advances the clock, so a dt-driven timer would never elapse here
+        for x in [-15.0f32, 15.0] {
+            app.world_mut().spawn((
+                Asteroid { size: 1, verts: vec![Vec2::X * 22.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+                Velocity(Vec2::ZERO),
+                Transform::from_xyz(x, 0.0, 0.0),
+            ));
+        }
+        app.add_systems(Update, tender_update);
+        app.update(); // picks up the job
+        assert!(app.world().entity(tender).get::<Tender>().unwrap().job.is_some(), "it locks onto a pair of fragments");
+        app.update(); // hauls + welds
+        let sizes: Vec<u8> = {
+            let mut q = app.world_mut().query::<&Asteroid>();
+            q.iter(app.world()).map(|a| a.size).collect()
+        };
+        assert_eq!(sizes, vec![2], "two smalls became one MID rock — a split, run backwards");
+        assert!(app.world().entity(tender).get::<Tender>().unwrap().job.is_none(), "and the job cleared");
+
+        // INTERRUPTION: kill one fragment mid-haul and the weld fails
+        let mut app2 = App::new();
+        app2.add_plugins(MinimalPlugins);
+        app2.add_event::<SoundFx>();
+        app2.insert_resource(Score(0));
+        app2.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
+        let t2 = app2
+            .world_mut()
+            .spawn((
+                Tender { life: TENDER_LIFETIME, entered: true, fleeing: false, cool: 0.0, job: None, progress: 0.0 },
+                Velocity(Vec2::ZERO),
+                Transform::from_xyz(0.0, 0.0, 0.0),
+            ))
+            .id();
+        let mut frags = vec![];
+        for x in [-120.0f32, 120.0] {
+            frags.push(
+                app2.world_mut()
+                    .spawn((
+                        Asteroid { size: 1, verts: vec![Vec2::X * 22.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+                        Velocity(Vec2::ZERO),
+                        Transform::from_xyz(x, 0.0, 0.0),
+                    ))
+                    .id(),
+            );
+        }
+        app2.add_systems(Update, tender_update);
+        app2.update();
+        assert!(app2.world().entity(t2).get::<Tender>().unwrap().job.is_some());
+        app2.world_mut().entity_mut(frags[0]).despawn(); // shoot one out from under it
+        app2.update();
+        let td = app2.world().entity(t2).get::<Tender>().unwrap();
+        assert!(td.job.is_none() && td.progress == 0.0, "destroying either fragment aborts the fusion");
+        assert_eq!(app2.world_mut().query::<&Asteroid>().iter(app2.world()).count(), 1, "and nothing was welded");
+    }
+
+    #[test]
+    fn a_lapse_rock_is_harmless_and_unhittable_until_it_is_really_there() {
+        // THE FAIRNESS CONTRACT: absent or still materializing = it cannot kill you and you cannot
+        // hit it. That's what makes a rock reappearing on your hull always avoidable rather than a
+        // cheap death, so it's worth pinning hard.
+        assert!(Lapse { phase: LapsePhase::Solid, t: 1.0 }.tangible(), "solid is dangerous");
+        assert!(Lapse { phase: LapsePhase::FadingOut, t: 1.0 }.tangible(), "still on its way out, still solid");
+        assert!(!Lapse { phase: LapsePhase::Gone, t: 1.0 }.tangible(), "absent is harmless");
+        assert!(!Lapse { phase: LapsePhase::FadingIn, t: 1.0 }.tangible(), "MATERIALIZING is harmless — the telegraph is free");
+
+        // an ABSENT rock sitting on the ship does not kill it…
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_event::<SoundFx>();
+        app.insert_resource(NextState::<GameState>::default());
+        app.insert_resource(Dev::default());
+        app.insert_resource(Run { lives: 3, ..default() });
+        app.world_mut().spawn((Ship { angle: 0.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0)));
+        let rock = app
+            .world_mut()
+            .spawn((
+                Asteroid { size: 2, verts: vec![Vec2::X * 40.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+                Lapse { phase: LapsePhase::Gone, t: 5.0 },
+                Velocity(Vec2::ZERO),
+                Transform::from_xyz(0.0, 0.0, 0.0),
+            ))
+            .id();
+        app.add_systems(Update, ship_death);
+        app.update();
+        assert_eq!(app.world().resource::<Run>().lives, 3, "an absent lapse rock cannot kill");
+        // …and neither does one that's only halfway back
+        app.world_mut().entity_mut(rock).insert(Lapse { phase: LapsePhase::FadingIn, t: LAPSE_FADE_IN * 0.5 });
+        app.update();
+        assert_eq!(app.world().resource::<Run>().lives, 3, "a materializing lapse rock cannot kill either");
+        // once it's solid, it's a rock like any other
+        app.world_mut().entity_mut(rock).insert(Lapse { phase: LapsePhase::Solid, t: 5.0 });
+        app.update();
+        assert_eq!(app.world().resource::<Run>().lives, 2, "solid again = lethal again");
+    }
+
+    #[test]
+    fn the_lapse_phase_clock_cycles_in_order() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        let e = app.world_mut().spawn(Lapse { phase: LapsePhase::Solid, t: 0.0 }).id();
+        app.add_systems(Update, lapse_update);
+        // each tick with an expired timer advances exactly one phase, in cycle order
+        for expect in [LapsePhase::FadingOut, LapsePhase::Gone, LapsePhase::FadingIn, LapsePhase::Solid] {
+            app.update();
+            assert!(app.world().entity(e).get::<Lapse>().unwrap().phase == expect, "phases advance in order");
+            app.world_mut().entity_mut(e).get_mut::<Lapse>().unwrap().t = 0.0; // expire it again
+        }
+        // and every phase it lands in has a real, positive duration (no zero-length flicker)
+        app.world_mut().entity_mut(e).insert(Lapse { phase: LapsePhase::Solid, t: 0.0 });
+        for _ in 0..4 {
+            app.update();
+            let l = *app.world().entity(e).get::<Lapse>().unwrap();
+            assert!(l.t > 0.5, "every phase lasts long enough to read (got {})", l.t);
+            app.world_mut().entity_mut(e).get_mut::<Lapse>().unwrap().t = 0.0;
+        }
+    }
+
+    #[test]
     fn a_hunter_chases_the_ship_and_ramps_up() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
@@ -12308,9 +12865,17 @@ mod tests {
         for level in [11, 14, 19, 23, 26] {
             assert_eq!(count(level, 300, &mut rng), 0, "no hunters in wave {level} — Act I owns them");
         }
-        // NEW GAME+ retires the OLD roster after wave 5 instead: lap two runs the new bestiary
-        let ngp = (0..300).filter(|_| matches!(roll_rock_kind(12, true, &mut rng), RockKind::Hunter)).count();
-        assert_eq!(ngp, 300, "NG+ past wave 5 is the new roster only (hunters, for now)");
+        // NEW GAME+ retires the OLD roster after wave 5 instead: lap two runs the new bestiary, and
+        // EVERY roll past wave 5 must come from it — no old-roster rock may leak back in.
+        let (mut hunters, mut lapses) = (0, 0);
+        for _ in 0..600 {
+            match roll_rock_kind(12, true, &mut rng) {
+                RockKind::Hunter => hunters += 1,
+                RockKind::Lapse => lapses += 1,
+                other => panic!("an OLD-roster rock leaked into NG+ past wave 5: {:?}", other as u8),
+            }
+        }
+        assert!(hunters > 0 && lapses > 0, "the NG+ bestiary mixes its types ({hunters} hunters / {lapses} lapses)");
     }
 
     #[test]
