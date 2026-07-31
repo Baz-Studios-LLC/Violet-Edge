@@ -10,14 +10,22 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
   one **grinds a rock that would have killed you** — vaporized, no chunks. It is deliberately *not*
   invincibility: every save spends a shard, they regrow **one at a time on an 11s cooldown**, and
   with the ring empty the next rock kills you as usual. The thinning ring is its own readout, so
-  there's no HUD slot to read. Dropped *alongside* the usual Chain orb (the beam is still Act III's
-  answer to beacons), thrown the opposite way so both orbs are catchable in the post-boss calm.
+  there's no HUD slot to read. It replaces the Chain orb on lap two rather than joining it — one orb
+  per boss keeps the calm readable, and NG+ has no beacons past wave 5 for the beam to answer.
 - **THE HUNTER — a new asteroid, debuting wave 6.** The first rock that comes *after you*: it steers
   at your ship and gets hungrier the longer it lives, so you can't park and farm. It's always
   outrunnable (capped well under your top speed) and breaking one **resets the hunt** — the chunks
   inherit it but start docile, so a split really does buy breathing room. Wave 6 is its teaching
   wave, it garnishes 7-9, and it retires with Act I at wave 10. It joins the wave-30 all-types
   finale, and has its own achievement (**Who's the Prey Now** — 350 hunters).
+- **THE GALLERY — a bestiary in the menu.** Every rock, hazard and boss gets its **own page** (18 of
+  them), drawn large as real vector art from the same canonical body functions the fights use, with
+  a name, a role line and a proper description of how the thing behaves. Pages open as you
+  *encounter* things — derived from the progress the game already saves, so there are no new save
+  fields and long-standing saves fill in correctly (boss flags count as proof of depth, since the
+  per-type counters are newer). Unmet entries show a dim silhouette. Page with A/D or the arrows.
+  One-per-page also settles the palette question: several entities share a hue because the neon
+  spectrum is full, and on separate pages they're never compared side by side.
 - **NEW GAME+ sheds the old roster after wave 5.** Lap two opens on a greatest-hits mix through
   wave 5, then retires every rock the first lap taught you and runs a new bestiary instead.
   ⚠️ Only the Hunter exists so far, so NG+ waves 6-30 are currently a single-type field — each new

@@ -903,6 +903,7 @@ enum GameState {
     Menu,
     Achievements, // the achievements screen, reached from the main menu
     Lore,         // the lore archive — entries decrypt as bosses fall (reached from the main menu)
+    Gallery,      // the BESTIARY — one page per rock/hazard/boss, unlocked as you meet them
     Controls,     // input method + key/button rebinding, reached from the main menu
     Briefing,     // the lore + objectives screen, reached from the main menu
     Playing,
@@ -1385,6 +1386,9 @@ enum MenuAction {
     Controls, // main menu → the controls / input-rebinding screen
     Briefing,
     Lore, // main menu → the lore archive
+    Gallery, // main menu → the bestiary
+    PageNext, // gallery paging
+    PagePrev,
     Back,   // return to the main menu from a sub-screen
     Resume, // pause menu → back to the game
     Quit,   // pause menu → abandon the run to the main menu
@@ -4490,22 +4494,16 @@ fn boss_update(
                 // calm or lose it until the next cycle. (Checked before the level-up.)
                 if content_wave(wave.level) == BOSS_WAVE_INTERVAL {
                     let dir = Vec2::from_angle(rng.gen_range(0.0..TAU));
+                    // ONE orb per boss, always. Lap one gives the chain beam; NEW GAME+ gives the
+                    // AEGIS SHARDS *instead* (user call — two orbs on the field read as clutter).
+                    // Losing the beam costs NG+ nothing: its roster retires after wave 5, so there
+                    // are no beacons for the beam to answer on lap two.
+                    let kind = if plus.0 { PickupKind::Aegis } else { PickupKind::Chain };
                     commands.spawn((
-                        Pickup { rot: 0.0, pulse: 0.0, life: PICKUP_LIFE, kind: PickupKind::Chain },
+                        Pickup { rot: 0.0, pulse: 0.0, life: PICKUP_LIFE, kind },
                         Velocity(dir * PICKUP_DRIFT),
                         Transform::from_xyz(0.0, 0.0, 0.0),
                     ));
-                    // NEW GAME+ ONLY: the WARDEN+ also gives up its own trick — the AEGIS SHARDS.
-                    // Dropped ALONGSIDE the chain (not instead of it: the beam is Act III's answer to
-                    // beacons, so losing it would gut the late run), thrown the opposite way so both
-                    // orbs are reachable inside the post-boss calm. This is lap two's exclusive kit.
-                    if plus.0 {
-                        commands.spawn((
-                            Pickup { rot: 0.0, pulse: 0.0, life: PICKUP_LIFE, kind: PickupKind::Aegis },
-                            Velocity(-dir * PICKUP_DRIFT),
-                            Transform::from_xyz(0.0, 0.0, 0.0),
-                        ));
-                    }
                 }
                 stats.warden = true; // achievement: defeated the Warden
                 sfx.write(SoundFx::BossDown);
@@ -7613,7 +7611,7 @@ fn pause_toggle(
                 next.set(GameState::Menu); // quit the run → OnEnter(Menu) wipes the field
             }
         }
-        GameState::Splash | GameState::Menu | GameState::Achievements | GameState::Lore | GameState::Controls | GameState::Briefing | GameState::GameOver | GameState::Victory => {}
+        GameState::Splash | GameState::Menu | GameState::Achievements | GameState::Lore | GameState::Gallery | GameState::Controls | GameState::Briefing | GameState::GameOver | GameState::Victory => {}
     }
 }
 
@@ -8048,6 +8046,10 @@ fn menu_start(
         next.set(GameState::Lore);
         return;
     }
+    if keys.just_pressed(KeyCode::KeyG) || actions.contains(&MenuAction::Gallery) {
+        next.set(GameState::Gallery);
+        return;
+    }
     // Play: Enter/Space or the button. NEW GAME+ is BUTTON-ONLY (no shortcut) — deliberate friction:
     // the second lap is chosen, never stumbled into. Keyboard launch is always a normal run.
     let play_plus = actions.contains(&MenuAction::PlayPlus);
@@ -8136,6 +8138,8 @@ fn spawn_menu_ui(mut commands: Commands, achieved: Res<Achievements>, stats: Res
         menu_button(p, f, MenuAction::Controls, "CONTROLS");
         menu_button(p, f, MenuAction::Briefing, "BRIEFING");
         menu_button(p, f, MenuAction::Lore, &format!("PILOT LOG  ({lore_n} / 8)"));
+        let gal = gallery_entries(&stats);
+        menu_button(p, f, MenuAction::Gallery, &format!("GALLERY  ({} / {})", gal.iter().filter(|e| e.4).count(), gal.len()));
         menu_button(p, f, MenuAction::Achievements, &format!("ACHIEVEMENTS  ({done} / {})", ACHIEVEMENTS.len()));
         if best > 0 {
             p.spawn((text_f(f, 18.0, Color::srgb(0.72, 0.76, 0.95), &format!("BEST   {best}")), Node { margin: UiRect::top(Val::Px(8.0)), ..default() }));
@@ -8558,6 +8562,309 @@ fn controls_input(
 // Read-only sub-screens (achievements / briefing): Esc/Enter or the Back button returns to the main
 // menu. Runs only in those states, so it never interferes with gameplay input. (Controls has its own
 // handler, controls_input, because it also owns rebind-capture and input-method buttons.)
+// ─────────────────────────────── the GALLERY (bestiary) ───────────────
+// Every rock, hazard and boss in the game, ONE PER PAGE (user call): a page each means each thing is
+// drawn big from its own canonical body fn, and no two entries are ever side by side — which is also
+// the answer to the palette problem (the neon spectrum is full, so several entities share a hue; in
+// a grid that reads as a mistake, on separate pages it never comes up). Unlock state is DERIVED from
+// the lifetime Stats we already persist — no new save fields: if you've broken one/killed one/beaten
+// one, its page is open.
+#[derive(Resource, Default)]
+struct GalleryPage(usize);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GalleryArt {
+    Rock(RockKind),
+    Gold,
+    Mine,
+    Well,
+    Mob,
+    Boss(BossKind),
+}
+
+// How deep this save has ever been. `best_wave` only started recording in v0.4.5, so the BOSS FLAGS
+// (which are older) are also read as proof of depth — otherwise a long-standing save looks like it
+// never met the rocks it has obviously fought.
+fn gallery_reached(s: &Stats) -> u32 {
+    let mut deep = s.best_wave;
+    for (flag, wave) in [(s.warden, 5), (s.glutton, 10), (s.slinger, 15), (s.detonator, 20), (s.pulsar, 25), (s.phantom, 30)] {
+        if flag {
+            deep = deep.max(wave);
+        }
+    }
+    deep
+}
+
+// (art, name, one-line role, the long description, unlocked?)
+// A page opens once you've ENCOUNTERED the thing — the user's word was "introduced" — so the test is
+// either a lifetime kill counter OR having flown past the wave it debuts on. Depth alone is enough:
+// you don't have to have killed one to have met it, and it means the book fills in honestly for
+// saves older than the per-type counters.
+fn gallery_entries(s: &Stats) -> Vec<(GalleryArt, &'static str, &'static str, &'static str, bool)> {
+    let deep = gallery_reached(s);
+    let met = |kills: u32, debut: u32| kills > 0 || deep >= debut;
+    vec![
+        (GalleryArt::Rock(RockKind::Blue), "DRIFT ROCK", "The Belt's bones", "The plain stuff, and most of what you'll ever shoot. One hit from anything breaks it. Act I only — by wave 11 the Belt has stopped sending anything this simple.", met(s.blue, 1)),
+        (GalleryArt::Rock(RockKind::Green), "DENSE ROCK", "Tanky", "Packed tight: it takes a hit per size before it cracks, and its chunks stay dense. The mass shot was built for these. Bridges Act I into Act II, then retires at wave 20.", met(s.green, 7)),
+        (GalleryArt::Rock(RockKind::Hunter), "HUNTER", "It comes to you", "The first rock that hunts. It steers at your ship and drives harder the longer it lives, so you can't sit still and farm — but it's always slower than you are, and breaking it resets the chase: the chunks inherit the hunt and start docile. Debuts wave 6.", met(s.hunter, 6)),
+        (GalleryArt::Rock(RockKind::Orange), "EXPLOSIVE", "Don't stand near it", "Doesn't split — DETONATES, after a short fuse, in a blast that obliterates everything inside it and lights other oranges. Anything can set it off, including a mine or your own beam. Act II, peaking at wave 14.", met(s.orange, 11)),
+        (GalleryArt::Rock(RockKind::Pulser), "PULSER", "Timing", "Beats between lit and dark on its own slow clock. While it's LIT nothing touches it — shots fizzle white. Hit it on the dark beat. Its fragments keep their own beats. Debuts wave 16.", met(s.pulser, 16)),
+        (GalleryArt::Rock(RockKind::Red), "GROWER", "Eats the field", "Absorbs nearby rocks — other growers included — and swells a size each time. Soft, but a plain shot splits it into MORE growers, and those eat their way back up. Mass, warhead, chain or a mine kills one outright. Act III's backbone.", met(s.red, 21)),
+        (GalleryArt::Rock(RockKind::Cluster), "CLUSTER", "Shatters", "Fractured through: break it and it bursts into a ring of tiny fast shards instead of two chunks, so point-blank kills punish you. The mass shot vaporizes it clean and the warp swallows it whole. Debuts wave 26.", met(s.cluster, 26)),
+        (GalleryArt::Rock(RockKind::Beacon), "BEACON", "Shields the others", "Projects an aura: every rock inside it is immune to guns and the beam until the beacon itself falls. Blasts, the warp and grower-absorption ignore the aura. It turns a field into a question of what to shoot FIRST. Debuts wave 23.", met(s.beacon, 23)),
+        (GalleryArt::Gold, "LIFE ROCK", "Reward", "Not a threat — a spare life, shimmering gold. Destroy the WHOLE lineage, it and every fragment, and you get it. Let a piece drift off the edge and the life is forfeit. Only your shots can break it: mines bounce, the Glutton won't eat it.", met(s.golds, 2)),
+        (GalleryArt::Mine, "MINE", "Proximity", "Drifts, arms when you're close, and detonates on a short fuse — the blast is small but lethal. Shooting one sets it off too, and the blast shatters every rock in reach. Points for the mine; none for the rubble.", met(s.mines, 2)),
+        (GalleryArt::Mob, "RAIDER", "Shoots back", "A small gunship that hovers at range and fires slow, dodgeable shots. It steers around rocks and bugs out if it lingers too long. Never many at once — the asteroids are the real fight.", met(s.enemies, 3)),
+        (GalleryArt::Well, "GRAVITY WELL", "Pulls you", "An anti-warp: it drags your SHIP toward it. Deliberately weaker than your thrust, so you can always fly out — the danger is what it does to your dodging, not the well itself. Pops in and collapses. Waves 18+.", deep >= 18),
+        (GalleryArt::Boss(BossKind::Warden), "THE WARDEN", "Boss 1 — wave 5", "Pens the field's rocks onto rotating arms and hurls them at you. The shield eats most shots, so you break the arms or catch the core between throws. Its fall leaves the chain beam.", s.warden),
+        (GalleryArt::Boss(BossKind::Devourer), "THE GLUTTON", "Boss 2 — wave 10", "Hunts rocks to eat, growing and healing with every one. Starve it or outpace it: gorge it far enough and it overloads and bursts. Its fall leaves the mass shot.", s.glutton),
+        (GalleryArt::Boss(BossKind::Slinger), "THE SLINGER", "Boss 3 — wave 15", "A gunship that doesn't throw rocks — it LOADS them, aims, and fires. Its core is exposed the whole fight; surviving the barrage is the fight. Its fall leaves the drone.", s.slinger),
+        (GalleryArt::Boss(BossKind::Detonator), "THE DETONATOR", "Boss 4 — wave 20", "Armored except while it's priming a rock into a bomb. Those windows are your only opening, and the bombs it leaves are the arena. Its fall leaves the warhead rounds.", s.detonator),
+        (GalleryArt::Boss(BossKind::Pulsar), "THE PULSAR", "Boss 5 — wave 25", "Beats like the rock that carries its name: invulnerable while lit, open while dark, and shockwaving the whole field outward on the pulse. Its fall leaves the Nova shield.", s.pulsar),
+        (GalleryArt::Boss(BossKind::Phantom), "THE PHANTOM", "Boss 6 — wave 30", "The steersman. Three forms, each harder than anything before it: it possesses the field, tears the arena with a ray, and charges when it's desperate. Break it and the Belt goes still.", s.phantom),
+    ]
+}
+
+// The gallery's rock silhouette: ONE deterministic jagged ring so every rock page is drawn at the
+// same recognisable shape and only its colour + signature marks differ (the field's rocks are random
+// per-spawn, which is wrong for a reference page).
+fn gallery_rock_ring(c: Vec2, r: f32) -> Vec<Vec2> {
+    let bumps = [1.0f32, 0.86, 1.05, 0.9, 1.0, 0.82, 1.08, 0.92, 0.98];
+    let mut pts: Vec<Vec2> = (0..bumps.len())
+        .map(|i| {
+            let a = i as f32 / bumps.len() as f32 * TAU;
+            c + Vec2::from_angle(a) * r * bumps[i]
+        })
+        .collect();
+    if let Some(f) = pts.first().copied() {
+        pts.push(f);
+    }
+    pts
+}
+
+// Draw one gallery entry's ART, centered on `c`. Bosses reuse their CANONICAL body fns — the exact
+// silhouettes the fight, the warning banner and the background cameo all share, so the reference can
+// never drift from the real thing. Rocks use the shared gallery ring plus that type's signature
+// marks (the hunter's tracking eye, the beacon's aura, the pulser's shield ring, and so on).
+fn draw_gallery_art(gizmos: &mut Gizmos, c: Vec2, t: f32, art: GalleryArt) {
+    match art {
+        GalleryArt::Boss(k) => {
+            let col = boss_kind_color(k);
+            let r = 74.0;
+            match k {
+                BossKind::Warden => {
+                    draw_warden_body(gizmos, c, r, t, Vec2::from_angle(t * 0.6), col);
+                    // a couple of penned rocks on the arms, so its whole trick reads at a glance
+                    for i in 0..2 {
+                        let a = t * 0.5 + i as f32 * TAU / 2.0;
+                        gizmos.linestrip_2d(gallery_rock_ring(c + Vec2::from_angle(a) * r * 1.6, 15.0), rock_color());
+                    }
+                }
+                BossKind::Devourer => draw_glutton_body(gizmos, c, r, t, 0.0, 0.45, col),
+                BossKind::Slinger => draw_slinger_body(gizmos, c, Vec2::from_angle(-TAU / 4.0), r * 0.95, t, 0.0, 1.0, col),
+                BossKind::Detonator => draw_detonator_body(gizmos, c, r, t, 0.35, 6, col),
+                BossKind::Pulsar => draw_pulsar_body(gizmos, c, r, t, 0.5, 8, col),
+                BossKind::Phantom => draw_haunt_skull(gizmos, c, r * 0.92, col, 0.8, t, true, 0.45),
+            }
+        }
+        GalleryArt::Rock(kind) => {
+            let r = 58.0;
+            let col = match kind {
+                RockKind::Blue => rock_color(),
+                RockKind::Green => dense_color(),
+                RockKind::Hunter => hunter_color(),
+                RockKind::Orange => orange_color(),
+                RockKind::Pulser => Color::srgb(6.0, 6.2, 7.0),
+                RockKind::Red => red_color(),
+                RockKind::Cluster => cluster_color(),
+                RockKind::Beacon => beacon_color(),
+            };
+            gizmos.linestrip_2d(gallery_rock_ring(c, r), col);
+            match kind {
+                RockKind::Green => {
+                    gizmos.linestrip_2d(gallery_rock_ring(c, r * 0.62), col); // the hp core ring
+                }
+                RockKind::Hunter => {
+                    // THE EYE — the signature, aimed at the viewer's side of the page
+                    let look = Vec2::from_angle(t * 0.8);
+                    let eye = c + look * r * 0.34;
+                    let er = r * 0.15;
+                    gizmos.circle_2d(Isometry2d::from_translation(eye), er, Color::srgb(7.0, 5.6, 4.6));
+                    gizmos.circle_2d(Isometry2d::from_translation(eye), er * 0.45, Color::srgb(9.0, 2.0, 1.0));
+                    gizmos.line_2d(eye + look * er * 1.4, eye + look * er * 2.6, dim(col, 0.85));
+                }
+                RockKind::Orange => {
+                    gizmos.circle_2d(Isometry2d::from_translation(c), r * 1.9, dim(orange_color(), 0.2)); // blast reach
+                }
+                RockKind::Pulser => {
+                    gizmos.linestrip_2d(gallery_rock_ring(c, r * 0.55), col); // the lit shield ring
+                }
+                RockKind::Cluster => {
+                    let ring = gallery_rock_ring(c, r);
+                    for k in [0usize, 2, 4] {
+                        gizmos.line_2d(ring[k], ring[(k + ring.len() / 2) % (ring.len() - 1)], dim(col, 0.7)); // fractures
+                    }
+                }
+                RockKind::Beacon => {
+                    gizmos.circle_2d(Isometry2d::from_translation(c), r * 2.3, dim(col, 0.28)); // the aura
+                    gizmos.linestrip_2d(gallery_rock_ring(c, r * 0.5), col);
+                }
+                RockKind::Red => {
+                    // two smaller rocks being drawn in — the growth read
+                    for i in 0..2 {
+                        let a = t * 0.7 + i as f32 * TAU / 2.0;
+                        gizmos.linestrip_2d(gallery_rock_ring(c + Vec2::from_angle(a) * r * 1.7, 13.0), dim(col, 0.6));
+                    }
+                }
+                RockKind::Blue => {}
+            }
+        }
+        GalleryArt::Gold => {
+            let g = dim(gold_color(), 0.75 + 0.25 * (t * 2.0).sin());
+            gizmos.linestrip_2d(gallery_rock_ring(c, 58.0), g);
+            gizmos.linestrip_2d(gallery_rock_ring(c, 34.0), g);
+        }
+        GalleryArt::Mine => {
+            let col = mine_color();
+            gizmos.circle_2d(Isometry2d::from_translation(c), 34.0, col);
+            for i in 0..8 {
+                let d = Vec2::from_angle(i as f32 / 8.0 * TAU + t * 0.4);
+                gizmos.line_2d(c + d * 34.0, c + d * 52.0, col); // the spikes
+            }
+            gizmos.circle_2d(Isometry2d::from_translation(c), 78.0, dim(col, 0.22)); // lethal reach
+        }
+        GalleryArt::Mob => {
+            let col = enemy_color();
+            let rot = Vec2::from_angle(-TAU / 4.0);
+            let hull = [Vec2::new(0.0, 30.0), Vec2::new(24.0, -18.0), Vec2::new(0.0, -8.0), Vec2::new(-24.0, -18.0), Vec2::new(0.0, 30.0)];
+            gizmos.linestrip_2d(hull.map(|v| c + rot.rotate(v) * 1.3), col);
+        }
+        GalleryArt::Well => {
+            // the drain: arms spiralling into a tight core (material along the path, per the vortex rule)
+            let col = warp_color();
+            for arm in 0..3 {
+                let base = t * 0.9 + arm as f32 / 3.0 * TAU;
+                let pts: Vec<Vec2> = (0..26)
+                    .map(|i| {
+                        let f = i as f32 / 25.0;
+                        c + Vec2::from_angle(base + f * 3.2) * (10.0 + f * 62.0)
+                    })
+                    .collect();
+                gizmos.linestrip_2d(pts, dim(col, 0.9 - 0.4 * arm as f32 / 3.0));
+            }
+            gizmos.circle_2d(Isometry2d::from_translation(c), 11.0, col);
+        }
+    }
+}
+
+// The gallery's art layer: draws the current page's entry in world space, behind the UI text. Locked
+// entries get a dim question-mark silhouette instead — you can see the shape of what you haven't met.
+fn gallery_draw(time: Res<Time<Real>>, page: Res<GalleryPage>, stats: Res<Stats>, mut gizmos: Gizmos) {
+    let entries = gallery_entries(&stats);
+    let Some(&(art, .., unlocked)) = entries.get(page.0) else {
+        return;
+    };
+    let t = time.elapsed_secs();
+    let c = Vec2::new(0.0, GALLERY_ART_Y);
+    if unlocked {
+        draw_gallery_art(&mut gizmos, c, t, art);
+    } else {
+        // unmet: a dim shell, deliberately shapeless — meeting it is the reveal
+        let dimc = Color::srgb(0.35, 0.38, 0.5);
+        gizmos.circle_2d(Isometry2d::from_translation(c), 62.0, dimc);
+        gizmos.circle_2d(Isometry2d::from_translation(c), 30.0, dim(dimc, 0.5));
+    }
+}
+
+const GALLERY_ART_Y: f32 = 96.0; // world-space centre of the art, above the name/description block
+
+#[derive(Component)]
+struct GalleryUi;
+
+// The page: title + a gap the world-space art shows through + the entry's name, role and description.
+// Rebuilt on every page turn (cheap — one screen of text), so `gallery_page_turn` just moves the index
+// and re-enters the screen's spawn.
+fn spawn_gallery_ui(mut commands: Commands, page: Res<GalleryPage>, stats: Res<Stats>, font: Res<MenuFont>) {
+    spawn_frame(&mut commands, GalleryUi);
+    let root = overlay(&mut commands, GalleryUi, 0.3); // light — the art is drawn behind this
+    let f = &font.0;
+    let entries = gallery_entries(&stats);
+    let known = entries.iter().filter(|e| e.4).count();
+    let total = entries.len();
+    let i = page.0.min(total - 1);
+    let (_, name, role, desc, unlocked) = entries[i];
+    let body = Color::srgb(0.76, 0.8, 0.96);
+    let dimc = Color::srgb(0.45, 0.48, 0.6);
+    commands.entity(root).with_children(|p| {
+        p.spawn(text_f(f, 36.0, title_color(), "GALLERY"));
+        p.spawn(text_f(f, 13.0, dimc, &format!("Encountered {known} of {total}")));
+        // the gap the art occupies (world-space `gallery_draw` renders into this band)
+        p.spawn(Node { height: Val::Px(268.0), ..default() });
+        if unlocked {
+            p.spawn(text_f(f, 30.0, title_color(), name));
+            p.spawn(text_f(f, 14.0, dimc, role));
+        } else {
+            p.spawn(text_f(f, 30.0, dimc, "UNIDENTIFIED"));
+            p.spawn(text_f(f, 14.0, dimc, "Not yet encountered"));
+        }
+        // the description, wrapped to a fixed column so long entries never run off the frame
+        p.spawn(Node { width: Val::Px(600.0), margin: UiRect::top(Val::Px(8.0)), ..default() }).with_children(|d| {
+            let text = if unlocked { desc } else { "Fly far enough to meet it and this page fills itself in." };
+            d.spawn((text_f(f, 14.0, body, text), Node { width: Val::Px(600.0), ..default() }));
+        });
+        // paging row
+        p.spawn(Node {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(10.0),
+            margin: UiRect::top(Val::Px(10.0)),
+            ..default()
+        })
+        .with_children(|row| {
+            menu_button(row, f, MenuAction::PagePrev, "<  PREV");
+            row.spawn(text_f(f, 15.0, dimc, &format!("{} / {}", i + 1, total)));
+            menu_button(row, f, MenuAction::PageNext, "NEXT  >");
+        });
+        p.spawn(text_f(f, 12.0, dimc, "A / D  or  ← →  to turn pages"));
+        menu_button(p, f, MenuAction::Back, "BACK");
+    });
+}
+
+fn despawn_gallery_ui(mut commands: Commands, q: Query<Entity, With<GalleryUi>>) {
+    for e in &q {
+        commands.entity(e).despawn();
+    }
+}
+
+// Page turning: buttons, A/D, or the arrow keys. Wraps at both ends so you can spin through it, and
+// respawns the page UI in place (the art layer reads the same index, so both stay in step).
+fn gallery_page_turn(
+    mut commands: Commands,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut clicks: EventReader<MenuClick>,
+    mut page: ResMut<GalleryPage>,
+    stats: Res<Stats>,
+    font: Res<MenuFont>,
+    ui: Query<Entity, With<GalleryUi>>,
+) {
+    let actions: Vec<MenuAction> = clicks.read().map(|c| c.0).collect();
+    let fwd = actions.contains(&MenuAction::PageNext) || keys.just_pressed(KeyCode::KeyD) || keys.just_pressed(KeyCode::ArrowRight);
+    let back = actions.contains(&MenuAction::PagePrev) || keys.just_pressed(KeyCode::KeyA) || keys.just_pressed(KeyCode::ArrowLeft);
+    if !fwd && !back {
+        return;
+    }
+    let total = gallery_entries(&stats).len();
+    if fwd {
+        page.0 = (page.0 + 1) % total;
+    } else {
+        page.0 = (page.0 + total - 1) % total;
+    }
+    for e in &ui {
+        commands.entity(e).despawn(); // rebuild the page for the new entry
+    }
+    spawn_gallery_ui(commands, page.into(), stats, font);
+}
+
 fn submenu_back(
     keys: Res<ButtonInput<KeyCode>>,
     mut next: ResMut<NextState<GameState>>,
@@ -9432,6 +9739,7 @@ fn main() {
         .insert_resource(Achievements::default())
         .insert_resource(LoreSeen::default())
         .insert_resource(SplashClock::default())
+        .insert_resource(GalleryPage::default())
         .insert_resource(NewGamePlus::default())
         .insert_resource(PacifistWatch::default())
         .insert_resource(RunFlags::default())
@@ -9536,7 +9844,7 @@ fn main() {
         .add_systems(Update, menu_start.run_if(in_state(GameState::Menu)))
         .add_systems(
             Update,
-            submenu_back.run_if(in_state(GameState::Achievements).or(in_state(GameState::Briefing)).or(in_state(GameState::Lore))),
+            submenu_back.run_if(in_state(GameState::Achievements).or(in_state(GameState::Briefing)).or(in_state(GameState::Lore)).or(in_state(GameState::Gallery))),
         )
         .add_systems(Update, gameover_restart.run_if(in_state(GameState::GameOver)))
         .add_systems(Update, (victory_continue, victory_reveal).run_if(in_state(GameState::Victory)))
@@ -9553,6 +9861,9 @@ fn main() {
         .add_systems(Update, (controls_input, rebind_slot_click, rebind_capture, controls_display).run_if(in_state(GameState::Controls)))
         .add_systems(OnEnter(GameState::Briefing), spawn_briefing_ui)
         .add_systems(OnExit(GameState::Briefing), despawn_briefing_ui)
+        .add_systems(OnEnter(GameState::Gallery), spawn_gallery_ui)
+        .add_systems(OnExit(GameState::Gallery), despawn_gallery_ui)
+        .add_systems(Update, (gallery_draw, gallery_page_turn).run_if(in_state(GameState::Gallery)))
         .add_systems(OnEnter(GameState::Lore), spawn_lore_ui)
         .add_systems(OnExit(GameState::Lore), despawn_lore_ui)
         .add_systems(OnEnter(GameState::Paused), spawn_pause_ui)
@@ -11724,6 +12035,41 @@ mod tests {
         assert_eq!(mine_target(9, 100), 6, "deep waves hit the hard cap of 6, never a wall");
         assert_eq!(mine_target(31, 100), 0, "loop past 30: wave 31 = content 1 → no mines");
         assert_eq!(mine_target(32, 100), 1, "loop past 30: wave 32 = content 2 → back to 1");
+    }
+
+    #[test]
+    fn the_gallery_unlocks_from_the_save_it_already_keeps() {
+        // A virgin save shows nothing but silhouettes; each entry opens off the lifetime counters we
+        // ALREADY persist (no new save fields), and every page has real text behind it.
+        let fresh = gallery_entries(&Stats::default());
+        assert_eq!(fresh.iter().filter(|e| e.4).count(), 0, "a fresh pilot has met nothing");
+        assert!(fresh.len() >= 18, "every rock, hazard and boss gets a page, got {}", fresh.len());
+        for (_, name, role, desc, _) in &fresh {
+            assert!(!name.is_empty() && !role.is_empty(), "every page is titled");
+            assert!(desc.len() > 60, "'{name}' needs a real description, got {} chars", desc.len());
+        }
+        // spot-check the derivations across all three kinds of unlock
+        let hunted = gallery_entries(&Stats { hunter: 1, ..default() });
+        assert!(hunted.iter().any(|e| e.1 == "HUNTER" && e.4), "one hunter kill opens the hunter's page");
+        assert!(!hunted.iter().any(|e| e.1 == "BEACON" && e.4), "and nothing else");
+        let welled = gallery_entries(&Stats { best_wave: 18, ..default() });
+        assert!(welled.iter().any(|e| e.1 == "GRAVITY WELL" && e.4), "reaching wave 18 opens the well (it has no kill counter)");
+        assert!(welled.iter().any(|e| e.1 == "EXPLOSIVE" && e.4), "…and wave 18 means you've met the wave-11 explosive too");
+        assert!(!welled.iter().any(|e| e.1 == "CLUSTER" && e.4), "but not the wave-26 cluster");
+        let boss = gallery_entries(&Stats { phantom: true, ..default() });
+        assert!(boss.iter().any(|e| e.1 == "THE PHANTOM" && e.4), "beating a boss opens its page");
+        // LEGACY SAVES: the per-type counters postdate the boss flags, so depth-by-boss-flag must
+        // fill the book in — a save that beat the game shows every rock, counters or not.
+        let veteran = gallery_entries(&Stats { warden: true, glutton: true, slinger: true, detonator: true, pulsar: true, phantom: true, ..default() });
+        assert!(veteran.iter().all(|e| e.4), "a save that beat the game has met everything, even with zero per-type counters");
+        // a maxed save opens the whole book
+        let all = Stats {
+            blue: 1, green: 1, hunter: 1, orange: 1, pulser: 1, red: 1, cluster: 1, beacon: 1,
+            golds: 1, mines: 1, enemies: 1, best_wave: 30, warden: true, glutton: true,
+            slinger: true, detonator: true, pulsar: true, phantom: true, ..default()
+        };
+        let full = gallery_entries(&all);
+        assert!(full.iter().all(|e| e.4), "a complete save leaves no page locked");
     }
 
     #[test]
