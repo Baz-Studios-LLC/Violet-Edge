@@ -42,6 +42,7 @@ act's roster (10 = blue food, 20 = orange + green fodder, 25 = pure red).
 | **Pulser** | ✅ | Pulses bright white ↔ dim on its own **slow** beat (`PULSE_RATE`, ~3.7s, per-rock phase); **invulnerable while LIT** — bullets/chain/mine-blast all no-op on it (a shot fizzles with a white spark). Hit it on the **dark** beat. Breaks into **smaller pulsers** (a sustained timing puzzle, not inert rubble); internally dense so there's never any blue. Act II only: debuts 16 (all-pulser), retires with its act at 20 — the Pulsar boss carries the beat into Act III itself. `pulser_lit()` derives the beat from global time. |
 | **Cluster** | ✅ | Fractured pale-ICE rock (visible crack lines). Breaking it **SHATTERS it into a ring of ~7 tiny fast shards** instead of two chunks — point-blank shots become a bad habit; spacing matters. The **mass shot vaporizes it clean** (no shards) and the **warp swallows it whole** — the first rock where tool choice really matters. A mine-triggered shatter flings the ring even faster. Debuts wave 26 (splits Act III into two eras). |
 | **Beacon** | ✅ | Teal **aura warden** (`BEACON_AURA_R` = 270, up from 200 — big enough to own a region; the reach ring is drawn soft-but-legible): every non-beacon rock inside its aura is **immune to gunfire and the chain** until the beacon falls — the field becomes a target-ORDER puzzle (the pulser gates *when* you shoot; this gates *what you shoot first*). Warhead rounds fizzle inside it too (test-pinned); the beacon itself is always shootable. Blasts, the warp, and red-absorption bypass the aura (counterplay). Spawns dense (chips like a green), **never splits** — it dies clean. Rare (~10-12%/roll). Debuts wave 23, replacing green's retired tank role with something smarter. |
+| **Hunter** | ✅ | Vermillion **predator — the first rock that chases you**. Steers at the ship with `HUNTER_ACCEL`, and `charge` ramps 0→1 over `HUNTER_RAMP` (14s) scaling both the steering and the speed cap, so a fresh one drifts and a veteran bears down. Capped at `HUNTER_MAX_SPEED` (205) — **always outrunnable**, enforced by a compile-time `assert!(HUNTER_MAX_SPEED < MAX_SPEED)`; the pressure is that it never stops. Breaking one **resets the hunt**: chunks inherit the marker at charge 0. Boss-held (`Shielded`) rocks and cannonballs are exempt. Identity is the **tracking EYE** (the only one in the game) plus a body that brightens with charge — deliberately not hue-dependent, see *Palette* below. Act I: teaching wave 6 (0.7), garnish 7-9, retires at 10; joins the wave-30 finale mix. Own counter + achievement (*Who's the Prey Now*, 350). |
 | *Split economy* | ✅ | **(2026-07-31, user design)** Breaking a rock no longer guarantees two children: a LARGE sheds **1-2 mediums** (60% two), a MEDIUM sheds **2 smalls or dies clean** (55% split). Cuts a large's average lineage from 7 entities to ~4.4 — small debris stops silting the screen, and breaks have variance. Exempt: **gold** (the 1UP hunt's lineage length is tuned economy) and **red** (split-and-regrow IS its identity); the cluster keeps its own shatter rule. `split_children` in main.rs. |
 | **Gold (1UP)** | ✅ | Not a hazard — a *reward*. A rare shimmering gold rock that drifts in at random times during play (any wave, boss waves included). Destroy the **whole lineage** (it + every fragment) for +1 life. Its pieces get a **long grace** (`GOLD_GRACE`, they recycle) so they're never lost *immediately* — but after that a piece that drifts off is culled and the life is **forfeit**, so clear them before they scatter. **Only your shots break it** — mines bounce off, the Devourer won't eat it. See Life economy below. |
 
@@ -92,6 +93,7 @@ Each boss drops a powerup that echoes its own mechanic.
 | Glutton (W10) | **Mass Shot** | ✅ | fat, slow rounds that **destroy any rock in one hit, no chunks** (the field-clearing tool; only a bit stronger than standard vs bosses, and its slow rate keeps standard the better boss DPS) — the red Glutton gains *mass* |
 | Slinger (W15) | **Drone** | ✅ | an ally craft that orbits the ship a short distance out and auto-fires the player's Bullet at the nearest asteroid in range — mops up rocks you left behind (one per run) |
 | Detonator (W20) | **Warhead rounds** | ✅ | permanent passive — every primary shot makes the rock it hits **detonate & chain** in a **violet, player-SAFE blast** (gold is spared; your own boom won't kill you) — echoes the primed bombs |
+| **Warden+ (W5, NG+ ONLY)** | **Aegis Shards** | ✅ | The Warden pens rocks on orbital arms; this is that trick in your hands. `AEGIS_SHARDS` (3) **small** chips ride a slow orbit around the hull, positioned from the ship's transform each frame so they **move with it** (user's call), and each **grinds one would-be-fatal rock** — vaporized, no chunks, and deliberately **no score or kill credit** (a save, not a kill you earned; also kills any fly-into-rocks farming). NOT invincibility: a save spends a shard, they regrow **one at a time** on `AEGIS_REGEN` (11s, compile-time asserted > 5s), and an empty ring means the next rock kills you. The thinning ring IS the readout — no HUD slot. On lap two the Warden+ drops this **instead of** the Chain orb (user: only the new one; NG+ has no beacons past wave 5 for the beam to answer). |
 | Pulsar (W25) | **Nova Shield** | ✅ | a regenerating **one-hit barrier**: while UP it eats one lethal hit and collapses; after `NOVA_REGEN` (~9s) it **flickers back on** (its ring blinks ≤3 Hz as it re-lights). A hit while it's DOWN costs the life as normal. The player inherits the Pulsar's lit-invulnerable ↔ dark-vulnerable identity. (Replaced the earlier "Nova pulse" shockwave sketch — playtest direction 2026-07-28.) |
 | Phantom (W30) | ~~Magnet~~ **CUT** (2026-07-30) | ❌ | the wave-30 kill ends the game — the victory cinematic plays immediately, so there is nothing to pick a drop up WITH. The Phantom deliberately drops nothing; its "reward" is the ending + NEW GAME+ unlocking on the menu. |
 | Hive (W35) | **Spread shot** | 🔷 | your shot *splits* into several — echoes mitosis |
@@ -401,6 +403,24 @@ Considered and shelved (could layer on later): score extends, boss-clear +1, per
   entries survive every death by design. **Pillar: flying and shooting stay CLEAN — skilled play is
   the reward loop; difficulty may be merciless but the ship never is.** The release bar: the game
   ships when it can be beaten legitimately (no dev keys).
+- **THE GALLERY (bestiary, 2026-07-31).** `GameState::Gallery` off the main menu (or `G`): 18 subjects
+  — 8 rock types, gold, mine, raider, well, and the 6 bosses — **ONE PER PAGE** (user's call), paged
+  with A/D or the arrows. Art is drawn in WORLD SPACE behind the UI (`gallery_draw`, band centred on
+  `GALLERY_ART_Y`): bosses reuse their **canonical `draw_X_body` fns**, so the reference can never
+  drift from the fight/banner/cameo; rocks share one deterministic silhouette (`gallery_rock_ring`)
+  and are told apart by their signature marks. Unlocks are a **simple seen flag** — one stable bit
+  per subject in `Stats.seen` (`gallery_bit`, ⚠️ APPEND ONLY), set the frame the thing first appears
+  on your field by `gallery_sightings` (one field scan; bosses mark themselves in `boss_director`).
+  Persists only on change. Locked pages show a dim silhouette.
+- **PALETTE POLICY (decided 2026-07-31).** The neon spectrum is FULL — 16+ entities already span
+  blue→green→teal→chartreuse→amber→gold→orange→vermillion→red→crimson→magenta, with purple reserved
+  for the player ([[purple = player]] rule). Several entities therefore share a hue, and that is
+  ACCEPTED: in play, context disambiguates (a boss is huge/central/singular, a rock is small and
+  numerous, and near-twins like the Devourer and the Hunter never share a wave). The user raised the
+  worry that a gallery would expose the reuse — **answered by ONE PAGE PER ENTRY**: nothing is ever
+  compared side by side. So identity comes from **silhouette + motion + label**, not hue alone (the
+  Hunter's eye is the model). Do NOT repaint the game to satisfy a menu; if two entries genuinely
+  read as twins in play, repaint then, with evidence.
 - **NEW GAME+ (2026-07-30, deliberately SMALL — user: "start small since it's essentially a New
   Game").** Unlocked forever once `stats.phantom` is set; the `NEW GAME+` menu button exists ONLY
   then (button-only, no keyboard shortcut — the second lap is chosen, never stumbled into). It IS a
@@ -411,7 +431,16 @@ Considered and shelved (could layer on later): score extends, boss-clear +1, per
   place: `boss_director`), and a music-corruption FLOOR of tier 1 (the Belt is already wrong when
   you return). The HUD wave line carries a quiet `NG+` tag; restarting keeps the mode, normal PLAY
   clears it. **NG+ Act I (waves 1-5) rolls the FULL rock roster** (the finale's all-types mix via
-  `roll_finale_kind`) — the lap assumes mastery, no teaching rosters; act arcs resume at wave 6.
+  `roll_finale_kind`) — the lap assumes mastery, no teaching rosters.
+  **⭐ NG+ ROSTER RULE (user, 2026-07-31): past wave 5 the OLD ROSTER RETIRES ENTIRELY.** Lap two
+  opens on the greatest-hits mix through wave 5, then sheds every rock the first lap taught you and
+  runs a NEW bestiary via `roll_ngplus_kind` — including the wave-30 finale (both spawn paths honour
+  it: `wave_timer`'s opening fill and `top_up_asteroids`' trickle). ⚠️ Only the **Hunter** exists so
+  far, so NG+ 6-30 is currently a single-type homing field. **This is accepted as temporary — more
+  new asteroid types are coming to fill the NG+ roster out** (user, 2026-07-31); each one added to
+  `roll_ngplus_kind` widens it, no other code changes. Softlock-checked: hunters satisfy the
+  Detonator's priming (non-explosive), the Glutton's feeding and the Warden's grabbing, so no boss
+  wave can stall on a pure-hunter field.
   **Every boss carries the mark: `THE WARDEN+`** (warning banner + HUD, `(name)+` in NG+ only).
   **THE WARDEN+** is the first upgraded fight: old kit at 0.65× cadence, a TWO-rock spread per
   throw, and every hurled rock is PRIMED (`Detonating`, 1.7s fuse — shoot it out of the air or
