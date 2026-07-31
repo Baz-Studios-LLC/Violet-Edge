@@ -9199,18 +9199,19 @@ fn gallery_rock_ring(c: Vec2, r: f32) -> Vec<Vec2> {
 // silhouettes the fight, the warning banner and the background cameo all share, so the reference can
 // never drift from the real thing. Rocks use the shared gallery ring plus that type's signature
 // marks (the hunter's tracking eye, the beacon's aura, the pulser's shield ring, and so on).
-fn draw_gallery_art(gizmos: &mut Gizmos, c: Vec2, t: f32, art: GalleryArt) {
+fn draw_gallery_art(gizmos: &mut Gizmos, c: Vec2, t: f32, art: GalleryArt, zoom: f32) {
+    // `zoom` scales EVERY radius so the whole drawing fits GALLERY_ART_R (see gallery_art_extent).
     match art {
         GalleryArt::Boss(k) => {
             let col = boss_kind_color(k);
-            let r = 74.0;
+            let r = 74.0 * zoom;
             match k {
                 BossKind::Warden => {
                     draw_warden_body(gizmos, c, r, t, Vec2::from_angle(t * 0.6), col);
                     // a couple of penned rocks on the arms, so its whole trick reads at a glance
                     for i in 0..2 {
                         let a = t * 0.5 + i as f32 * TAU / 2.0;
-                        gizmos.linestrip_2d(gallery_rock_ring(c + Vec2::from_angle(a) * r * 1.6, 15.0), rock_color());
+                        gizmos.linestrip_2d(gallery_rock_ring(c + Vec2::from_angle(a) * r * 1.6, 15.0 * zoom), rock_color());
                     }
                 }
                 BossKind::Devourer => draw_glutton_body(gizmos, c, r, t, 0.0, 0.45, col),
@@ -9221,7 +9222,7 @@ fn draw_gallery_art(gizmos: &mut Gizmos, c: Vec2, t: f32, art: GalleryArt) {
             }
         }
         GalleryArt::Rock(kind) => {
-            let r = 58.0;
+            let r = 58.0 * zoom;
             let col = match kind {
                 RockKind::Blue => rock_color(),
                 RockKind::Green => dense_color(),
@@ -9267,7 +9268,7 @@ fn draw_gallery_art(gizmos: &mut Gizmos, c: Vec2, t: f32, art: GalleryArt) {
                     // two smaller rocks being drawn in — the growth read
                     for i in 0..2 {
                         let a = t * 0.7 + i as f32 * TAU / 2.0;
-                        gizmos.linestrip_2d(gallery_rock_ring(c + Vec2::from_angle(a) * r * 1.7, 13.0), dim(col, 0.6));
+                        gizmos.linestrip_2d(gallery_rock_ring(c + Vec2::from_angle(a) * r * 1.7, 13.0 * zoom), dim(col, 0.6));
                     }
                 }
                 RockKind::Lapse => {
@@ -9282,14 +9283,14 @@ fn draw_gallery_art(gizmos: &mut Gizmos, c: Vec2, t: f32, art: GalleryArt) {
         }
         GalleryArt::Gold => {
             let g = dim(gold_color(), 0.75 + 0.25 * (t * 2.0).sin());
-            gizmos.linestrip_2d(gallery_rock_ring(c, 58.0), g);
-            gizmos.linestrip_2d(gallery_rock_ring(c, 34.0), g);
+            gizmos.linestrip_2d(gallery_rock_ring(c, 58.0 * zoom), g);
+            gizmos.linestrip_2d(gallery_rock_ring(c, 34.0 * zoom), g);
         }
         GalleryArt::Mine => {
             // MUST match the field mine exactly (user caught a mismatch): a crimson DIAMOND with a
             // small core — same construction as the in-game draw, just scaled up for the page.
             let col = mine_color();
-            let r = 40.0;
+            let r = 40.0 * zoom;
             let pts = [
                 c + Vec2::new(0.0, r),
                 c + Vec2::new(r, 0.0),
@@ -9305,17 +9306,17 @@ fn draw_gallery_art(gizmos: &mut Gizmos, c: Vec2, t: f32, art: GalleryArt) {
         GalleryArt::Tender => {
             let col = enemy_color();
             let spin = t * 0.7;
-            let cage: Vec<Vec2> = (0..=6).map(|i| c + Vec2::from_angle(spin + i as f32 / 6.0 * TAU) * 34.0).collect();
+            let cage: Vec<Vec2> = (0..=6).map(|i| c + Vec2::from_angle(spin + i as f32 / 6.0 * TAU) * 34.0 * zoom).collect();
             gizmos.linestrip_2d(cage, col);
-            gizmos.circle_2d(Isometry2d::from_translation(c), 12.0, dim(col, 0.9));
+            gizmos.circle_2d(Isometry2d::from_translation(c), 12.0 * zoom, dim(col, 0.9));
             for i in 0..3 {
                 let d = Vec2::from_angle(-spin * 1.4 + i as f32 / 3.0 * TAU);
-                gizmos.line_2d(c + d * 12.0, c + d * 32.0, dim(col, 0.75));
+                gizmos.line_2d(c + d * 12.0 * zoom, c + d * 32.0 * zoom, dim(col, 0.75));
             }
             // two fragments under tow, mid-fusion — the whole mechanic in one picture
             for s in [-1.0f32, 1.0] {
-                let to = c + Vec2::new(s * 78.0, -6.0);
-                gizmos.linestrip_2d(gallery_rock_ring(to, 14.0), rock_color());
+                let to = c + Vec2::new(s * 78.0 * zoom, -6.0 * zoom);
+                gizmos.linestrip_2d(gallery_rock_ring(to, 14.0 * zoom), rock_color());
                 for k in [0, 2, 4] {
                     let f0 = k as f32 / 6.0;
                     let f1 = (k as f32 + 0.9) / 6.0;
@@ -9327,17 +9328,17 @@ fn draw_gallery_art(gizmos: &mut Gizmos, c: Vec2, t: f32, art: GalleryArt) {
             // matches the field raider: a throbbing yellow orb with a concentric inner ring
             let col = enemy_color();
             let throb = 1.0 + 0.1 * (t * 6.0).sin();
-            gizmos.circle_2d(Isometry2d::from_translation(c), 40.0 * throb, col);
-            gizmos.circle_2d(Isometry2d::from_translation(c), 40.0 * 0.45 * throb, col);
+            gizmos.circle_2d(Isometry2d::from_translation(c), 40.0 * zoom * throb, col);
+            gizmos.circle_2d(Isometry2d::from_translation(c), 40.0 * zoom * 0.45 * throb, col);
             // one of its slow shots, so "it shoots back" reads without motion
-            let sp = c + Vec2::new(0.0, -66.0);
-            gizmos.circle_2d(Isometry2d::from_translation(sp), 7.0, col);
-            gizmos.circle_2d(Isometry2d::from_translation(sp), 3.5, Color::srgb(5.0, 5.0, 4.0));
+            let sp = c + Vec2::new(0.0, -66.0 * zoom);
+            gizmos.circle_2d(Isometry2d::from_translation(sp), 7.0 * zoom, col);
+            gizmos.circle_2d(Isometry2d::from_translation(sp), 3.5 * zoom, Color::srgb(5.0, 5.0, 4.0));
         }
         GalleryArt::Well => {
             // matches the field well: SEVEN arms sweeping inward (a whirlpool, not a cross) + a hot core
             let col = warp_color();
-            let r = 64.0;
+            let r = 64.0 * zoom;
             let (arms, segs) = (7, 10);
             for a in 0..arms {
                 let a0 = a as f32 / arms as f32 * TAU;
@@ -9363,10 +9364,35 @@ fn gallery_draw(time: Res<Time<Real>>, page: Res<GalleryPage>, stats: Res<Stats>
         return; // nothing catalogued — the screen says so in text, no art to draw
     }
     let &(art, ..) = &book[page.0.min(book.len() - 1)];
-    draw_gallery_art(&mut gizmos, Vec2::new(0.0, GALLERY_ART_Y), time.elapsed_secs(), art);
+    // fit the budget (and never blow small art up too far)
+    let zoom = (GALLERY_ART_R / gallery_art_extent(art)).min(1.35);
+    draw_gallery_art(&mut gizmos, Vec2::new(0.0, GALLERY_ART_Y), time.elapsed_secs(), art, zoom);
 }
 
 const GALLERY_ART_Y: f32 = 96.0; // world-space centre of the art, above the name/description block
+// HARD BUDGET: no page's art may draw beyond this radius from its centre. The band it lives in is
+// 262px tall (±131), so 96 leaves a real margin — the Beacon's aura used to reach 133 and printed
+// straight through the name text. Every entry is scaled by BUDGET / its own extent, so this holds
+// for all of them and for anything added later (give a new entry an honest `gallery_art_extent`).
+const GALLERY_ART_R: f32 = 96.0;
+
+// The farthest radius each entry draws to at scale 1.0 — auras, blast reaches and towed rocks
+// included, since those are what actually overflow.
+fn gallery_art_extent(art: GalleryArt) -> f32 {
+    match art {
+        GalleryArt::Rock(RockKind::Beacon) => 58.0 * 2.3, // the aura is the widest thing in the book
+        GalleryArt::Rock(RockKind::Orange) => 58.0 * 1.9, // blast reach
+        GalleryArt::Rock(RockKind::Red) => 58.0 * 1.7 + 13.0, // the two rocks it's pulling in
+        GalleryArt::Rock(_) => 58.0,
+        GalleryArt::Gold => 58.0,
+        GalleryArt::Mine => 40.0 * (MINE_BLAST_R / MINE_R), // lethal reach ring
+        GalleryArt::Mob => 73.0, // body + the shot below it
+        GalleryArt::Well => 64.0,
+        GalleryArt::Tender => 78.0 + 14.0, // the towed fragments sit out to the sides
+        GalleryArt::Boss(BossKind::Warden) => 74.0 * 1.6 + 15.0, // penned rocks on its arms
+        GalleryArt::Boss(_) => 74.0 * 1.25, // bodies with spikes/petals/limbs
+    }
+}
 
 #[derive(Component)]
 struct GalleryUi;
@@ -12654,6 +12680,27 @@ mod tests {
         assert_eq!(mine_target(9, 100), 6, "deep waves hit the hard cap of 6, never a wall");
         assert_eq!(mine_target(31, 100), 0, "loop past 30: wave 31 = content 1 → no mines");
         assert_eq!(mine_target(32, 100), 1, "loop past 30: wave 32 = content 2 → back to 1");
+    }
+
+    #[test]
+    fn no_gallery_page_can_overflow_into_the_text() {
+        // The Beacon's aura used to reach 133px and print straight through the name line. Every entry
+        // is now scaled by GALLERY_ART_R / its own extent, so this asserts the invariant holds for
+        // ALL of them — including anything added later, which is the point of the test.
+        const BAND_HALF: f32 = 131.0; // the 262px art band the UI reserves
+        for (art, name, ..) in gallery_entries(&Stats::default()) {
+            let extent = gallery_art_extent(art);
+            assert!(extent > 0.0, "'{name}' needs an honest extent");
+            let zoom = (GALLERY_ART_R / extent).min(1.35);
+            let drawn = extent * zoom;
+            assert!(
+                drawn <= GALLERY_ART_R + 0.01,
+                "'{name}' draws to {drawn:.1}px, over the {GALLERY_ART_R}px budget"
+            );
+            assert!(drawn < BAND_HALF, "'{name}' at {drawn:.1}px would reach outside the art band and hit the text");
+        }
+        // and the budget itself must leave real margin inside the band
+        assert!(GALLERY_ART_R < BAND_HALF - 20.0, "the art budget needs clearance inside its band");
     }
 
     #[test]
