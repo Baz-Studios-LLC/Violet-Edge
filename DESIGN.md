@@ -374,6 +374,16 @@ recoverable, but only by earning them, via a rare gold asteroid. ✅ Implemented
 
 Considered and shelved (could layer on later): score extends, boss-clear +1, perfect-wave meter.
 
+**🔷 PARKED IDEA — bankable gold chunks (user, 2026-07-31).** Let gold fragments NEVER despawn, so a
+player who has lost a life can deliberately leave one piece alive as a stored 1UP and cash it in when
+they need it. The cost is already built into the code and makes the whole thing self-balancing:
+`GoldRush.active` stays true while any gold piece lives, which BLOCKS the next gold rock from
+spawning — so banking a chunk trades every future life rock for the one you're holding. If built:
+drop the post-grace cull for `Gold` in `asteroid_bounds`, decide whether the forfeit rule disappears
+entirely (probably yes — a banked piece can't be "lost"), and note that banking only pays off below
+`LIFE_CAP`. ⏸️ HELD until the shortened lineage above has been playtested — that change may already
+be enough, and the two together would likely over-correct.
+
 ## Related systems
 
 - **Scoring** (classic-Asteroids values — smaller rock = more points, so *finishing* a rock beats cracking it):
