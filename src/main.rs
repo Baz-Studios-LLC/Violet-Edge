@@ -944,7 +944,49 @@ fn total_breaks(s: &Stats) -> u64 {
 
 // Credit a player rock-kill to its type's lifetime counter (the per-type achievements). One source
 // of truth for the priority order (beacon/pulser are ALSO dense internally, so they check first).
-fn credit_rock_kill(stats: &mut Stats, dense: bool, pulser: bool, red: bool, cluster: bool, beacon: bool, hunter: bool, lapse: bool) {
+// A rock's TYPE TAGS in one value. This used to be a run of positional bools threaded through
+// `break_asteroid` (15 arguments) and `credit_rock_kill` — where transposing any two of them would
+// silently give a rock the wrong behaviour AND the wrong kill credit, with nothing to catch it.
+// Built once at each call site from the queried components; add a field here when adding a type.
+#[derive(Clone, Copy, Default)]
+struct Flavor {
+    dense: bool,
+    gold: bool,
+    pulser: bool,
+    red: bool,
+    cluster: bool,
+    beacon: bool,
+    hunter: bool,
+    lapse: bool,
+}
+
+// Build it from the optional components every rock query already carries.
+#[allow(clippy::too_many_arguments)]
+fn flavor(
+    dense: bool,
+    gold: Option<&Gold>,
+    pulser: Option<&Pulser>,
+    red: Option<&Red>,
+    cluster: Option<&Cluster>,
+    beacon: Option<&Beacon>,
+    hunter: Option<&Hunter>,
+    lapse: Option<&Lapse>,
+) -> Flavor {
+    Flavor {
+        dense,
+        gold: gold.is_some(),
+        pulser: pulser.is_some(),
+        red: red.is_some(),
+        cluster: cluster.is_some(),
+        beacon: beacon.is_some(),
+        hunter: hunter.is_some(),
+        lapse: lapse.is_some(),
+    }
+}
+
+fn credit_rock_kill(stats: &mut Stats, f: Flavor) {
+    let (dense, pulser, red, cluster, beacon, hunter, lapse) =
+        (f.dense, f.pulser, f.red, f.cluster, f.beacon, f.hunter, f.lapse);
     if lapse {
         stats.lapse += 1;
     } else if hunter {
@@ -2601,7 +2643,9 @@ fn spawn_asteroid(commands: &mut Commands, pos: Vec2, size: u8, vel: Vec2, rng: 
 #[allow(clippy::too_many_arguments)]
 // `chunks`: whether a size>1 rock spawns its two smaller fragments. True for every normal break; the
 // mass shot passes false to VAPORIZE a rock outright (its field-clearing identity — no rubble left).
-fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score, e: Entity, pos: Vec2, size: u8, chunk_mult: f32, dense: bool, gold: bool, pulser: bool, red: bool, cluster: bool, beacon: bool, hunter: bool, lapse: bool, chunks: bool) {
+fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score, e: Entity, pos: Vec2, size: u8, chunk_mult: f32, f: Flavor, chunks: bool) {
+    let (dense, gold, pulser, red, cluster, beacon, hunter, lapse) =
+        (f.dense, f.gold, f.pulser, f.red, f.cluster, f.beacon, f.hunter, f.lapse);
     commands.entity(e).despawn();
     let base = match size {
         3 => 20,
@@ -2736,7 +2780,7 @@ fn blast_asteroids(
             } else {
                 // mine flings chunks (ignores hp + the beacon aura — blasts are the counterplay); never gold;
                 // a mined red splits into reds; a mined CLUSTER shatters spectacularly (fast shard ring)
-                break_asteroid(commands, rng, score, ae, ap, a.size, MINE_CHUNK_MULT, a.dense, false, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), lapse.is_some(), true);
+                break_asteroid(commands, rng, score, ae, ap, a.size, MINE_CHUNK_MULT, flavor(a.dense, None, pulser, red, cluster, beacon, hunter, lapse), true);
             }
         }
     }
@@ -3715,7 +3759,7 @@ fn collisions(
                     // it struck dies outright, and the violet ring is now a REAL blast: everything
                     // within WARHEAD_BLAST_R is destroyed in the after-pass below.
                     dead_a.insert(ae);
-                    break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, a.dense, gold.is_some(), pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), lapse.is_some(), false);
+                    break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, flavor(a.dense, gold, pulser, red, cluster, beacon, hunter, lapse), false);
                     commands.spawn((
                         Shockwave { age: 0.0, ttl: 0.28, max_r: WARHEAD_BLAST_R, color: warhead_color() },
                         Transform::from_xyz(ap.x, ap.y, 0.0),
@@ -3724,7 +3768,7 @@ fn collisions(
                     if explosive.is_some() {
                         stats.orange += 1; // the round deletes an orange whole — still a player-credited kill
                     } else {
-                        credit_rock_kill(&mut stats, a.dense, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), lapse.is_some());
+                        credit_rock_kill(&mut stats, flavor(a.dense, gold, pulser, red, cluster, beacon, hunter, lapse));
                     }
                     warhead_blast_at = Some(ap); // AoE applied after this loop (can't nest a second &mut pass)
                     dead_b.insert(be);
@@ -3745,9 +3789,9 @@ fn collisions(
                         commands.entity(ae).insert(Detonating { fuse: ORANGE_FUSE, friendly: false }); // orange detonates + chains
                         stats.orange += 1; // you lit it — the kill is yours
                     } else {
-                        break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, a.dense, gold.is_some(), pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), lapse.is_some(), true);
+                        break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, flavor(a.dense, gold, pulser, red, cluster, beacon, hunter, lapse), true);
                         sfx.write(SoundFx::Break(a.size));
-                        credit_rock_kill(&mut stats, a.dense, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), lapse.is_some());
+                        credit_rock_kill(&mut stats, flavor(a.dense, gold, pulser, red, cluster, beacon, hunter, lapse));
                     }
                 }
                 break;
@@ -3768,11 +3812,11 @@ fn collisions(
                 let rr = WARHEAD_BLAST_R + asteroid_radius(a.size);
                 if c.distance_squared(ap) < rr * rr {
                     dead_a.insert(ae);
-                    break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, a.dense, false, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), lapse.is_some(), false);
+                    break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, flavor(a.dense, None, pulser, red, cluster, beacon, hunter, lapse), false);
                     if explosive.is_some() {
                         stats.orange += 1; // the blast deletes an orange whole — yours
                     } else {
-                        credit_rock_kill(&mut stats, a.dense, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), lapse.is_some());
+                        credit_rock_kill(&mut stats, flavor(a.dense, gold, pulser, red, cluster, beacon, hunter, lapse));
                     }
                 }
             }
@@ -5471,9 +5515,9 @@ fn chain_update(
                 }
                 // chain beam shears dense rocks outright — the beam ignores hp, like a mine (a BEACON dies
                 // in one sweep: the beam is a clean answer to an aura)
-                break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, ast.size, 1.0, ast.dense, gold.is_some(), pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), lapse.is_some(), true); // chain shears rocks; a red splits into reds (they stay red + regrow)
+                break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, ast.size, 1.0, flavor(ast.dense, gold, pulser, red, cluster, beacon, hunter, lapse), true); // chain shears rocks; a red splits into reds (they stay red + regrow)
                 sfx.write(SoundFx::Break(ast.size));
-                credit_rock_kill(&mut stats, ast.dense, pulser.is_some(), red.is_some(), cluster.is_some(), beacon.is_some(), hunter.is_some(), lapse.is_some());
+                credit_rock_kill(&mut stats, flavor(ast.dense, gold, pulser, red, cluster, beacon, hunter, lapse));
             }
         }
         for (ee, et) in &enemies {
@@ -12120,16 +12164,16 @@ mod tests {
         // beacon/pulser/red/cluster rocks are ALSO dense internally (2-hp bodies), so the helper must
         // check the special kinds BEFORE falling through to the plain green/blue split.
         let mut s = Stats::default();
-        credit_rock_kill(&mut s, true, false, false, false, true, false, false); // dense + beacon
+        credit_rock_kill(&mut s, Flavor { dense: true, beacon: true, ..default() }); // dense + beacon
         assert_eq!((s.beacon, s.green), (1, 0), "a beacon credits beacon, not green");
-        credit_rock_kill(&mut s, true, true, false, false, false, false, false); // dense + pulser
+        credit_rock_kill(&mut s, Flavor { dense: true, pulser: true, ..default() }); // dense + pulser
         assert_eq!((s.pulser, s.green), (1, 0), "a pulser credits pulser, not green");
-        credit_rock_kill(&mut s, true, false, true, false, false, false, false); // dense + red
+        credit_rock_kill(&mut s, Flavor { dense: true, red: true, ..default() }); // dense + red
         assert_eq!((s.red, s.green), (1, 0), "a red credits red, not green");
-        credit_rock_kill(&mut s, true, false, false, true, false, false, false); // dense + cluster
+        credit_rock_kill(&mut s, Flavor { dense: true, cluster: true, ..default() }); // dense + cluster
         assert_eq!((s.cluster, s.green), (1, 0), "a cluster credits cluster, not green");
-        credit_rock_kill(&mut s, true, false, false, false, false, false, false); // plain dense
-        credit_rock_kill(&mut s, false, false, false, false, false, false, false); // plain blue
+        credit_rock_kill(&mut s, Flavor { dense: true, ..default() }); // plain dense
+        credit_rock_kill(&mut s, Flavor::default()); // plain blue
         assert_eq!((s.green, s.blue), (1, 1), "plain rocks split on the dense flag");
     }
 
