@@ -5,6 +5,13 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
+- **THE WARDEN+ WHIRLS.** Its new charged attack turns the thing it already is — a keeper with rocks
+  penned on its arms — into a weapon: it winds up, extends the arms, and rips the whole ring around
+  at speed, sweeping a lethal circle. **Fully telegraphed**: for a long beat beforehand the ring
+  visibly *stalls and creeps backwards* (nothing else in the fight does that), the core charges, and
+  the sweep's exact reach is drawn as a ring you can simply stand outside of. It can't throw or grab
+  while whirling, and it hangs there spent afterwards — read it right and the recovery is free damage.
+
 - **Smaller download.** The two embedded logos were far larger than anything that gets displayed —
   the game logo was a 1254px image used at 144px, the studio logo 2526px used at 560px. Resized to
   512px and 1120px: **556 KB off every platform build**, with no visible change (both stay sharp on

@@ -456,6 +456,17 @@ be enough, and the two together would likely over-correct.
   Detonator's priming (non-explosive), the Glutton's feeding and the Warden's grabbing, so no boss
   wave can stall on a pure-hunter field.
   **Every boss carries the mark: `THE WARDEN+`** (warning banner + HUD, `(name)+` in NG+ only).
+  **THE WARDEN+'s WHIRL (2026-07-31)** — a charged spin attack that weaponizes the one thing the
+  Warden already IS: a keeper with rocks penned on arms. `Idle → Wind → Spin → Recover`, with
+  `whirl_spin_mult` / `whirl_reach` as SHARED helpers because `boss_update` rotates the ring while
+  `boss_shield` positions it (they'd desync otherwise). **Telegraphed by construction (user
+  requirement):** the wind-up STALLS the ring and creeps it backwards for `NGP_WARDEN_WIND` (1.7s,
+  compile-time asserted ≥1.5s) while the core charges and the sweep's exact reach is drawn as a ring
+  you can stand outside of — nothing else in the fight stalls the ring, so the tell is unambiguous.
+  Then the arms extend to 1.5× orbit and the ring rips around at 6.5× for 2.4s (the held rocks are
+  already lethal on contact, so the sweep needs no new damage path). It cannot throw or grab while
+  whirling, and the 1.5s recovery is a deliberate punish window. The hazard is a fixed ZONE, never a
+  chase — asserted to stay under 220px.
   **THE WARDEN+** is the first upgraded fight: old kit at 0.65× cadence, a TWO-rock spread per
   throw, and every hurled rock is PRIMED (`Detonating`, 1.7s fuse — shoot it out of the air or
   clear the blast; reuses `detonate` wholesale). Upgraded mechanics for bosses 2-6 come one at a
