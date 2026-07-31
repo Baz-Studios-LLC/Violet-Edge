@@ -70,7 +70,9 @@ with each boss you fell.
 | **Red** | 21 | Grows — absorbs nearby rocks to swell; a plain shot splits it into more reds (whack-a-mole). Blasts kill it clean. |
 | **Beacon** | 23 | Teal aura warden — rocks inside its aura are **immune to your guns until it falls**. Blasts and the warp ignore the aura. |
 | **Cluster** | 26 | Fractured ice — **shatters into a ring of fast shards**. Mass shot vaporizes it clean; the warp swallows it whole. |
-| **Gold** | any | The 1UP: destroy the whole lineage before a piece escapes for +1 life. More frequent early, rare late. |
+| **Hunter** | 6 | **Chases you** — steers at your ship and drives harder the longer it lives. Always outrunnable; breaking it resets the hunt. |
+| **Gold** | any | The 1UP: destroy the whole lineage for +1 life. Sheds two mid pieces and no small stragglers. More frequent early, rare late. |
+| **Lapse** | NG+ | Fades out **completely**, then slowly materializes somewhere else. Harmless and unhittable until it's all the way back. |
 
 ### Bosses & their drops
 
@@ -83,18 +85,26 @@ with each boss you fell.
 | 25 | **The Pulsar** — lit/dark like its rocks; shockwaves fling the field | **Nova Shield** (regenerating one-hit barrier) |
 | 30 | **THE PHANTOM** — the finale: a three-phase spectral steersman | *the ending* |
 
-Also in the field: **mines** (wave 2+), brief **enemy mob** windows (3–4, 8–9), and **gravity
-wells** (18–19) — garnish only; the asteroids stay the show.
+Also in the field: **mines** (wave 2+), brief **raider** windows (3–4, 8–9), and **gravity wells**
+(18–19) — garnish only; the asteroids stay the show. In **NEW GAME+**, late waves add the **Tender**:
+a repair drone that tractors two of your leftover fragments together and **fuses them back into a
+whole rock**. Shoot it, or either fragment, or the field stops shrinking.
 
 ## Meta
 
 - **Pilot Log** — the story, as transmissions home; each boss's record decrypts when it first falls.
-- **12 achievements** with unlock toasts (boss ladder, lifetime grinds, and the real wave-30 capstones).
+- **Gallery** — a bestiary of every rock, hazard and boss, one page each, drawn as real vector art
+  with a field report in the pilot's voice. Pages are added as you meet things, so it never spoils
+  what's ahead.
+- **25 achievements** with unlock toasts (boss ladder, per-rock lifetime grinds, a restart ladder,
+  and the wave-30 capstones).
+- **NEW GAME+** — unlocked for good once you beat the game: a denser field, tougher bosses, the
+  **Aegis Shards** from the Warden+ (an exclusive powerup), and a new roster of rocks from wave 6 on.
 - **Top-5 high scores**, persisted. **HUD** with named ability slots that appear as you earn them.
 - **Any screen size** — the camera scale-to-fits, the field fills your aspect, the HUD scales.
 - **Photosensitivity-aware** — all flashing is kept at or under 3 flashes/sec by design.
-- **Procedural audio** — every sound synthesized at runtime, no asset files: a full-length
-  club-techno track, a distinct boss track, a pre-boss riser, and per-event SFX.
+- **Audio** — produced main / boss / game-over tracks plus the studio sting, embedded in the exe;
+  every sound *effect* and the pre-boss riser are still synthesized at runtime.
 
 ## Roadmap
 

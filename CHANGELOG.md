@@ -3,7 +3,7 @@
 Patch notes for the Rust + Bevy build. Newest first. (Releases are cut to GitHub and picked up by the
 Baz Studios launcher.) **Keep this current with every change** — it's the record testers read.
 
-## Unreleased
+## v0.5.1 — The Gallery, the NG+ bestiary, and a kinder 1UP (2026-07-31)
 
 - **AEGIS SHARDS — a NEW GAME+ exclusive powerup.** Beat the Warden+ on lap two and it gives up its
   own trick: three small shards ride a slow orbit around your hull, moving with the ship, and each
@@ -18,39 +18,58 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
   inherit it but start docile, so a split really does buy breathing room. Wave 6 is its teaching
   wave, it garnishes 7-9, and it retires with Act I at wave 10. It joins the wave-30 all-types
   finale, and has its own achievement (**Who's the Prey Now** — 350 hunters).
-- **THE LAPSE — a rock that isn't always there** (NG+ roster). It thins out until nothing's where it
-  was, spends a spell absent — still drifting, so it never comes back where you lost it — then
-  materializes again on a randomized clock. The whole return is a **free warning**: while it's gone
-  *and* the entire time it's fading back in, it can't hit you and you can't hit it, and the fade-in
-  is long enough to read and fly out of (compile-time asserted, so it can never be tuned into a
-  cheap death). Its chunks keep phasing on their own clocks.
+- **THE LAPSE — a rock that isn't always there** (NG+ roster). It fades out **completely** — nothing
+  is left where it was, not even a hint — then slowly materializes **somewhere else on the field**
+  when it's about to become dangerous again, on a randomized clock. The whole return is a **free
+  warning**: while it's gone *and* the entire time it's fading back in, it can't hit you and you
+  can't hit it, the fade-in is long enough to read and fly out of (compile-time asserted, so it can
+  never be tuned into a cheap death), and it never materializes within 170px of your ship. Its
+  chunks keep phasing on their own clocks.
 - **THE TENDER — the Belt's repair crew** (NG+, late waves). It doesn't shoot. It finds two of the
   fragments you left behind, takes hold of both with tractor beams, and **fuses them back into a
   whole rock** — a split run backwards. Shoot the drone or either fragment and the weld fails; leave
   it alone and the field stops shrinking. One hit kills it, one at a time on the field, and it never
   touches you directly: it's the first mob that's a genuine priority target rather than a nuisance.
-- **NG+ density eased**: +6 rocks per wave → **+3**. With homing, phasing and *reconstituting*
-  pressure in the roster, the rock types carry lap two's difficulty and raw volume doesn't have to —
-  which also leaves headroom for those mechanics instead of walling the screen.
+- **NEW GAME+ runs its own bestiary.** Waves 1–5 are a **pure recap** — the old roster only, so the
+  opener is familiar ground. From wave 6 the old roster **retires entirely** and lap two runs new
+  rock types instead (the Hunter and the Lapse so far; each one added widens the mix). Density eased
+  to match: **+6 rocks per wave → +3**, because with homing, phasing and *reconstituting* pressure in
+  the roster the rock types carry lap two's difficulty and raw volume doesn't have to.
+- **Life rocks are far less punishing.** The 1UP hunt no longer produces small fragments at all: a
+  gold rock sheds two mid-sized pieces and those break clean, so it's three solid targets instead of
+  seven with four tiny stragglers. Those stragglers were the whole problem — a small piece that
+  crosses the edge after its grace is gone for good most of the time, and it took the life with it.
+  Mid pieces wander off far less often, and the grace window is unchanged.
+- **THE GALLERY — a bestiary in the menu.** Every rock, hazard and boss gets its **own page** (20 of
+  them), drawn large as real vector art built the same way the field versions are, with a name, a
+  role line, and a **field report in the pilot's own voice** — because the lore of this game lives in
+  its menus, every page carries a piece of the mystery (rocks assaying as mantle stone and core iron,
+  machined mines left on your route, a belt that keeps time, something that *maintains* it) alongside
+  what you actually have to do about the thing. **The book GROWS**: a page is added when its subject
+  is first introduced to your field, and there are no blank or locked pages to leaf through — so the
+  gallery can never spoil what's still out there. Page with A/D or the arrows. (Existing saves start
+  the book empty and fill it in as you play.)
+  - **Every page's art is scaled to fit.** Wide entries — the Beacon's aura, an orange's blast reach,
+    the Warden's penned rocks — were drawing past their band and printing through the name and
+    description. Each page now scales to a hard radius budget based on its own true extent.
+  - **The art matches the game.** The mine was drawn as a spiked ball when the real one is a crimson
+    diamond; the raider was an arrow when it's a throbbing orb; the well had three arms instead of
+    seven. All three are now built exactly the way their field versions are, so the reference can't
+    lie about the game.
+  - **No more black gashes through the pictures.** Off-run the grid's colour dims to pure black, but
+    the lines were still being stroked — and since the world render runs after the gallery's art
+    layer, those black strokes painted straight over the artwork. The grid is now skipped entirely
+    when no run is active.
+  - One-per-page also settles the palette question: several entities share a hue because the neon
+    spectrum is full, and on separate pages they're never compared side by side.
 - **Menu breathes again.** Seven buttons had it packed shoulder to shoulder: the masthead and
   wordmark are trimmed a little and the buttons now live in their own column with a wider gap, so
   the screen reads open instead of stacked. (The overlay's shared tight spacing is untouched — the
   dense screens like Controls and Pilot Log depend on it to fit.)
-- **THE GALLERY — a bestiary in the menu.** Every rock, hazard and boss gets its **own page** (18 of
-  them), drawn large as real vector art from the same canonical body functions the fights use, with
-  a name, a role line, and a **field report in the pilot's own voice** — because the lore of this
-  game lives in its menus, every page carries a piece of the mystery (rocks assaying as mantle stone
-  and core iron, machined mines left on your route, a belt that keeps time) alongside what you
-  actually have to do about the thing. **The book GROWS**: a page is added when its subject is first
-  introduced to your field, and there are no blank or locked pages to leaf through — so the gallery
-  can never spoil what's still out there. Page with A/D or the arrows.
-  (Existing saves start the book empty and fill it in as you play.) One-per-page also settles the
-  palette question: several entities share a hue because the neon
-  spectrum is full, and on separate pages they're never compared side by side.
-- **NEW GAME+ sheds the old roster after wave 5.** Lap two opens on a greatest-hits mix through
-  wave 5, then retires every rock the first lap taught you and runs a new bestiary instead.
-  ⚠️ Only the Hunter exists so far, so NG+ waves 6-30 are currently a single-type field — each new
-  rock type added widens it.
+- **The dev god-mode ring can't be mistaken for gameplay.** It was a solid circle sitting at almost
+  exactly the Aegis shards' orbit radius, so with the shards up it read as a rail joining them. It's
+  now a broken reticle of rotating arcs further out — still unmissable, since god-mode should never
+  look subtle. (Release builds can't show it at all.)
 
 ## v0.5.0 — A real soundtrack (2026-07-30)
 
