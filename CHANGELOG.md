@@ -3,7 +3,7 @@
 Patch notes for the Rust + Bevy build. Newest first. (Releases are cut to GitHub and picked up by the
 Baz Studios launcher.) **Keep this current with every change** — it's the record testers read.
 
-## Unreleased
+## v0.6.0 — The Facet, the Husk, the Gorge Round, and a field you can read (2026-08-03)
 
 - **THE FIELD IS LESS CROWDED, so the rocks can actually be rocks.** A third fewer asteroids on screen
   at full density (18 → 12), and a third of a full field is now big rocks rather than debris. The
