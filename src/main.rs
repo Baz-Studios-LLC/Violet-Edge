@@ -1722,7 +1722,7 @@ struct ShotModeText; // top-center "MASS/STANDARD SHOT" label (under the wave te
 enum AbilitySlot {
     Warp,
     Chain,
-    Mode,   // the Q-cycled shot modes (mass / Warhead)
+    Mode,   // the Q-cycled shot modes (mass / Warhead / Gorge)
     Shield, // the Nova Shield
     Drone,
 }
@@ -3481,7 +3481,7 @@ fn fire(
     // bullet lifetime scales with the arena so its reach is a consistent fraction of the screen,
     // not a fixed distance that looks tiny on a big display (floored at BULLET_LIFE for small windows)
     let bullet_life = (BULLET_RANGE_FRAC * arena.half.x / BULLET_SPEED).max(BULLET_LIFE);
-    // Q CYCLES the shot mode through the unlocked options: Standard → Mass → Warhead → Standard.
+    // Q CYCLES the shot mode through the unlocked options: Standard → Mass → Warhead → Gorge → back.
     if input.toggle && (mass.unlocked || warhead.unlocked || gorge.unlocked) {
         let cur = if gorge.active { 3u8 } else if warhead.active { 2 } else if mass.active { 1 } else { 0 };
         let mut avail = vec![0u8];
