@@ -74,8 +74,15 @@ const MASS_BOSS_POWER: i32 = 2;
 
 const GRID_CELL: f32 = 52.0;
 const WAVE_SECS: f32 = 100.0; // survive the timer to advance. 2026-07-30: 120 → 60 → user settled on 100 — snappier than the original hour-plus run without feeling breathless (~50 min full clear with the heavier bosses)
-const POP_BASE: i32 = 5; // asteroids on screen = POP_BASE + wave...
-const POP_CAP: i32 = 18; // ...capped so the field never becomes an unavoidable wall
+// FIELD DENSITY. The asteroids are the star, but a SCREENFUL of them is just noise: individual rock
+// mechanics (a facet's open face, a lapse fading, a beacon's aura, a hunter turning) can only READ if
+// there's room around them. Eased 5/18 → 4/12 (user, 2026-08-03: "a full screen of rocks is more
+// annoying and doesn't allow for their individual mechanics to really shine").
+// Note this is a HEAD COUNT, and breaking rocks pushes it over on its own (one large → two mids →
+// up to four smalls), so the live field always runs above the target mid-fight — which is exactly
+// why the target has to sit well below what looks acceptable in a screenshot.
+const POP_BASE: i32 = 4; // asteroids on screen = POP_BASE + wave...
+const POP_CAP: i32 = 12; // ...capped so the field never becomes an unavoidable wall
 const SLINGER_WAVE_ROCKS: i32 = 6; // sparse field on the Slinger wave — it spawns its own cannonballs and
                                    // doesn't use field rocks, so a full field is just clutter to dodge through
 const FINALE_TRICKLE: f32 = 0.45; // wave 30: gap between trickled-in rocks — the RATE is what keeps the finale readable
@@ -141,6 +148,13 @@ const FACET_RICOCHET_LIFE: f32 = 1.1; // s a ricochet stays lethal before it fiz
 // and the chain until the beacon falls (blasts, the warp, and red-absorption all bypass it: the
 // counterplay). Spawns dense (hp = size), never splits — it dies clean when cracked.
 const BEACON_AURA_R: f32 = 270.0; // was 200 — too small to matter; now it genuinely owns a region
+// MECHANIC-BEARING ROCKS ARE CAPPED as a fraction of the field, the same way mobs are
+// (ENEMY_MAX_FRACTION). Every "special" is a mechanic you're meant to READ and answer; a field that is
+// mostly specials teaches you nothing and reads as chaos, and two of them landing on top of each other
+// is where the real frustration lives. Over the cap, the roll falls back to the act's plain rock, so
+// the specials that ARE out have space to be understood.
+const SPECIAL_MAX_FRACTION: f32 = 0.4; // of the non-gold field
+const SPECIAL_FLOOR: i32 = 2; // ...but always allow at least this many, or an early sparse wave would show none
 const BIG_FLOOR: i32 = 4; // always keep at least this many LARGE (size-3) rocks around: keeps the
                           // field from silting up with small debris, and gives the boss big rocks to grab
 const SPAWN_INTERVAL: f32 = 1.6; // seconds between streamed-in replacement rocks (manageable rate)
@@ -734,6 +748,18 @@ fn population_target(level: i32, plus: bool) -> i32 {
     (POP_BASE + level).min(POP_CAP) + if plus { NGP_POP_BONUS } else { 0 }
 }
 
+// Is `kind` a mechanic-bearing rock (as opposed to the plain/dense baseline)? Gold is excluded: it is
+// a reward, it's already rate-limited by its own spawn clock, and it must never be crowded out.
+fn is_special_kind(kind: RockKind) -> bool {
+    !matches!(kind, RockKind::Blue | RockKind::Green)
+}
+
+// How many mechanic-bearing rocks may be out at once, given the field size. Small fields still get
+// SPECIAL_FLOOR so wave 6 doesn't roll a hunter and then hide it.
+fn special_allowance(field: i32) -> i32 {
+    ((field as f32 * SPECIAL_MAX_FRACTION) as i32).max(SPECIAL_FLOOR)
+}
+
 /// Elastic collision between two circular bodies: separate out of overlap
 /// (capped) and exchange momentum along the normal. Ported from JS collideAsteroids.
 fn resolve(pa: &mut Vec2, va: &mut Vec2, ma: f32, ra: f32, pb: &mut Vec2, vb: &mut Vec2, mb: f32, rb: f32) {
@@ -890,6 +916,33 @@ fn well_pull(ship: Vec2, well: Vec2, dt: f32) -> Vec2 {
     let dir = (well - ship) / d;
     let falloff = 1.0 - d / WELL_PULL_RADIUS;
     dir * (WELL_PULL * (0.3 + 0.7 * falloff)) * dt
+}
+
+// Every mob within `r` of a blast at `c` dies, and the count comes back. Mobs are not privileged
+// bodies (see the NO PRIVILEGES law in DESIGN.md): a blast that shatters the rock beside one has no
+// business sparing it. Scoring is deliberately NOT decided here — the caller knows whether the player
+// caused this blast (shooting a mine, popping an orange: their kill, their points) or whether the
+// field set it off on its own (a mine drifting into a rock, a mob blundering onto one: nobody's kill,
+// and paying for it would mean herding mobs onto mines for score).
+fn blast_mobs(
+    commands: &mut Commands,
+    sfx: &mut EventWriter<SoundFx>,
+    rng: &mut impl Rng,
+    mobs: impl IntoIterator<Item = (Entity, Vec2)>,
+    c: Vec2,
+    r: f32,
+) -> u32 {
+    let mut killed = 0;
+    for (me, mp) in mobs {
+        let rr = r + ENEMY_R;
+        if c.distance_squared(mp) < rr * rr {
+            burst(commands, mp, enemy_color(), 18, 300.0, rng);
+            commands.entity(me).despawn();
+            sfx.write(SoundFx::EnemyDie);
+            killed += 1;
+        }
+    }
+    killed
 }
 
 // Squared distance from point `p` to segment `a`–`b` (for chain-beam vs target hits).
@@ -1298,6 +1351,14 @@ struct Devourer {
 }
 
 impl Devourer {
+    // `spit` is a small state machine in one f32: POSITIVE = winding up to fire, NEGATIVE = cooling
+    // down after firing, ZERO = ready. One field, no extra state to keep in sync.
+    fn spit_winding(&self) -> bool {
+        self.spit > 0.0
+    }
+    fn spit_ready(&self) -> bool {
+        self.spit == 0.0
+    }
     // Maw gaping = telegraph only, nothing is being pulled yet.
     fn inhale_winding(&self) -> bool {
         self.inhale > NGP_GLUT_INHALE_DUR
@@ -1875,6 +1936,11 @@ const NGP_GLUT_SPIT_WIND: f32 = 0.9; // swell + lock on before firing
 const NGP_GLUT_SPIT_ROCKS: usize = 5; // the spread
 const NGP_GLUT_SPIT_ARC: f32 = 0.62; // total spread angle (radians)
 const NGP_GLUT_SPIT_SPEED: f32 = 300.0;
+// A MINIMUM GAP BETWEEN SPITS. Without one it machine-guns: an INHALE hauls rocks in at 900px/s², so
+// it can finish one having eaten 15, and then fire three 5-rock spreads 0.9s apart while you're still
+// dodging the first. Difficult is the point; three overlapping spreads is just unreadable.
+const NGP_GLUT_SPIT_EVERY: f32 = 4.0; // s of cooldown after a spit (tracked as a NEGATIVE `spit`)
+const _: () = assert!(NGP_GLUT_SPIT_EVERY > NGP_GLUT_SPIT_WIND); // the gap must outlast the wind-up itself
 
 const NGP_WARDEN_WHIRL_EVERY: f32 = 10.0; // gap between whirls (from the END of the last one)
 const NGP_WARDEN_WIND: f32 = 1.7; // the telegraph: ring stalls, core charges — LONG on purpose
@@ -2568,7 +2634,7 @@ fn disarm_fire(mut armed: ResMut<FireArmed>) {
 }
 
 // The three flavors of edge-spawned rock. A rock is exactly one — never both green and orange.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum RockKind {
     Blue,    // plain
     Green,   // dense / tanky (takes `hp` hits)
@@ -2662,17 +2728,30 @@ fn roll_rock_kind(level: i32, plus: bool, rng: &mut impl Rng) -> RockKind {
     if rng.gen_bool(green) {
         return RockKind::Green;
     }
-    // EACH ACT OWNS ITS ROSTER (user rule): blue lives only in Act I (1-10); Act II (11-20) runs
-    // green + orange + pulser; Act III (21-29) runs red + beacon + cluster, with RED as the carrier —
-    // so the fallback here is the current act's baseline rock. Keyed on content_wave so a later loop
-    // repeats the arc cleanly. (Wave 30, the finale, is the one all-types exception.)
-    if cw > 20 {
+    baseline_kind(level, false).expect("the base game always has an act baseline")
+}
+
+// THE ACT'S BASELINE ROCK — what the field is made of when no special rolls. EACH ACT OWNS ITS ROSTER
+// (user rule): blue lives only in Act I (1-10); Act II (11-20) runs green + orange + pulser; Act III
+// (21-29) runs red + beacon + cluster, with RED as the carrier. Keyed on content_wave so a later loop
+// repeats the arc cleanly. (Wave 30, the finale, is the one all-types exception.)
+//
+// Returns None for NG+ past wave 5, and that is not an oversight: lap two's roster is ENTIRELY
+// mechanic-bearing rocks by design (the NG+ ROSTER RULE retires the old roster completely), so there
+// is no plain rock it would be legal to fall back to. The SPECIAL cap therefore doesn't apply there —
+// lap two's density is governed by POP_CAP + NGP_POP_BONUS alone.
+fn baseline_kind(level: i32, plus: bool) -> Option<RockKind> {
+    let cw = content_wave(level);
+    if plus && cw > 5 {
+        return None;
+    }
+    Some(if !plus && cw > 20 {
         RockKind::Red
-    } else if cw > 10 {
+    } else if !plus && cw > 10 {
         RockKind::Green
     } else {
         RockKind::Blue
-    }
+    })
 }
 
 // Spawn one rock of `kind` at `pos` and apply its flavor (Explosive / Pulser / Red tag + dense green).
@@ -3192,16 +3271,10 @@ fn detonate(
                 stats.mines += 1; // your blast chain popped it — player-credited
             }
         }
-        for (ee, et) in enemies {
-            let rr = blast_r + ENEMY_R;
-            if c.distance_squared(et.translation.truncate()) < rr * rr {
-                burst(&mut commands, et.translation.truncate(), enemy_color(), 18, 300.0, &mut rng);
-                commands.entity(ee).despawn();
-                score.0 += ENEMY_SCORE;
-                stats.enemies += 1;
-                sfx.write(SoundFx::EnemyDie);
-            }
-        }
+        // a bomb going off is the player's doing (they shot it, or chained it) — so it pays out
+        let popped = blast_mobs(&mut commands, &mut sfx, &mut rng, enemies.iter().map(|(ee, et)| (ee, et.translation.truncate())), c, blast_r);
+        score.0 += ENEMY_SCORE * popped;
+        stats.enemies += popped;
         // the player is caught too — but NOT by their own friendly Warhead blast, and not mid-respawn
         // or while blinking/invincible
         if !det.friendly && run.respawn <= 0.0 {
@@ -3932,8 +4005,28 @@ fn collisions(
         .filter(|(.., beacon, _, _, _, _)| beacon.is_some())
         .map(|(_, at, ..)| at.translation.truncate())
         .collect();
-    let beacon_shielded =
-        |p: Vec2, is_beacon: bool| !is_beacon && beacon_zones.iter().any(|z| z.distance_squared(p) < BEACON_AURA_R * BEACON_AURA_R);
+    // —— WHICH ROCKS A BEACON MAY SHIELD ——
+    // Not all of them. The aura says "you can't shoot this", and stacking that on a rock whose OWN
+    // mechanic is already a shooting gate doesn't make the fight harder, it just deletes one of the two
+    // mechanics (user, 2026-08-03: "consider which ones compliment each other and which oppose so we
+    // don't have two asteroids conflicting with each other"). The exclusions, each for a concrete
+    // reason rather than for symmetry:
+    //   — FACET: its whole mechanic is finding the one open face. Inside an aura every face is closed,
+    //     so the rock you were reading the spin of stops meaning anything.
+    //   — PULSER: already alternates invulnerable/vulnerable on its own clock. Two gates on one rock
+    //     reads as "this one is just broken".
+    //   — LAPSE: untouchable for half its cycle already. Aura'd, its shootable window nearly vanishes.
+    //   — GOLD: only aimed shots may open the 1UP lineage — that's a hard rule elsewhere in this file.
+    //     An aura over a gold rock could run its fragments off the edge and silently forfeit a life the
+    //     player had earned. Not a balance question; a fairness one.
+    // What a beacon DOES shield — plain, dense, explosive, cluster, red, hunter, husk — all still work:
+    // those are rocks you answer with position and target order, which is what the aura is asking of you.
+    // The COMPLEMENTS are deliberately untouched: blasts, the warp and a grower's appetite all ignore
+    // the aura, so the answer to a beacon is always on the field somewhere.
+    let shieldable = |pulser: bool, lapse: bool, facet: bool, gold: bool| !(pulser || lapse || facet || gold);
+    let beacon_shielded = |p: Vec2, is_beacon: bool, shieldable: bool| {
+        !is_beacon && shieldable && beacon_zones.iter().any(|z| z.distance_squared(p) < BEACON_AURA_R * BEACON_AURA_R)
+    };
     for (be, bt, b, bvel, is_warhead, mut gorge_shot) in &mut bullets {
         if dead_b.contains(&be) {
             continue;
@@ -3997,7 +4090,7 @@ fn collisions(
                 }
                 // inside a beacon's aura → EVERY round fizzles, warhead included. Kill the beacon —
                 // or answer with a blast or the warp, which bypass the aura.
-                if beacon_shielded(ap, beacon.is_some()) {
+                if beacon_shielded(ap, beacon.is_some(), shieldable(pulser.is_some(), lapse.is_some(), facet.is_some(), gold.is_some())) {
                     burst(&mut commands, bp, dim(beacon_color(), 0.9), 4, 130.0, &mut rng); // teal fizzle
                     dead_b.insert(be);
                     commands.entity(be).despawn();
@@ -4405,8 +4498,10 @@ fn top_up_asteroids(
     arena: Res<Arena>,
     plus: Res<NewGamePlus>,
     mut commands: Commands,
-    asteroids: Query<&Asteroid, Without<Gold>>, // EXCLUDE the gold 1UP — a lingering gold must not eat
-) {                                             // into the finale's field cap (or stall the trickle)
+    // EXCLUDE the gold 1UP from the count — a lingering gold must not eat into the field cap (or stall
+    // the trickle). The flavor markers come along so the SPECIAL allowance can be measured.
+    asteroids: Query<(&Asteroid, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>, Option<&Facet>, Option<&Husk>), Without<Gold>>,
+) {
     if wave.calm > 0.0 {
         return;
     }
@@ -4415,6 +4510,13 @@ fn top_up_asteroids(
         return;
     }
     let count = asteroids.iter().count() as i32; // non-gold rocks on the field
+    // mechanic-bearing rocks currently out (dense/plain don't count — they're the baseline)
+    let specials = asteroids
+        .iter()
+        .filter(|(_, ex, pu, re, cl, be, hu, la, fa, hk)| {
+            ex.is_some() || pu.is_some() || re.is_some() || cl.is_some() || be.is_some() || hu.is_some() || la.is_some() || fa.is_some() || hk.is_some()
+        })
+        .count() as i32;
 
     // ── FINALE (wave 30): fully RANDOM across every rock type the Belt has shown (see
     //    `roll_finale_kind`), TRICKLED in one at a time at the same gentle rate as before, against a
@@ -4436,12 +4538,20 @@ fn top_up_asteroids(
         return;
     }
 
-    let bigs = asteroids.iter().filter(|a| a.size == 3).count() as i32;
+    let bigs = asteroids.iter().filter(|(a, ..)| a.size == 3).count() as i32;
     // refill toward the count target, AND separately keep big rocks above the floor even at the
     // cap — otherwise breaking large rocks leaves the field as nothing but small debris.
     if count < population_target(wave.level, plus.0) || bigs < BIG_FLOOR {
         let mut rng = rand::thread_rng();
-        let kind = roll_rock_kind(wave.level, plus.0, &mut rng);
+        let mut kind = roll_rock_kind(wave.level, plus.0, &mut rng);
+        // SPECIALS ARE CAPPED: over the allowance, this spawn becomes the act's plain rock instead.
+        // Rolling first and then demoting (rather than biasing the roll) keeps the whole authored wave
+        // mix in `roll_rock_kind` untouched — this only limits how many land at once.
+        if is_special_kind(kind) && specials >= special_allowance(count.max(1)) {
+            if let Some(plain) = baseline_kind(wave.level, plus.0) {
+                kind = plain;
+            }
+        }
         spawn_edge_asteroid(&mut commands, arena.half, &mut rng, kind, bigs < BIG_FLOOR);
         clock.0 = SPAWN_INTERVAL;
     } else {
@@ -4516,7 +4626,7 @@ fn mine_update(
     wave: Res<Wave>,
     mut sfx: EventWriter<SoundFx>,
     ships: Query<(Entity, &Transform, &Ship), Without<Mine>>,
-    mobs: Query<&Transform, (With<Enemy>, Without<Mine>)>,
+    mobs: Query<(Entity, &Transform), (With<Enemy>, Without<Mine>)>,
     mut mines: Query<(Entity, &mut Transform, &mut Velocity, &mut Mine)>,
     // &mut to match blast_asteroids' type; only read here (iter + shared borrow)
     asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>, Option<&Facet>, Option<&Husk>), (Without<Mine>, Without<Shielded>)>,
@@ -4579,13 +4689,15 @@ fn mine_update(
                 p.distance_squared(at.translation.truncate()) < rr * rr
             }
         });
-        let touched_mob = mobs.iter().any(|mp| {
+        let touched_mob = mobs.iter().any(|(_, mt)| {
             let rr = MINE_R + ENEMY_R;
-            p.distance_squared(mp.translation.truncate()) < rr * rr
+            p.distance_squared(mt.translation.truncate()) < rr * rr
         });
         if inside && (touched_rock || touched_mob) {
             burst(&mut commands, p, mine_color(), 26, 300.0, &mut rng);
             blast_asteroids(&mut commands, &mut rng, &asteroids, &mut broken, p, time.elapsed_secs());
+            // the blast takes any mob in range with it. Uncredited: the field set this one off.
+            blast_mobs(&mut commands, &mut sfx, &mut rng, mobs.iter().map(|(m, mt)| (m, mt.translation.truncate())), p, MINE_BLAST_R);
             sfx.write(SoundFx::Mine);
             commands.entity(me).despawn();
             continue;
@@ -4610,6 +4722,9 @@ fn mine_update(
                 if contact || (mine.fuse <= 0.0 && d < MINE_BLAST_R) {
                     burst(&mut commands, p, mine_color(), 26, 300.0, &mut rng);
                     blast_asteroids(&mut commands, &mut rng, &asteroids, &mut broken, p, time.elapsed_secs());
+                    // the mob that was hovering next to you dies in it too — you set this one off by
+                    // being here, but you also just lost a life for it, so it pays nothing
+                    blast_mobs(&mut commands, &mut sfx, &mut rng, mobs.iter().map(|(m, mt)| (m, mt.translation.truncate())), p, MINE_BLAST_R);
                     sfx.write(SoundFx::Mine);
                     commands.entity(me).despawn();
                     kill_ship(&mut commands, &mut run, &mut next, &mut sfx, se, sp, &mut rng);
@@ -5564,7 +5679,9 @@ fn devourer_update(
 
         // ── NG+ REGURGITATE ── gorged enough → a short swell (the tell), then it spits the mass back
         // along its facing as a spread of rocks. What went in is what comes out.
-        if plus.0 && dv.spit > 0.0 {
+        if plus.0 && dv.spit < 0.0 {
+            dv.spit = (dv.spit + dt).min(0.0); // cooling down after the last spit
+        } else if plus.0 && dv.spit_winding() {
             dv.spit -= dt;
             if dv.spit <= 0.0 {
                 let base = face.to_angle();
@@ -5578,8 +5695,9 @@ fn devourer_update(
                 sfx.write(SoundFx::Mine);
                 dv.fed -= NGP_GLUT_SPIT_FED; // it spent what it ate…
                 dv.grow = (dv.grow - DEVOURER_GROW_PER_EAT * NGP_GLUT_SPIT_FED as f32).max(0.0); // …and shrinks for it
+                dv.spit = -NGP_GLUT_SPIT_EVERY; // …and can't fire again until the gap has passed
             }
-        } else if plus.0 && dv.dying <= 0.0 && dv.fed >= NGP_GLUT_SPIT_FED && dv.inhale <= 0.0 {
+        } else if plus.0 && dv.dying <= 0.0 && dv.spit_ready() && dv.fed >= NGP_GLUT_SPIT_FED && dv.inhale <= 0.0 {
             dv.spit = NGP_GLUT_SPIT_WIND; // arm it — one attack at a time, never mid-inhale
         }
 
@@ -5924,8 +6042,12 @@ fn chain_update(
                 if pulser.is_some_and(|pl| pulser_lit(pl.offset, time.elapsed_secs())) {
                     continue;
                 }
-                // aura-shielded (and not itself a beacon) → the beam washes over it
-                if beacon.is_none() && beacon_zones.iter().any(|z| z.distance_squared(ap) < BEACON_AURA_R * BEACON_AURA_R) {
+                // aura-shielded (and not itself a beacon) → the beam washes over it. Same exclusion
+                // list as gunfire (see `shieldable` in `collisions`): the aura may not be stacked on a
+                // rock that is already its own shooting gate (facet / pulser / lapse), nor over the
+                // gold lineage. Note the pulser and lapse cases are already handled just above.
+                let stackable = facet.is_none() && gold.is_none();
+                if beacon.is_none() && stackable && beacon_zones.iter().any(|z| z.distance_squared(ap) < BEACON_AURA_R * BEACON_AURA_R) {
                     continue;
                 }
                 dead.insert(ae);
@@ -8279,7 +8401,7 @@ fn render_boss(
                     }
                 }
             }
-            if dv.spit > 0.0 {
+            if dv.spit_winding() {
                 // the FIRING LINE it's about to spit along, plus a swelling gullet
                 let f = 1.0 - (dv.spit / NGP_GLUT_SPIT_WIND).clamp(0.0, 1.0);
                 let base = facing.to_angle();
@@ -13747,6 +13869,22 @@ mod tests {
         assert_eq!(app2.world_mut().query::<&Asteroid>().iter(app2.world()).count(), 1, "and nothing was welded");
     }
 
+    // The spit cooldown is the only thing stopping a well-fed INHALE from chaining three 5-rock
+    // spreads 0.9s apart. It lives in the sign of one f32, which is exactly the kind of thing that
+    // gets "simplified" away later.
+    #[test]
+    fn the_glutton_plus_cannot_machine_gun_its_spit() {
+        let base = Devourer { hp: 10, grow: 0.0, fed: 0, dying: 0.0, pulse: 0.0, inhale: 0.0, inhale_cd: 0.0, spit: 0.0 };
+        assert!(base.spit_ready() && !base.spit_winding(), "idle means ready to arm");
+        let winding = Devourer { spit: NGP_GLUT_SPIT_WIND, ..base };
+        assert!(winding.spit_winding() && !winding.spit_ready(), "a positive spit is the wind-up");
+        let cooling = Devourer { spit: -NGP_GLUT_SPIT_EVERY, ..base };
+        assert!(!cooling.spit_winding() && !cooling.spit_ready(), "a negative spit is the cooldown — it can neither fire nor re-arm");
+        // and the gap genuinely outlasts a wind-up, so two spits can never overlap (also asserted at
+        // compile time next to the constants — this is the runtime reminder of why)
+        const { assert!(NGP_GLUT_SPIT_EVERY > NGP_GLUT_SPIT_WIND) };
+    }
+
     #[test]
     fn the_glutton_plus_inhale_is_escapable_and_coned() {
         // The fairness constants (pull < THRUST, a coned wedge, a readable gape) are compile-time
@@ -15021,6 +15159,45 @@ mod tests {
         app.update();
         let v = app.world().entity(mob).get::<Velocity>().unwrap().0;
         assert!(v.x < 0.0, "the mob is hauled toward the well, not ignored by it (got {v:?})");
+    }
+
+    // THE FIELD MUST STAY READABLE. These are the two knobs that keep individual rock mechanics
+    // legible, and both are the kind of thing a later "just bump the density" change quietly undoes.
+    #[test]
+    fn the_field_stays_sparse_enough_to_read() {
+        // the head count is what's capped, and breaking rocks pushes the live field ABOVE it on its
+        // own, so the target has to sit well under what looks tolerable in a still frame
+        assert!(population_target(30, false) <= 12, "the late-game field target stayed modest");
+        assert!(population_target(1, false) <= 6, "and wave 1 opens sparse");
+        // NG+ is denser, but only by its stated bonus — never a different curve
+        assert_eq!(population_target(30, true), population_target(30, false) + NGP_POP_BONUS);
+        // the big-rock floor must still FIT inside the cap, or the field would be all boulders
+        assert!(BIG_FLOOR < population_target(1, false), "the large-rock floor fits even the opening wave");
+    }
+
+    #[test]
+    fn mechanic_rocks_are_a_garnish_not_the_field() {
+        assert!(!is_special_kind(RockKind::Blue) && !is_special_kind(RockKind::Green), "plain and dense are the baseline");
+        for k in [RockKind::Orange, RockKind::Pulser, RockKind::Red, RockKind::Cluster, RockKind::Beacon, RockKind::Hunter, RockKind::Lapse, RockKind::Facet, RockKind::Husk] {
+            assert!(is_special_kind(k), "{k:?} carries a mechanic");
+        }
+        // a full late-game field allows a handful, never a majority
+        let full = population_target(30, false);
+        assert!(special_allowance(full) < full / 2, "specials can never outnumber the plain field");
+        // …but a sparse early field still shows some, or a debut wave would hide its new rock
+        assert!(special_allowance(1) >= SPECIAL_FLOOR, "even a nearly-empty field allows the floor");
+    }
+
+    // The NG+ roster rule and the special cap could contradict each other: lap two past wave 5 is
+    // ENTIRELY mechanic-bearing rocks, so there is no legal plain rock to demote a spawn to.
+    #[test]
+    fn the_special_cap_never_breaks_the_ngplus_roster_rule() {
+        assert_eq!(baseline_kind(3, false), Some(RockKind::Blue), "Act I is blue");
+        assert_eq!(baseline_kind(15, false), Some(RockKind::Green), "Act II is green");
+        assert_eq!(baseline_kind(25, false), Some(RockKind::Red), "Act III is red");
+        assert_eq!(baseline_kind(3, true), Some(RockKind::Blue), "NG+ waves 1-5 recap the old roster");
+        assert_eq!(baseline_kind(9, true), None, "past wave 5 lap two has NO plain rock to fall back to");
+        assert_eq!(baseline_kind(30, true), None, "…including its finale");
     }
 
     #[test]

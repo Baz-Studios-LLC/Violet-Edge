@@ -5,6 +5,22 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
+- **THE FIELD IS LESS CROWDED, so the rocks can actually be rocks.** A third fewer asteroids on screen
+  at full density (18 → 12), and a third of a full field is now big rocks rather than debris. The
+  asteroids are still the star — that's the point: a facet's open face, a lapse fading out, a hunter
+  turning to look at you are all things you have to *see*, and they were getting lost in the crowd.
+  Mines and raiders are capped as a share of the rock count, so they thinned out with it.
+- **Mechanic rocks are a garnish now, not the field.** At most about 40% of the field can be
+  "special" rocks at once. Wave mixes are unchanged — you'll meet all the same types on the same
+  waves — but they arrive with room around them instead of four at once.
+- **No two rocks cancel each other out any more.** A beacon's aura used to shield *everything* near
+  it, which quietly deleted other rocks' mechanics: a facet inside an aura has no open face to find,
+  a pulser gets a second shield on top of its own, a lapse becomes almost unshootable, and a gold
+  rock could sit protected while its fragments drifted off the edge and cost you the extra life you'd
+  earned. Beacons now leave those four alone and shield the rocks they were meant to — the ones you
+  answer by choosing your target order. Blasts, the warp and a grower's appetite still ignore auras,
+  so there's always an answer on the field.
+
 - **EVERYTHING IS HOSTILE — mobs live in the same world you do.** They were quietly immune to the
   entire field, which is why they looked like they clipped straight through asteroids: they had no
   collision with rocks at all. Now a raider is:

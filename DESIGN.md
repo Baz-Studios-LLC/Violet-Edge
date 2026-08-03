@@ -89,6 +89,50 @@ full-screen tint pulse — all rates ≤3 Hz (`boss_warning_update` + the banner
 
 Each boss drops a powerup that echoes its own mechanic.
 
+### ⭐ THE FIELD MUST STAY READABLE (user, 2026-08-03)
+
+*"I do want them as the star, but a full screen of rocks is more annoying and doesn't allow for their
+individual mechanics to really shine."* The asteroids are still the star — but a rock's mechanic (a
+facet's open face, a lapse fading, a beacon's aura, a hunter turning to look at you) can only be READ
+if there is room around it. Three rules:
+
+**1. Fewer, bigger rocks.** `POP_BASE`/`POP_CAP` eased 5/18 → **4/12** (−33% at the cap); `BIG_FLOOR`
+stays 4, so a third of a full field is boulders rather than debris. Remember the cap is a **head
+count** and *breaking* rocks pushes the live field above it on its own (one large → two mids → up to
+four smalls), which is exactly why the target must sit below what looks tolerable in a still frame.
+Mines and mobs are already capped as *fractions of the rock count*, so they scale down with it for
+free (at the cap: mines 5→3, mobs 5→3). Known trade-off: the curve now plateaus at wave 8 instead of
+wave 13, so **past wave 8 difficulty escalates through rock TYPES and bosses, not density** — which is
+the intent, but it does mean density is no longer a late-game dial.
+
+**2. Mechanic-bearing rocks are a garnish.** `SPECIAL_MAX_FRACTION` (0.4, floor `SPECIAL_FLOOR` 2) caps
+how many "specials" (anything that isn't plain blue or dense green) may be out at once — the same
+pattern as `ENEMY_MAX_FRACTION`. A spawn is rolled normally and then **demoted** to the act's baseline
+rock if the field is already at its allowance, so the whole authored wave mix in `roll_rock_kind` stays
+untouched; this only limits how many land together. `baseline_kind()` is the single source of the act
+baseline (Act I blue / II green / III red) and returns **None for NG+ past wave 5** — not an oversight:
+lap two's roster is entirely mechanic-bearing by design (the NG+ ROSTER RULE), so there is no legal
+plain rock to demote to, and the cap simply doesn't apply there.
+
+**3. No two rocks may cancel each other.** *"Consider which ones compliment each other and which oppose
+so we don't have two asteroids conflicting with each other."* The one real offender was the **beacon
+aura**, which shielded *every* non-beacon rock — including three whose own mechanic is already a
+shooting gate, plus the gold lineage. A beacon may now shield **plain, dense, explosive, cluster, red,
+hunter, husk** (rocks you answer with position and target order — which is what the aura asks of you),
+and is **excluded** from:
+
+| Excluded | Why it's a conflict, not a difficulty |
+| --- | --- |
+| **Facet** | Its mechanic is finding the one open face. Aura'd, every face is closed — the spin you were reading stops meaning anything. |
+| **Pulser** | Already alternates invulnerable/vulnerable on its own clock. Two gates on one rock reads as "this one is broken". |
+| **Lapse** | Already untouchable for half its cycle. Aura'd, its shootable window nearly vanishes. |
+| **Gold** | Only aimed shots may open the 1UP lineage (a hard rule elsewhere). An aura could run its fragments off the edge and silently forfeit a life the player earned — a fairness bug, not a balance one. |
+
+Enforced identically at **both** damage paths (gunfire in `collisions`, the chain beam in
+`chain_update`) — they used to be separate copies of the aura test, which is how they could drift.
+The **complements** are deliberately untouched, so the answer to a beacon is always somewhere on the
+field: blasts, the warp, and a grower's appetite all ignore the aura.
+
 ### ⭐ Two standing laws for anything that isn't the player
 
 **1. THE SPEED LAW** (user, 2026-08-03): *"Nothing should move faster than the player except bosses and
