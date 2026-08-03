@@ -96,6 +96,7 @@ Each boss drops a powerup that echoes its own mechanic.
 | Slinger (W15) | **Drone** | ✅ | an ally craft that orbits the ship a short distance out and auto-fires the player's Bullet at the nearest asteroid in range — mops up rocks you left behind (one per run) |
 | Detonator (W20) | **Warhead rounds** | ✅ | permanent passive — every primary shot makes the rock it hits **detonate & chain** in a **violet, player-SAFE blast** (gold is spared; your own boom won't kill you) — echoes the primed bombs |
 | **Warden+ (W5, NG+ ONLY)** | **Aegis Shards** | ✅ | The Warden pens rocks on orbital arms; this is that trick in your hands. `AEGIS_SHARDS` (3) **small** chips ride a slow orbit around the hull, positioned from the ship's transform each frame so they **move with it** (user's call), and each **grinds one would-be-fatal rock** — vaporized, no chunks, and deliberately **no score or kill credit** (a save, not a kill you earned; also kills any fly-into-rocks farming). NOT invincibility: a save spends a shard, they regrow **one at a time** on `AEGIS_REGEN` (11s, compile-time asserted > 5s), and an empty ring means the next rock kills you. The thinning ring IS the readout — no HUD slot. On lap two the Warden+ drops this **instead of** the Chain orb (user: only the new one; NG+ has no beacons past wave 5 for the beam to answer). |
+| **Glutton+ (W10, NG+ ONLY)** | **Gorge Round** | ✅ | The Glutton's one verb — EAT — handed to the player. A slow, heavy round (`GORGE_SPEED` 430, compile-time asserted **under** `BULLET_SPEED` so heavy always reads as slow) that **does not stop on impact**: it destroys the rock, SWELLS by `GORGE_GROW` (5.2px), and keeps flying, ending as a rolling wrecking ball. Deliberately **bounded so it can't be a field-clear button**: a hard `GORGE_R_MAX` (34px) size cap and it **breaks up after `GORGE_BITES` (6) rocks**, on a slow `GORGE_COOLDOWN` (1.05s). Distinct from everything already on Q — Warhead detonates and *stops*, Mass is a fat *one-shot*, this one **snowballs**. Its growth IS the readout (no HUD number): a nearly-full round is visibly huge with a bright throat. Drawn as the Glutton's maw thrown — a rolling ring of gnashing teeth in the boss's red. On lap two the Glutton+ drops this **instead of** the Mass orb (user: only the new one). |
 | Pulsar (W25) | **Nova Shield** | ✅ | a regenerating **one-hit barrier**: while UP it eats one lethal hit and collapses; after `NOVA_REGEN` (~9s) it **flickers back on** (its ring blinks ≤3 Hz as it re-lights). A hit while it's DOWN costs the life as normal. The player inherits the Pulsar's lit-invulnerable ↔ dark-vulnerable identity. (Replaced the earlier "Nova pulse" shockwave sketch — playtest direction 2026-07-28.) |
 | Phantom (W30) | ~~Magnet~~ **CUT** (2026-07-30) | ❌ | the wave-30 kill ends the game — the victory cinematic plays immediately, so there is nothing to pick a drop up WITH. The Phantom deliberately drops nothing; its "reward" is the ending + NEW GAME+ unlocking on the menu. |
 | Hive (W35) | **Spread shot** | 🔷 | your shot *splits* into several — echoes mitosis |
@@ -467,6 +468,21 @@ be enough, and the two together would likely over-correct.
   already lethal on contact, so the sweep needs no new damage path). It cannot throw or grab while
   whirling, and the 1.5s recovery is a deliberate punish window. The hazard is a fixed ZONE, never a
   chase — asserted to stay under 220px.
+  **THE GLUTTON+ (2026-08-03)** — both upgrades extend its single verb, EAT, rather than bolting a
+  gun onto it:
+  • **INHALE** (`NGP_GLUT_INHALE_*`) — the maw gapes for `WIND` (1.1s) as **pure telegraph**, then a
+  suction **WEDGE** (`REACH` 430px, `ARC` 1.5rad half-angle — a cone, not a sphere, compile-time
+  asserted under a quarter turn so standing off to the side is always the counter) drags loose rocks
+  AND the ship toward it for `DUR` (2.2s). The pull on the ship is `520 px/s²` at the mouth and falls
+  off with distance, **compile-time asserted below `THRUST`** — escapability is not negotiable; what
+  it actually costs you is a dodge you'd already committed to. Rocks are hauled harder (900) because
+  it is *feeding itself*, which arms the next attack.
+  • **REGURGITATE** — past `SPIT_FED` (5) rocks eaten it swells for `SPIT_WIND` (0.9s, the tell, with
+  the firing line drawn) and spits the mass back as a **5-rock spread** along its facing. What went in
+  is what comes out, so the count is readable, and it **spends** the `fed`/`grow` it vented. Side
+  effect worth knowing: this partly vents the OVERLOAD the base fight punishes it with, so on lap two
+  *starving* it is the reliable line and overfeeding is no longer free.
+  Only one attack runs at a time (never mid-inhale, never while dying).
   **THE WARDEN+** is the first upgraded fight: old kit at 0.65× cadence, a TWO-rock spread per
   throw, and every hurled rock is PRIMED (`Detonating`, 1.7s fuse — shoot it out of the air or
   clear the blast; reuses `detonate` wholesale). Upgraded mechanics for bosses 2-6 come one at a

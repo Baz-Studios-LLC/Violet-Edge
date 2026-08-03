@@ -383,6 +383,17 @@ const FRAGMENT_GRACE: f32 = 1.8; // s a freshly-broken fragment is protected fro
 const GOLD_GRACE: f32 = 6.0; // gold fragments get a longer window (recycle, not culled) — a fair chance to catch them before one can drift off and forfeit the life
 const ORANGE_BLAST_R: f32 = 250.0; // explosive-asteroid kill/chain radius (+ the victim's own radius). Was 150 — too small on big screens, so it looked huge (the particle burst throws to ~440) but barely caught neighbours. Now the reach matches the visual.
 const WARHEAD_BLAST_R: f32 = 110.0; // the Warhead's blast radius — REAL AoE since the on-impact rework: everything inside dies with the struck rock (the ring Shockwave draws exactly this reach)
+// THE GORGE ROUND — the Glutton+'s drop (NG+ boss 2), and its verb in the player's hands: a slow,
+// heavy round that EATS each rock it hits and GROWS, ending as a rolling wrecking ball. Distinct from
+// what you already carry: the Warhead detonates and stops, Mass is a fat one-shot, this one snowballs.
+// Bounded so it can't clear a whole field: it grows to a hard cap and dies at GORGE_BITES.
+const GORGE_COOLDOWN: f32 = 1.05; // s between rounds — slow, deliberate
+const GORGE_R0: f32 = 7.0; // starting radius
+const GORGE_GROW: f32 = 5.2; // radius gained per rock eaten
+const GORGE_R_MAX: f32 = 34.0; // hard size cap
+const GORGE_BITES: u32 = 6; // rocks it can eat before it breaks up
+const GORGE_SPEED: f32 = 430.0; // slower than a standard round (BULLET_SPEED), and it keeps that pace
+const _: () = assert!(GORGE_SPEED < BULLET_SPEED); // heavy = slow: it must be readable on the way out
 const WARHEAD_COOLDOWN: f32 = 1.3; // s between Warhead rounds — VERY slow on purpose: since the on-impact AoE rework each round clears a 110px disk, so it's a toggled siege weapon (Q-cycle), not a machine gun. Aim, fire, wait.
 const ORANGE_FUSE: f32 = 0.09; // brief lit flash after a lethal hit before it detonates (a visible "pop")
 
@@ -1603,6 +1614,7 @@ enum PickupKind {
     Warhead,
     Nova, // the Pulsar's drop (boss 5): the regenerating one-hit Nova Shield
     Aegis, // the Warden+'s drop (NG+ boss 1): orbiting shards that grind rocks off your hull
+    Gorge, // the Glutton+'s drop (NG+ boss 2): a round that eats rocks and grows
 }
 
 // An ally drone (boss-3 reward): orbits the ship a short distance out and auto-fires at the nearest
@@ -1921,6 +1933,27 @@ struct MassShot {
 struct Warhead {
     unlocked: bool,
     active: bool,
+}
+
+// The Gorge Round shot mode (NG+ only — dropped by the Glutton+). Fourth entry on the Q cycle.
+#[derive(Resource, Default)]
+struct Gorge {
+    unlocked: bool,
+    active: bool,
+}
+
+// A live gorge round: `eaten` counts the rocks it has swallowed, which drives both its radius and its
+// remaining lifetime. It is deliberately finite — a round that never stopped growing would trivialise
+// a whole field.
+#[derive(Component)]
+struct GorgeShot {
+    eaten: u32,
+}
+
+impl GorgeShot {
+    fn radius(&self) -> f32 {
+        (GORGE_R0 + GORGE_GROW * self.eaten as f32).min(GORGE_R_MAX)
+    }
 }
 
 // ─────────────────────────────── achievements ─────────────────────────
@@ -3436,6 +3469,7 @@ fn fire(
     input: Res<ActionState>,
     mut mass: ResMut<MassShot>,
     mut warhead: ResMut<Warhead>,
+    mut gorge: ResMut<Gorge>,
     mut armed: ResMut<FireArmed>,
     mut mode: ResMut<ShotModeFlash>,
     arena: Res<Arena>,
@@ -3448,20 +3482,23 @@ fn fire(
     // not a fixed distance that looks tiny on a big display (floored at BULLET_LIFE for small windows)
     let bullet_life = (BULLET_RANGE_FRAC * arena.half.x / BULLET_SPEED).max(BULLET_LIFE);
     // Q CYCLES the shot mode through the unlocked options: Standard → Mass → Warhead → Standard.
-    if input.toggle && (mass.unlocked || warhead.unlocked) {
-        let cur = if warhead.active { 2u8 } else if mass.active { 1 } else { 0 };
+    if input.toggle && (mass.unlocked || warhead.unlocked || gorge.unlocked) {
+        let cur = if gorge.active { 3u8 } else if warhead.active { 2 } else if mass.active { 1 } else { 0 };
         let mut avail = vec![0u8];
         if mass.unlocked { avail.push(1); }
         if warhead.unlocked { avail.push(2); }
+        if gorge.unlocked { avail.push(3); }
         let i = avail.iter().position(|&m| m == cur).unwrap_or(0);
         let next = avail[(i + 1) % avail.len()];
         mass.active = next == 1;
         warhead.active = next == 2;
+        gorge.active = next == 3;
         mode.0 = SHOT_MODE_SHOW;
         sfx.write(SoundFx::Toggle);
     }
-    let is_warhead = warhead.unlocked && warhead.active;
-    let is_mass = !is_warhead && mass.unlocked && mass.active;
+    let is_gorge = gorge.unlocked && gorge.active;
+    let is_warhead = !is_gorge && warhead.unlocked && warhead.active;
+    let is_mass = !is_gorge && !is_warhead && mass.unlocked && mass.active;
     let want_fire = input.fire_held;
     if !want_fire {
         armed.0 = true; // released → the next press is a genuine fire, not the start/resume click
@@ -3471,20 +3508,24 @@ fn fire(
             ship.cooldown -= dt;
         }
         if want_fire && armed.0 && ship.cooldown <= 0.0 {
-            ship.cooldown = if is_warhead { WARHEAD_COOLDOWN } else if is_mass { MASS_COOLDOWN } else { FIRE_COOLDOWN };
+            ship.cooldown = if is_gorge { GORGE_COOLDOWN } else if is_warhead { WARHEAD_COOLDOWN } else if is_mass { MASS_COOLDOWN } else { FIRE_COOLDOWN };
             let aim = Vec2::from_angle(ship.angle);
             let ship_pos = t.translation.truncate();
             let dir = aim; // fire exactly where the ship points — no assist (small targets are handled by size instead)
             let pos = ship_pos + dir * SHIP_R;
+            let speed = if is_gorge { GORGE_SPEED } else { BULLET_SPEED };
             let mut b = commands.spawn((
                 Bullet { life: bullet_life, trail: Vec::new(), mass: is_mass },
-                Velocity(dir * BULLET_SPEED),
+                Velocity(dir * speed),
                 Transform::from_xyz(pos.x, pos.y, 0.0),
             ));
+            if is_gorge {
+                b.insert(GorgeShot { eaten: 0 });
+            }
             if is_warhead {
                 b.insert(WarheadShot); // piercing destroy-round (see collisions)
             }
-            if is_warhead || is_mass {
+            if is_gorge || is_warhead || is_mass {
                 run.powerup_fires += 1; // a powerup round left the barrel — the Pacifist streak is over
             }
             sfx.write(SoundFx::Fire);
@@ -3825,7 +3866,7 @@ fn bullet_bounds(
 fn collisions(
     mut commands: Commands,
     time: Res<Time>,
-    bullets: Query<(Entity, &Transform, &Bullet, &Velocity, Has<WarheadShot>)>,
+    mut bullets: Query<(Entity, &Transform, &Bullet, &Velocity, Has<WarheadShot>, Option<&mut GorgeShot>)>,
     mut asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>, Option<&Facet>, Option<&Husk>), (Without<Mine>, Without<Shielded>)>,
     mines: Query<(Entity, &Transform), With<Mine>>,
     enemies: Query<(Entity, &Transform), With<Enemy>>,
@@ -3863,12 +3904,15 @@ fn collisions(
         .collect();
     let beacon_shielded =
         |p: Vec2, is_beacon: bool| !is_beacon && beacon_zones.iter().any(|z| z.distance_squared(p) < BEACON_AURA_R * BEACON_AURA_R);
-    for (be, bt, b, bvel, is_warhead) in &bullets {
+    for (be, bt, b, bvel, is_warhead, mut gorge_shot) in &mut bullets {
         if dead_b.contains(&be) {
             continue;
         }
         let bp = bt.translation.truncate();
-        let br = bullet_radius(b.mass); // mass shots are fatter…
+        // A GORGE round's hitbox is its DRAWN size — the maw is up to GORGE_R_MAX across, and a mouth
+        // that visibly swallowed a rock without eating it would be a lie. Sampled once per frame, so
+        // it can't snowball its own reach inside a single tick.
+        let br = gorge_shot.as_deref().map(|g| g.radius()).unwrap_or_else(|| bullet_radius(b.mass)); // mass shots are fatter…
         let power = bullet_boss_power(b.mass); // …and (vs a boss/mob) hit a bit harder; vs free rocks, see below
         let mut warhead_blast_at: Option<Vec2> = None; // set when a warhead round detonates on a rock
         for (ae, at, mut a, gold, explosive, pulser, red, cluster, beacon, hunter, lapse, facet, husk) in &mut asteroids {
@@ -3928,6 +3972,28 @@ fn collisions(
                     dead_b.insert(be);
                     commands.entity(be).despawn();
                     break;
+                }
+                // ── THE GORGE ROUND ── it EATS the rock and swells, then carries on. Bounded: it
+                // dies once it has taken GORGE_BITES, so it can never sweep an entire field. It sits
+                // AFTER the mirror/lapse/pulser/beacon guards on purpose — it's still a ROUND, so
+                // every defence that answers a round answers this too. Gold is claimed whole (no
+                // chunks → the lineage clears → the 1UP lands), same as a warhead impact or the warp:
+                // aimed shots may take the gold the fast way; only blasts and mines may not.
+                if let Some(g) = gorge_shot.as_deref_mut() {
+                    dead_a.insert(ae);
+                    break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, flavor(a.dense, gold, pulser, red, cluster, beacon, hunter, lapse, facet, husk), false);
+                    sfx.write(SoundFx::Break(a.size));
+                    credit_rock_kill(&mut stats, flavor(a.dense, gold, pulser, red, cluster, beacon, hunter, lapse, facet, husk));
+                    g.eaten += 1;
+                    burst(&mut commands, ap, devourer_color(), 8, 200.0, &mut rng);
+                    if g.eaten >= GORGE_BITES {
+                        // full: it breaks up in a last spray rather than sailing on forever
+                        dead_b.insert(be);
+                        commands.entity(be).despawn();
+                        burst(&mut commands, ap, devourer_color(), 22, 320.0, &mut rng);
+                        break;
+                    }
+                    continue; // still hungry — keep flying
                 }
                 if is_warhead {
                     // WARHEAD: detonate ON IMPACT — the round is spent here (it's a warhead, not a
@@ -5319,10 +5385,12 @@ fn devourer_update(
                 burst(&mut commands, p, devourer_color(), 60, 500.0, &mut rng);
                 burst(&mut commands, p, Color::srgb(6.0, 4.0, 4.0), 26, 320.0, &mut rng);
                 commands.entity(de).despawn();
-                // drop the mass-shot orb (the boss-2 reward, content wave 10)
+                // boss-2 reward (content wave 10): the mass shot normally, the GORGE ROUND in NG+ —
+                // one orb either way, so the choice on Q never gets diluted.
+                let kind = if plus.0 { PickupKind::Gorge } else { PickupKind::Mass };
                 let pdir = Vec2::from_angle(rng.gen_range(0.0..TAU));
                 commands.spawn((
-                    Pickup { rot: 0.0, pulse: 0.0, life: PICKUP_LIFE, kind: PickupKind::Mass },
+                    Pickup { rot: 0.0, pulse: 0.0, life: PICKUP_LIFE, kind },
                     Velocity(pdir * PICKUP_DRIFT),
                     Transform::from_xyz(0.0, 0.0, 0.0),
                 ));
@@ -5809,6 +5877,7 @@ fn pickup_update(
     mut chain: ResMut<Chain>,
     mut mass: ResMut<MassShot>,
     mut warhead: Option<ResMut<Warhead>>, // Option so headless tests needn't insert it
+    mut gorge: Option<ResMut<Gorge>>,     // (same)
     mut run: Option<ResMut<Run>>,         // (same) — carries the Nova Shield state
     mut flags: ResMut<RunFlags>,
     ships: Query<&Transform, With<Ship>>,
@@ -5882,6 +5951,17 @@ fn pickup_update(
                         r.nova = Nova { unlocked: true, down: 0.0, grace: 0.0 }; // raised, and UP right away
                     }
                     nova_color()
+                }
+                PickupKind::Gorge => {
+                    if let Some(g) = gorge.as_mut() {
+                        g.unlocked = true;
+                        g.active = true; // handed over ready to fire
+                    }
+                    mass.active = false;
+                    if let Some(w) = warhead.as_mut() {
+                        w.active = false;
+                    }
+                    devourer_color()
                 }
                 PickupKind::Aegis => {
                     if let Some(r) = run.as_mut() {
@@ -6184,6 +6264,7 @@ fn hud_ability_labels(
     chain: Res<Chain>,
     mass: Res<MassShot>,
     warhead: Res<Warhead>,
+    gorge: Res<Gorge>,
     run: Res<Run>,
     drones: Query<(), With<Drone>>,
     mut labels: Query<(&mut Visibility, &AbilitySlot)>,
@@ -6194,7 +6275,7 @@ fn hud_ability_labels(
             && match slot {
                 AbilitySlot::Warp => true,
                 AbilitySlot::Chain => chain.unlocked,
-                AbilitySlot::Mode => mass.unlocked || warhead.unlocked,
+                AbilitySlot::Mode => mass.unlocked || warhead.unlocked || gorge.unlocked,
                 AbilitySlot::Shield => run.nova.unlocked,
                 AbilitySlot::Drone => !drones.is_empty(),
             };
@@ -6202,17 +6283,19 @@ fn hud_ability_labels(
     }
 }
 
-fn shot_mode_update(time: Res<Time>, mut flash: ResMut<ShotModeFlash>, mass: Res<MassShot>, warhead: Res<Warhead>, mut q: Query<(&mut Text, &mut TextColor), With<ShotModeText>>) {
+fn shot_mode_update(time: Res<Time>, mut flash: ResMut<ShotModeFlash>, mass: Res<MassShot>, warhead: Res<Warhead>, gorge: Res<Gorge>, mut q: Query<(&mut Text, &mut TextColor), With<ShotModeText>>) {
     if flash.0 > 0.0 {
         flash.0 -= time.delta_secs();
     }
     // Persistent once any shot mode is unlocked (there's a real choice then): a dim baseline that reads at
     // a glance, flaring bright right after a cycle. Hidden before any unlock. Colour-coded per mode.
-    let unlocked = mass.unlocked || warhead.unlocked;
+    let unlocked = mass.unlocked || warhead.unlocked || gorge.unlocked;
     let base: f32 = if unlocked { 0.5 } else { 0.0 };
     let alpha = base.max((flash.0 / 0.3).clamp(0.0, 1.0));
     // short names — the strip's MODE label already says what the slot is
-    let (label, rgb) = if warhead.unlocked && warhead.active {
+    let (label, rgb) = if gorge.unlocked && gorge.active {
+        ("GORGE", Color::srgb(1.0, 0.42, 0.38)) // the Glutton's red — the boss it was taken from
+    } else if warhead.unlocked && warhead.active {
         ("WARHEAD", Color::srgb(0.9, 0.45, 1.0)) // violet
     } else if mass.unlocked && mass.active {
         ("MASS", Color::srgb(0.72, 0.28, 1.0)) // violet
@@ -6234,12 +6317,12 @@ fn render(
     run: Res<Run>,
     dev: Res<Dev>,
     // warp + chain + state + hud-flash + shot modes grouped into one tuple param to stay within Bevy's 16-param limit
-    abilities: (Res<Warp>, Res<Chain>, Res<State<GameState>>, Res<HudFlash>, Res<MassShot>, Res<Warhead>),
+    abilities: (Res<Warp>, Res<Chain>, Res<State<GameState>>, Res<HudFlash>, Res<MassShot>, Res<Warhead>, Res<Gorge>),
     wf: Res<WarpField>,
     stars: Query<(&Star, &Transform)>,
     ships: Query<(&Ship, &Transform, Option<&ShipTrail>)>,
     asteroids: Query<(&Asteroid, &Transform, Option<&Gold>, Option<&Explosive>, Option<&Detonating>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>, Option<&Facet>, Option<&Husk>)>,
-    bullets: Query<(&Bullet, &Transform, Has<WarheadShot>, &Velocity)>,
+    bullets: Query<(&Bullet, &Transform, Has<WarheadShot>, &Velocity, Option<&GorgeShot>)>,
     particles: Query<(&Particle, &Transform)>,
     holes: Query<(&BlackHole, &Transform)>,
     missiles: Query<&Transform, With<WarpMissile>>,
@@ -6252,7 +6335,7 @@ fn render(
     let (warp_res, chain) = (&abilities.0, &abilities.1);
     let show_run = run_active(abilities.2.get()); // grid + HUD icons only while a run is on
     let hud_flash = &abilities.3;
-    let (mass, warhead) = (&abilities.4, &abilities.5); // shot modes — drive the HUD's Q-slot
+    let (mass, warhead, gorge) = (&abilities.4, &abilities.5, &abilities.6); // shot modes — drive the HUD's Q-slot
     let nova = &run.nova; // the Nova Shield's state (ship bubble + HUD icon)
     let aegis = &run.aegis; // the Aegis Shards' state (the orbiting chips drawn around the hull)
     let has_drone = !foes.2.is_empty();
@@ -6570,10 +6653,37 @@ fn render(
     // blobs shrink to a fine point at the tail and heat up toward the head (deep
     // purple tip → hot lavender base); the head itself is kept compact.
     let core = Color::srgb(5.0, 4.2, 5.6); // white-hot center
-    for (b, bt, is_warhead, vel) in &bullets {
+    for (b, bt, is_warhead, vel, gorge_shot) in &bullets {
         let c = bt.translation.truncate();
         let br = bullet_radius(b.mass);
-        if is_warhead {
+        if let Some(g) = gorge_shot {
+            // GORGE round: the Glutton's maw, thrown. A rolling ring of gnashing teeth that visibly
+            // SWELLS with every rock it swallows — the growth IS the readout, so you can see how much
+            // is left in it without a HUD number. Rolls as it travels; the jaws chew at ~1.4 Hz.
+            let gc = devourer_color();
+            let r = g.radius();
+            let roll = t * 3.4; // it tumbles forward — a wrecking ball, not a bullet
+            let chew = 0.5 + 0.5 * (t * 8.8).sin(); // jaws open/close, ~1.4 Hz
+            // body: a broken ring, drawn as arcs between the teeth so the gaps read as a mouth
+            const TEETH: usize = 7;
+            for k in 0..TEETH {
+                let a0 = roll + k as f32 / TEETH as f32 * TAU;
+                let a1 = a0 + TAU / TEETH as f32 * 0.55;
+                let (p0, p1) = (c + Vec2::from_angle(a0) * r, c + Vec2::from_angle(a1) * r);
+                gizmos.line_2d(p0, p1, gc); // gum line
+                // tooth: a wedge biting INWARD, its length driven by the chew
+                let mid = (a0 + a1) * 0.5;
+                let d = Vec2::from_angle(mid);
+                let bite = r * (0.34 + 0.30 * chew);
+                let base = c + d * r;
+                let sideways = d.perp() * (r * 0.20);
+                gizmos.line_2d(base + sideways, base - d * bite, dim(gc, 0.9));
+                gizmos.line_2d(base - sideways, base - d * bite, dim(gc, 0.9));
+            }
+            // throat: a hot core that brightens as it fills, so a nearly-full round looks dangerous
+            let fill = g.eaten as f32 / GORGE_BITES as f32;
+            gizmos.circle_2d(Isometry2d::from_translation(c), r * (0.18 + 0.10 * chew), dim(mix(gc, core, 0.5), 0.7 + 1.3 * fill));
+        } else if is_warhead {
             // WARHEAD round: an ARMED violet shell — a dart body along its flight plus a slow-spinning
             // ring of detonation ticks (the same language as its HUD glyph and blast ring). Reads
             // instantly as "the one that deletes rocks" against the standard orb / fat mass round.
@@ -6742,8 +6852,9 @@ fn render(
         }
 
         // MODE (the Q-cycled shot slot — appears once a second mode exists): a bracketed slot always
-        // showing the ACTIVE selection — standard round, fat mass round, or the ticked Warhead round.
-        if mass.unlocked || warhead.unlocked {
+        // showing the ACTIVE selection — standard round, fat mass round, ticked Warhead, or the
+        // toothed Gorge round. Each glyph is the field object in miniature, so the slot teaches itself.
+        if mass.unlocked || warhead.unlocked || gorge.unlocked {
             let cx = sx(HUD_SLOT_MODE, 20.0);
             // slot bracket: four corner ticks, quietly framing whatever's equipped
             let bc = Color::srgb(0.45, 0.5, 0.68);
@@ -6753,7 +6864,16 @@ fn render(
                 gizmos.line_2d(corner, corner - Vec2::new(kx * tick, 0.0), bc);
                 gizmos.line_2d(corner, corner - Vec2::new(0.0, ky * tick), bc);
             }
-            if warhead.unlocked && warhead.active {
+            if gorge.unlocked && gorge.active {
+                // Gorge round: the little maw — a ring of inward teeth in the Glutton's red
+                let gc = devourer_color();
+                gizmos.circle_2d(Isometry2d::from_translation(cx), 7.5, gc);
+                for k in 0..6 {
+                    let d = Vec2::from_angle(k as f32 / 6.0 * TAU + t * 0.9);
+                    gizmos.line_2d(cx + d * 7.5, cx + d * 4.0, dim(gc, 0.85));
+                }
+                gizmos.circle_2d(Isometry2d::from_translation(cx), 2.0, dim(mix(gc, Color::WHITE, 0.5), 1.2));
+            } else if warhead.unlocked && warhead.active {
                 // Warhead round: a violet shell with detonation ticks
                 gizmos.circle_2d(Isometry2d::from_translation(cx), 4.5, warhead_color());
                 for k in 0..4 {
@@ -8520,8 +8640,9 @@ fn render_extras(
             PickupKind::Mass => mass_color(),
             PickupKind::Drone => drone_color(),
             PickupKind::Warhead => orange_color(),
-            PickupKind::Nova => pulsar_color(),
-            PickupKind::Aegis => boss_color(), // wears the Warden's magenta — the boss it was taken from // the orb wears its boss's electric white-cyan (like Warhead wears the Detonator's orange); the granted shield itself is player-purple
+            PickupKind::Nova => pulsar_color(), // the orb wears its boss's electric white-cyan (like Warhead wears the Detonator's orange); the granted shield itself is player-purple
+            PickupKind::Aegis => boss_color(), // wears the Warden's magenta — the boss it was taken from
+            PickupKind::Gorge => devourer_color(), // wears the Glutton's red — same rule
         };
         let hex: Vec<Vec2> = (0..=6)
             .map(|i| c + Vec2::from_angle(i as f32 / 6.0 * TAU + pk.rot) * PICKUP_R * throb)
@@ -8948,6 +9069,7 @@ fn reset_run(
     chain: &mut Chain,
     mass: &mut MassShot,
     warhead: &mut Warhead,
+    gorge: &mut Gorge,
     flags: &mut RunFlags,
     gold: &mut GoldRush,
     stats: &mut Stats,
@@ -8974,6 +9096,7 @@ fn reset_run(
     *chain = Chain::default(); // must re-earn the chain shot…
     *mass = MassShot::default(); // …and the mass shot
     *warhead = Warhead::default(); // …and the Warhead rounds
+    *gorge = Gorge::default(); // …and the Gorge round
     *flags = RunFlags::default(); // fresh "no powerups used" flag for Purist
     *gold = GoldRush::default(); // no stale gold hunt carried into the new run…
     gold.cooldown = GOLD_INITIAL_DELAY; // …and a grace before the first gold rock can appear
@@ -8998,7 +9121,7 @@ fn menu_start(
     mut wave: ResMut<Wave>,
     mut banner: ResMut<WaveBanner>,
     mut warp: ResMut<Warp>,
-    mut progress: (ResMut<BossState>, ResMut<Chain>, ResMut<MassShot>, ResMut<RunFlags>, ResMut<GoldRush>, ResMut<Warhead>, ResMut<Stats>, ResMut<PacifistWatch>, ResMut<NewGamePlus>), // bundled (16-param limit)
+    mut progress: (ResMut<BossState>, ResMut<Chain>, ResMut<MassShot>, ResMut<RunFlags>, ResMut<GoldRush>, ResMut<Warhead>, ResMut<Stats>, ResMut<PacifistWatch>, ResMut<NewGamePlus>, ResMut<Gorge>), // bundled (16-param limit)
     mut clicks: EventReader<MenuClick>,
 ) {
     let actions: Vec<MenuAction> = clicks.read().map(|c| c.0).collect(); // read once, then test
@@ -9030,7 +9153,7 @@ fn menu_start(
         return;
     }
     progress.8 .0 = play_plus; // the mode holds for the whole run (restarts included); normal PLAY clears it
-    reset_run(&mut commands, &mut run, &mut score, &mut wave, &mut banner, &mut warp, &mut progress.0, &mut progress.1, &mut progress.2, &mut progress.5, &mut progress.3, &mut progress.4, &mut progress.6, &mut progress.7);
+    reset_run(&mut commands, &mut run, &mut score, &mut wave, &mut banner, &mut warp, &mut progress.0, &mut progress.1, &mut progress.2, &mut progress.5, &mut progress.9, &mut progress.3, &mut progress.4, &mut progress.6, &mut progress.7);
     next.set(GameState::Playing);
 }
 
@@ -10526,7 +10649,7 @@ fn gameover_restart(
     mut wave: ResMut<Wave>,
     mut banner: ResMut<WaveBanner>,
     mut warp: ResMut<Warp>,
-    mut progress: (ResMut<BossState>, ResMut<Chain>, ResMut<MassShot>, ResMut<RunFlags>, ResMut<GoldRush>, ResMut<Warhead>, ResMut<Stats>, ResMut<PacifistWatch>),
+    mut progress: (ResMut<BossState>, ResMut<Chain>, ResMut<MassShot>, ResMut<RunFlags>, ResMut<GoldRush>, ResMut<Warhead>, ResMut<Stats>, ResMut<PacifistWatch>, ResMut<Gorge>),
     field: Query<Entity, GameplayEntity>,
 ) {
     if keys.just_pressed(KeyCode::Escape) {
@@ -10539,7 +10662,7 @@ fn gameover_restart(
     for e in &field {
         commands.entity(e).despawn();
     }
-    reset_run(&mut commands, &mut run, &mut score, &mut wave, &mut banner, &mut warp, &mut progress.0, &mut progress.1, &mut progress.2, &mut progress.5, &mut progress.3, &mut progress.4, &mut progress.6, &mut progress.7);
+    reset_run(&mut commands, &mut run, &mut score, &mut wave, &mut banner, &mut warp, &mut progress.0, &mut progress.1, &mut progress.2, &mut progress.5, &mut progress.8, &mut progress.3, &mut progress.4, &mut progress.6, &mut progress.7);
     next.set(GameState::Playing); // field refills from the edges via top_up_asteroids
 }
 
@@ -11003,6 +11126,7 @@ fn main() {
         .insert_resource(SplashClock::default())
         .insert_resource(GalleryPage::default())
         .insert_resource(TenderClock::default())
+        .insert_resource(Gorge::default())
         .insert_resource(NewGamePlus::default())
         .insert_resource(PacifistWatch::default())
         .insert_resource(RunFlags::default())
@@ -11165,6 +11289,7 @@ mod tests {
         app.insert_resource(Score(0));
         app.insert_resource(MassShot::default());
         app.insert_resource(Warhead::default());
+        app.insert_resource(Gorge::default());
         app.insert_resource(ShotModeFlash::default());
         app.insert_resource(FireArmed(true)); // mid-run: the gun is armed
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
@@ -11190,6 +11315,7 @@ mod tests {
         app.add_event::<SoundFx>();
         app.insert_resource(MassShot::default());
         app.insert_resource(Warhead::default());
+        app.insert_resource(Gorge::default());
         app.insert_resource(ShotModeFlash::default());
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
         app.insert_resource(FireArmed(false)); // just entered Playing (disarm_fire ran)
@@ -14191,6 +14317,81 @@ mod tests {
         assert_eq!(app.world().resource::<Stats>().blue, 2, "both blast kills are credited to the player");
     }
 
+    // THE GORGE ROUND must snowball WITHOUT becoming a field-clear button: it has to keep flying
+    // through a rock (that's the whole point), grow as it does, and then die on a hard bite count.
+    #[test]
+    fn the_gorge_round_eats_through_rocks_then_breaks_up() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_event::<SoundFx>();
+        app.insert_resource(Stats::default());
+        app.insert_resource(Score(0));
+        // three rocks stacked on the round's position — it should chew all three in one pass
+        for _ in 0..3 {
+            app.world_mut().spawn((
+                Asteroid { size: 1, verts: vec![Vec2::X * 22.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+                Velocity(Vec2::ZERO),
+                Transform::from_xyz(0.0, 0.0, 0.0),
+            ));
+        }
+        let round = app.world_mut().spawn((Bullet { life: 1.0, trail: Vec::new(), mass: false }, GorgeShot { eaten: 0 }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0))).id();
+        app.add_systems(Update, collisions);
+        app.update();
+        let g = app.world().entity(round).get::<GorgeShot>().expect("it keeps flying — a gorge round does not stop on the first rock");
+        assert_eq!(g.eaten, 3, "it ate every rock it passed through");
+        assert!(g.radius() > GORGE_R0, "and it grew doing it");
+        assert_eq!(app.world_mut().query::<&Asteroid>().iter(app.world()).count(), 0, "all three are gone");
+        assert_eq!(app.world().resource::<Stats>().blue, 3, "and all three are credited to the player");
+        // …and it is BOUNDED: one bite short of full, the next rock breaks it up
+        app.world_mut().entity_mut(round).insert(GorgeShot { eaten: GORGE_BITES - 1 });
+        app.world_mut().spawn((
+            Asteroid { size: 1, verts: vec![Vec2::X * 22.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+        ));
+        app.update();
+        assert_eq!(app.world_mut().query::<&GorgeShot>().iter(app.world()).count(), 0, "gorged to the cap, it comes apart — it can never sweep a whole field");
+    }
+
+    // The maw is DRAWN at radius(), so it has to BITE at radius() too — a mouth that visibly
+    // swallowed a rock without eating it reads as a broken weapon.
+    #[test]
+    fn a_grown_gorge_round_bites_as_wide_as_it_looks() {
+        let rock_r = asteroid_radius(1);
+        // a rock sitting where an EMPTY round can't reach but a fed one can
+        let gap = GORGE_R0 + rock_r + (GORGE_R_MAX - GORGE_R0) * 0.5;
+        for (eaten, should_eat) in [(0u32, false), (GORGE_BITES - 1, true)] {
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins);
+            app.add_event::<SoundFx>();
+            app.insert_resource(Stats::default());
+            app.insert_resource(Score(0));
+            app.world_mut().spawn((
+                Asteroid { size: 1, verts: vec![Vec2::X * rock_r], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+                Velocity(Vec2::ZERO),
+                Transform::from_xyz(gap, 0.0, 0.0),
+            ));
+            app.world_mut().spawn((Bullet { life: 1.0, trail: Vec::new(), mass: false }, GorgeShot { eaten }, Velocity(Vec2::X), Transform::from_xyz(0.0, 0.0, 0.0)));
+            app.add_systems(Update, collisions);
+            app.update();
+            let left = app.world_mut().query::<&Asteroid>().iter(app.world()).count();
+            assert_eq!(left == 0, should_eat, "a round {eaten} bites deep should{} reach {gap:.0}px", if should_eat { "" } else { " NOT" });
+        }
+    }
+
+    // Its growth curve is the readout the player reads, so it has to be monotonic AND capped.
+    #[test]
+    fn the_gorge_round_growth_is_capped() {
+        let mut prev = 0.0;
+        for eaten in 0..=GORGE_BITES {
+            let r = GorgeShot { eaten }.radius();
+            assert!(r >= prev, "every bite reads as bigger (or at the cap), never smaller");
+            assert!(r <= GORGE_R_MAX, "and it never outgrows the cap");
+            prev = r;
+        }
+        assert!(GorgeShot { eaten: 0 }.radius() > bullet_radius(false), "even empty it looks heavier than a standard round");
+    }
+
     #[test]
     fn friendly_warhead_blast_spares_the_player() {
         let mut app = App::new();
@@ -14406,6 +14607,7 @@ mod tests {
         app.insert_resource(Chain { unlocked: true, charges: 3, recharge: 0.0, cooldown: 0.0 });
         app.insert_resource(MassShot { unlocked: true, active: true });
         app.insert_resource(Warhead { unlocked: true, active: true });
+        app.insert_resource(Gorge { unlocked: true, active: true });
         app.insert_resource(RunFlags { powerup_used: true });
         app.insert_resource(GoldRush { active: true, forfeited: false, cooldown: 0.0 });
         app.insert_resource(Stats { runs: 9, ..default() });
@@ -14422,6 +14624,7 @@ mod tests {
         assert!(!app.world().resource::<Chain>().unlocked, "Start relocks the chain shot");
         assert!(!app.world().resource::<MassShot>().unlocked, "Start relocks the mass shot");
         assert!(!app.world().resource::<Warhead>().unlocked, "Start relocks the Warhead rounds");
+        assert!(!app.world().resource::<Gorge>().unlocked, "Start relocks the Gorge round");
         assert!(!app.world().resource::<GoldRush>().active, "Start clears any stale gold hunt");
         assert_eq!(app.world().resource::<Stats>().runs, 10, "every Start counts a lifetime run (the restart ladder)");
         assert_eq!(app.world_mut().query::<&Ship>().iter(app.world()).count(), 1, "a fresh ship spawns");

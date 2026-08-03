@@ -5,6 +5,15 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
+- **THE GORGE ROUND — a shot that eats** (the Glutton+'s drop, NG+ wave 10). A slow, heavy round that
+  **doesn't stop when it hits something**: it destroys the rock, visibly swells, and keeps going,
+  ending as a rolling wrecking ball that chews a lane straight through a cluster. It rolls, its teeth
+  gnash, and its throat brightens as it fills — you can see how much is left in it without a HUD
+  number. It's not a field-clear button: it's slow to fire, capped in size, and it breaks apart after
+  six rocks. Fourth entry on the **Q** cycle, and it reads at a glance against the others — the
+  Warhead detonates and stops, the Mass round is a fat one-shot, this one snowballs. On lap two the
+  Glutton+ drops this **instead of** the mass shot, so the choice on Q never gets diluted.
+
 - **THE GLUTTON+ EATS PROPERLY** (NG+ boss 2). Both new mechanics extend its one verb:
   - **INHALE** — its maw gapes and a suction wedge drags loose rocks *and your ship* toward it. The
     pull is weaker than your thrust, so you can always fly out; what it really costs you is a dodge
