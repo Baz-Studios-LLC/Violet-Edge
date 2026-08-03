@@ -5,6 +5,23 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
+- **MOB FIRE IS FAIR NOW — it tells you first, and it can miss.** Three separate things were wrong,
+  not one:
+  - **It telegraphs.** A mob now LOCKS its firing line half a second before it shoots and shows you
+    that line — the muzzle swings out along it and brightens as the shot nears. You can see who
+    committed, and where. Nothing fires without warning any more.
+  - **The line is never re-aimed.** It's fixed the instant it locks, so *moving off it beats the
+    shot*. That's the point: paying attention is the counter, not luck. You can also just kill the
+    mob during its wind-up.
+  - **Its aim is genuinely imperfect.** It used to lock onto your exact position at the instant of
+    firing, which made a stationary or braking ship a guaranteed hit. Every shot now takes a random
+    error, wide enough at hover range to miss a ship that never moved. The error is angular, so the
+    long shots scatter hardest — a mob across the arena is now clearly worse at hitting you than one
+    in your face, which is how it should have always read.
+  - Plus: **it won't take cross-arena potshots at all**, it fires **~35% less often** (3.2–4.6s, with
+    a wider jitter so a pack never settles into a rhythm), and it **drops a committed shot when it
+    bugs out** — no parting shot from a mob that's already leaving.
+
 - **THE GORGE ROUND — a shot that eats** (the Glutton+'s drop, NG+ wave 10). A slow, heavy round that
   **doesn't stop when it hits something**: it destroys the rock, visibly swells, and keeps going,
   ending as a rolling wrecking ball that chews a lane straight through a cluster. It rolls, its teeth
