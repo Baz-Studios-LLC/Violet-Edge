@@ -5,6 +5,11 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## v0.6.0 — The Facet, the Husk, the Gorge Round, and a field you can read (2026-08-03)
 
+- **Act III keeps all three of its rock types.** The new special-rock cap counted Act III's *carrier*
+  rock (the red grower) as a garnish on itself, which kept its allowance permanently full and would
+  have squeezed beacons and clusters out of waves 21-29 almost entirely. The cap limits what's laid
+  *on top of* an act's texture, never the texture itself.
+
 - **THE FIELD IS LESS CROWDED, so the rocks can actually be rocks.** A third fewer asteroids on screen
   at full density (18 → 12), and a third of a full field is now big rocks rather than debris. The
   asteroids are still the star — that's the point: a facet's open face, a lapse fading out, a hunter
