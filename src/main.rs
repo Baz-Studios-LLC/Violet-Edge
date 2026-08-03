@@ -754,6 +754,30 @@ fn is_special_kind(kind: RockKind) -> bool {
     !matches!(kind, RockKind::Blue | RockKind::Green)
 }
 
+// Does a rock on the field count against the SPECIAL allowance?
+//
+// It counts only if it is a mechanic-bearing rock that ISN'T the act's own carrier. That distinction
+// is load-bearing: Act III's baseline rock is the RED grower, which is itself a "special". Counting it
+// made the allowance permanently full, so every Beacon and Cluster roll got demoted back to Red — and
+// Act III silently lost two of its three rock types. The cap is meant to limit the GARNISH on top of
+// the act's texture, never the texture itself.
+//
+// Taken as marker flags rather than a RockKind because that's what the live field gives us, and the
+// mapping isn't reversible anyway (a dense rock could be a green, a pulser or a beacon).
+#[allow(clippy::too_many_arguments)]
+fn counts_against_special_cap(baseline: Option<RockKind>, ex: bool, pu: bool, re: bool, cl: bool, be: bool, hu: bool, la: bool, fa: bool, hk: bool) -> bool {
+    let any = ex || pu || re || cl || be || hu || la || fa || hk;
+    if !any {
+        return false; // plain or dense — the baseline itself, no marker at all
+    }
+    // the act's carrier is the field. Red is the only baseline that carries a marker; a rock whose
+    // ONLY marker is Red is Act III's texture, not a garnish on it.
+    if baseline == Some(RockKind::Red) && re && !(ex || pu || cl || be || hu || la || fa || hk) {
+        return false;
+    }
+    true
+}
+
 // How many mechanic-bearing rocks may be out at once, given the field size. Small fields still get
 // SPECIAL_FLOOR so wave 6 doesn't roll a hunter and then hide it.
 fn special_allowance(field: i32) -> i32 {
@@ -4510,11 +4534,12 @@ fn top_up_asteroids(
         return;
     }
     let count = asteroids.iter().count() as i32; // non-gold rocks on the field
-    // mechanic-bearing rocks currently out (dense/plain don't count — they're the baseline)
+    // mechanic-bearing rocks currently out, EXCLUDING the act's own carrier (see the helper)
+    let baseline = baseline_kind(wave.level, plus.0);
     let specials = asteroids
         .iter()
         .filter(|(_, ex, pu, re, cl, be, hu, la, fa, hk)| {
-            ex.is_some() || pu.is_some() || re.is_some() || cl.is_some() || be.is_some() || hu.is_some() || la.is_some() || fa.is_some() || hk.is_some()
+            counts_against_special_cap(baseline, ex.is_some(), pu.is_some(), re.is_some(), cl.is_some(), be.is_some(), hu.is_some(), la.is_some(), fa.is_some(), hk.is_some())
         })
         .count() as i32;
 
@@ -4548,7 +4573,7 @@ fn top_up_asteroids(
         // Rolling first and then demoting (rather than biasing the roll) keeps the whole authored wave
         // mix in `roll_rock_kind` untouched — this only limits how many land at once.
         if is_special_kind(kind) && specials >= special_allowance(count.max(1)) {
-            if let Some(plain) = baseline_kind(wave.level, plus.0) {
+            if let Some(plain) = baseline {
                 kind = plain;
             }
         }
@@ -15190,6 +15215,33 @@ mod tests {
 
     // The NG+ roster rule and the special cap could contradict each other: lap two past wave 5 is
     // ENTIRELY mechanic-bearing rocks, so there is no legal plain rock to demote a spawn to.
+    // THE ACT CARRIER IS NOT A GARNISH. Act III's baseline rock is the RED grower, which is itself
+    // mechanic-bearing — so counting reds against the special allowance kept it permanently full and
+    // demoted every Beacon/Cluster roll back to Red, quietly costing Act III two of its three rock
+    // types. This is the regression test for exactly that.
+    #[test]
+    fn the_special_cap_does_not_count_the_acts_own_carrier_rock() {
+        let red_only = |b| counts_against_special_cap(b, false, false, true, false, false, false, false, false, false);
+        assert!(!red_only(Some(RockKind::Red)), "in Act III a plain red rock IS the field, not a garnish on it");
+        assert!(red_only(Some(RockKind::Blue)), "…but a red in Act I would be an intruder and must count");
+        // a red carrying a SECOND mechanic is still a garnish, even in Act III
+        assert!(
+            counts_against_special_cap(Some(RockKind::Red), false, false, true, true, false, false, false, false, false),
+            "a red that is also a cluster is not the plain carrier"
+        );
+        // the plain baselines carry no marker at all, so they never count anywhere
+        for b in [Some(RockKind::Blue), Some(RockKind::Green), Some(RockKind::Red), None] {
+            assert!(!counts_against_special_cap(b, false, false, false, false, false, false, false, false, false), "an unmarked rock never counts");
+        }
+        // and every real garnish counts, in every act
+        for b in [Some(RockKind::Blue), Some(RockKind::Green), Some(RockKind::Red)] {
+            assert!(counts_against_special_cap(b, false, false, false, false, true, false, false, false, false), "a beacon always counts");
+            assert!(counts_against_special_cap(b, false, false, false, false, false, false, false, true, false), "a facet always counts");
+        }
+        // the practical consequence: an all-red Act III field leaves the allowance FULLY open
+        assert!(special_allowance(population_target(26, false)) >= SPECIAL_FLOOR);
+    }
+
     #[test]
     fn the_special_cap_never_breaks_the_ngplus_roster_rule() {
         assert_eq!(baseline_kind(3, false), Some(RockKind::Blue), "Act I is blue");
