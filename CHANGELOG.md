@@ -5,6 +5,17 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
+- **THE GLUTTON+ EATS PROPERLY** (NG+ boss 2). Both new mechanics extend its one verb:
+  - **INHALE** — its maw gapes and a suction wedge drags loose rocks *and your ship* toward it. The
+    pull is weaker than your thrust, so you can always fly out; what it really costs you is a dodge
+    you'd already committed to — and it's feeding itself the whole time. The cone is drawn from the
+    first frame of the gape, with inward chevrons once it's live, so the reach and direction are never
+    a guess. Standing off to the side is a genuine counter: the suction is a wedge, not a sphere.
+  - **REGURGITATE** — once it's eaten its fill it spits the mass back as a spread of rocks along its
+    facing. The wind-up swells its gullet and draws the firing lines first, and it costs the boss the
+    size it gained, so a spit is also your window.
+  One attack at a time, never mid-inhale — and the base-game Glutton is untouched.
+
 - **THE HUSK — a rock that was carrying something** (NG+, debuts wave 9). It passes for a drift rock,
   and breaking it produces no chunks at all: the shell cracks and lets out **two Hunters** that were
   folded up inside. They emerge docile, so you get a beat to deal with them. The tell is honest — the

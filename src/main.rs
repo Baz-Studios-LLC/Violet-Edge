@@ -1246,9 +1246,24 @@ struct Shielded {
 struct Devourer {
     hp: i32,
     grow: f32, // 0..1 — feeds the radius (base → max)
-    fed: i32,  // rocks eaten (flavor / telemetry)
+    fed: i32,  // rocks eaten — also arms the NG+ REGURGITATE past NGP_GLUT_SPIT_FED
     dying: f32,
     pulse: f32,
+    // NG+ only (NGP_GLUT_*). `inhale` counts down through wind-then-pull; `spit` is a wind-up that
+    // fires at zero. Both sit at 0 for the base-game Glutton, which behaves exactly as before.
+    inhale: f32,
+    inhale_cd: f32,
+    spit: f32,
+}
+
+impl Devourer {
+    // Maw gaping = telegraph only, nothing is being pulled yet.
+    fn inhale_winding(&self) -> bool {
+        self.inhale > NGP_GLUT_INHALE_DUR
+    }
+    fn inhaling(&self) -> bool {
+        self.inhale > 0.0 && !self.inhale_winding()
+    }
 }
 
 // A rock the boss just hurled — briefly un-grabbable so it can't be re-captured instantly.
@@ -1795,6 +1810,30 @@ const NGP_WARDEN_VOLLEY: usize = 2; // rocks hurled per throw (a spread, not a s
 // visibly STALLS the ring and lights the core for a full NGP_WARDEN_WIND before anything moves fast,
 // and the danger zone is a fixed radius you can simply be outside of — it never chases. Afterwards it
 // hangs there spent, which is the player's reward window for reading it correctly.
+// THE GLUTTON+ (NG+ boss 2). Both upgrades extend its one verb, EAT:
+//   INHALE - the maw gapes and a suction WEDGE drags loose rocks AND THE SHIP toward it. The pull on
+//     the ship is capped below its thrust (compile-time asserted), so flying out is always possible;
+//     what it costs you is a dodge you had already committed to, and it feeds the boss while it runs.
+//   REGURGITATE - once it has eaten enough it spits the mass back: a spread of rocks along its
+//     facing. What went in is what comes out, so the count is readable, and the wind-up is the tell.
+const NGP_GLUT_INHALE_EVERY: f32 = 8.0; // gap between inhales (from the end of the last)
+const NGP_GLUT_INHALE_WIND: f32 = 1.1; // maw gapes - pure telegraph, nothing moves yet
+const NGP_GLUT_INHALE_DUR: f32 = 2.2; // how long the suction runs
+const NGP_GLUT_INHALE_REACH: f32 = 430.0; // wedge length
+const NGP_GLUT_INHALE_ARC: f32 = 1.5; // wedge half-angle (radians) - a cone, not a sphere
+const NGP_GLUT_INHALE_PULL: f32 = 520.0; // px/s^2 on the ship at the mouth - MUST stay under THRUST
+const _: () = assert!(NGP_GLUT_INHALE_PULL < THRUST); // escapability is not negotiable
+// The wedge must stay a cone (side-stepping is the counter) and the gape must be readable before
+// anything moves. Both enforced at build time, like the pull cap above.
+const _: () = assert!(NGP_GLUT_INHALE_ARC < TAU / 4.0);
+const _: () = assert!(NGP_GLUT_INHALE_WIND >= 0.8);
+const NGP_GLUT_ROCK_PULL: f32 = 900.0; // rocks are hauled harder than the ship (it is feeding)
+const NGP_GLUT_SPIT_FED: i32 = 5; // rocks eaten before it can spit
+const NGP_GLUT_SPIT_WIND: f32 = 0.9; // swell + lock on before firing
+const NGP_GLUT_SPIT_ROCKS: usize = 5; // the spread
+const NGP_GLUT_SPIT_ARC: f32 = 0.62; // total spread angle (radians)
+const NGP_GLUT_SPIT_SPEED: f32 = 300.0;
+
 const NGP_WARDEN_WHIRL_EVERY: f32 = 10.0; // gap between whirls (from the END of the last one)
 const NGP_WARDEN_WIND: f32 = 1.7; // the telegraph: ring stalls, core charges — LONG on purpose
 // The sweep must never arrive un-announced: shortening the wind-up below reaction time fails the BUILD.
@@ -5035,7 +5074,7 @@ fn boss_director(
     if is_devourer_wave(wave.level) {
         // Boss 2: the devourer starts small in the upper arena and hunts free rocks to grow.
         commands.spawn((
-            Devourer { hp: hp(DEVOURER_HP), grow: 0.0, fed: 0, dying: 0.0, pulse: 0.0 },
+            Devourer { hp: hp(DEVOURER_HP), grow: 0.0, fed: 0, dying: 0.0, pulse: 0.0, inhale: 0.0, inhale_cd: NGP_GLUT_INHALE_EVERY, spit: 0.0 },
             Transform::from_xyz(0.0, arena.half.y * 0.55, 0.0),
         ));
     } else if is_slinger_wave(wave.level) {
@@ -5248,14 +5287,17 @@ fn devourer_update(
     mut stats: ResMut<Stats>,
     dev: Res<Dev>,
     mut sfx: EventWriter<SoundFx>,
-    ships: Query<(Entity, &Transform, &Ship), Without<Devourer>>,
-    mut devourers: Query<(Entity, &mut Transform, &mut Devourer)>,
-    rocks: Query<(Entity, &Transform, &Asteroid), (Without<Shielded>, Without<Devourer>, Without<Gold>)>, // never eats gold (would grant a false 1UP)
+    plus: Res<NewGamePlus>,
+    mut ships: Query<(Entity, &Transform, &Ship, &mut Velocity), (Without<Devourer>, Without<Asteroid>)>,
+    mut devourers: Query<(Entity, &mut Transform, &mut Devourer), Without<Asteroid>>,
+    mut rocks: Query<(Entity, &Transform, &mut Velocity, &Asteroid), (Without<Shielded>, Without<Devourer>, Without<Gold>, Without<Ship>)>, // never eats gold (would grant a false 1UP)
 ) {
     let dt = time.delta_secs();
     let h = arena.half;
     let mut rng = rand::thread_rng();
-    let ship = ships.iter().next();
+    // Snapshot the ship by VALUE: the inhale needs `&mut ships` below, so we must not hold a
+    // reference-borrow of the query across the boss loop.
+    let ship: Option<(Entity, Vec2, bool)> = ships.iter().next().map(|(e, t, sh, _)| (e, t.translation.truncate(), immune(sh, &dev)));
     for (de, mut tf, mut dv) in &mut devourers {
         dv.pulse += dt * 5.0;
         let p = tf.translation.truncate();
@@ -5297,10 +5339,80 @@ fn devourer_update(
             continue;
         }
 
+        // ── NG+ INHALE ── phase clock first. The wind-up is PURE TELEGRAPH: the maw gapes and the
+        // wedge is drawn (see render_boss), but nothing is pulled until it flips to inhaling.
+        let face = ship.map(|(_, sp, _)| (sp - p).normalize_or_zero()).unwrap_or(Vec2::NEG_Y);
+        if plus.0 && dv.dying <= 0.0 {
+            if dv.inhale > 0.0 {
+                dv.inhale -= dt;
+                if dv.inhale <= 0.0 {
+                    dv.inhale_cd = NGP_GLUT_INHALE_EVERY;
+                }
+            } else {
+                dv.inhale_cd -= dt;
+                if dv.inhale_cd <= 0.0 {
+                    dv.inhale = NGP_GLUT_INHALE_DUR + NGP_GLUT_INHALE_WIND;
+                }
+            }
+        }
+        // is `q` inside the suction wedge, and how strongly does it bite there? (0 = outside)
+        let bite = |q: Vec2| -> f32 {
+            let to = q - p;
+            let d = to.length();
+            if !(1.0..=NGP_GLUT_INHALE_REACH).contains(&d) {
+                return 0.0;
+            }
+            let out = to / d;
+            if out.dot(face) < NGP_GLUT_INHALE_ARC.cos() {
+                return 0.0; // outside the cone — standing off to the side is the counter
+            }
+            1.0 - d / NGP_GLUT_INHALE_REACH // falls off with distance
+        };
+        if dv.inhaling() {
+            // haul loose rocks in — it is feeding itself, which is what arms the spit below
+            for (_re, rt, mut rv, _ra) in &mut rocks {
+                let rp = rt.translation.truncate();
+                let g = bite(rp);
+                if g > 0.0 {
+                    rv.0 += (p - rp).normalize_or_zero() * NGP_GLUT_ROCK_PULL * g * dt;
+                }
+            }
+            // …and haul the SHIP. Capped under THRUST and falling off with distance, so flying out is
+            // always possible; what it really costs is a dodge you had already committed to.
+            for (_se, st, _sh, mut sv) in &mut ships {
+                let sp = st.translation.truncate();
+                let g = bite(sp);
+                if g > 0.0 {
+                    sv.0 += (p - sp).normalize_or_zero() * NGP_GLUT_INHALE_PULL * g * dt;
+                }
+            }
+        }
+
+        // ── NG+ REGURGITATE ── gorged enough → a short swell (the tell), then it spits the mass back
+        // along its facing as a spread of rocks. What went in is what comes out.
+        if plus.0 && dv.spit > 0.0 {
+            dv.spit -= dt;
+            if dv.spit <= 0.0 {
+                let base = face.to_angle();
+                for i in 0..NGP_GLUT_SPIT_ROCKS {
+                    let f = if NGP_GLUT_SPIT_ROCKS > 1 { i as f32 / (NGP_GLUT_SPIT_ROCKS - 1) as f32 - 0.5 } else { 0.0 };
+                    let dir = Vec2::from_angle(base + f * NGP_GLUT_SPIT_ARC);
+                    let e = spawn_asteroid(&mut commands, p + dir * (r + asteroid_radius(1) + 6.0), 1, dir * NGP_GLUT_SPIT_SPEED, &mut rng, false);
+                    commands.entity(e).insert((Thrown(2.0), Fresh(FRAGMENT_GRACE)));
+                }
+                burst(&mut commands, p + face * r, devourer_color(), 26, 380.0, &mut rng);
+                sfx.write(SoundFx::Mine);
+                dv.fed -= NGP_GLUT_SPIT_FED; // it spent what it ate…
+                dv.grow = (dv.grow - DEVOURER_GROW_PER_EAT * NGP_GLUT_SPIT_FED as f32).max(0.0); // …and shrinks for it
+            }
+        } else if plus.0 && dv.dying <= 0.0 && dv.fed >= NGP_GLUT_SPIT_FED && dv.inhale <= 0.0 {
+            dv.spit = NGP_GLUT_SPIT_WIND; // arm it — one attack at a time, never mid-inhale
+        }
+
         // ── eat any rock within reach (grow + heal), and note the nearest to chase ──
         let mut nearest: Option<Vec2> = None;
         let mut nd2 = f32::MAX;
-        for (re, rt, ra) in &rocks {
+        for (re, rt, _rv, ra) in &rocks {
             let rp = rt.translation.truncate();
             let reach = r + asteroid_radius(ra.size);
             let d2 = p.distance_squared(rp);
@@ -5320,7 +5432,7 @@ fn devourer_update(
         // ── OVERLOAD: gorged to full → a screen-wide detonation, then it shrinks to nothing and
         //    starts feeding again. Starve it (clear the rocks) to keep it from ever filling up. ──
         if dv.grow >= 1.0 {
-            for (re, rt, _) in &rocks {
+            for (re, rt, _, _) in &rocks {
                 burst(&mut commands, rt.translation.truncate(), devourer_color(), 5, 240.0, &mut rng);
                 commands.entity(re).despawn(); // wipe the field (gold isn't in `rocks`, so it's spared)
             }
@@ -5329,9 +5441,8 @@ fn devourer_update(
             sfx.write(SoundFx::Mine);
             // caught in the blast → dead (unless mid-respawn or invincible); escapable only by distance
             if run.respawn <= 0.0 {
-                if let Some((se, st, sh)) = ship {
-                    let sp = st.translation.truncate();
-                    if !immune(sh, &dev) && p.distance(sp) < DEVOURER_BURST_R {
+                if let Some((se, sp, imm)) = ship {
+                    if !imm && p.distance(sp) < DEVOURER_BURST_R {
                         kill_ship(&mut commands, &mut run, &mut next, &mut sfx, se, sp, &mut rng);
                     }
                 }
@@ -5341,7 +5452,7 @@ fn devourer_update(
         }
 
         // ── move toward the nearest rock, or hunt the ship when the field is clear ──
-        let goal = nearest.or_else(|| ship.map(|(_, st, _)| st.translation.truncate()));
+        let goal = nearest.or_else(|| ship.map(|(_, sp, _)| sp));
         if let Some(g) = goal {
             let dir = (g - p).normalize_or_zero();
             // it LUNGES at its prey — surging bites of speed instead of a flat glide (alive, and each
@@ -5353,9 +5464,8 @@ fn devourer_update(
 
         // ── contact kills the ship ──
         if run.respawn <= 0.0 {
-            if let Some((se, st, sh)) = ship {
-                let sp = st.translation.truncate();
-                if !immune(sh, &dev) && p.distance(sp) < r + SHIP_R {
+            if let Some((se, sp, imm)) = ship {
+                if !imm && p.distance(sp) < r + SHIP_R {
                     kill_ship(&mut commands, &mut run, &mut next, &mut sfx, se, sp, &mut rng);
                 }
             }
@@ -7908,6 +8018,53 @@ fn render_boss(
         let dc = if dv.dying <= 0.0 { mix(devourer_color(), Color::srgb(8.0, 7.5, 7.0), charge * flash) } else { devourer_color() };
         // the living maw: gnashing teeth rings + a gullet that glows with its gorge
         draw_glutton_body(&mut gizmos, c, r * throb, t, dv.pulse, dv.grow, dc);
+        // ── NG+ TELEGRAPHS ── the fairness half of both upgrades. The INHALE's wedge is drawn from
+        // the first frame of the gape (before anything is pulled) so you can see its reach and step
+        // out of the cone; the REGURGITATE's wind-up draws the firing line it's about to spit along.
+        // Brightness ramps only — no strobing.
+        if dv.dying <= 0.0 {
+            let facing = players.iter().next().map(|t| (t.translation.truncate() - c).normalize_or_zero()).unwrap_or(Vec2::NEG_Y);
+            if dv.inhale > 0.0 {
+                // gaping = telegraph, inhaling = live. Both draw the cone; live is brighter.
+                let live = dv.inhaling();
+                let g = if live { 0.8 } else { 0.3 + 0.4 * (1.0 - (dv.inhale - NGP_GLUT_INHALE_DUR) / NGP_GLUT_INHALE_WIND) };
+                let base = facing.to_angle();
+                for side in [-1.0f32, 1.0] {
+                    let e = Vec2::from_angle(base + side * NGP_GLUT_INHALE_ARC);
+                    gizmos.line_2d(c + e * r, c + e * NGP_GLUT_INHALE_REACH, dim(dc, g));
+                }
+                // the mouth's reach, as an arc of chords across the wedge
+                let steps = 9;
+                let pts: Vec<Vec2> = (0..=steps)
+                    .map(|k| {
+                        let f = k as f32 / steps as f32 * 2.0 - 1.0;
+                        c + Vec2::from_angle(base + f * NGP_GLUT_INHALE_ARC) * NGP_GLUT_INHALE_REACH
+                    })
+                    .collect();
+                gizmos.linestrip_2d(pts, dim(dc, g * 0.7));
+                // inward chevrons, so the direction of the pull is unmistakable
+                if live {
+                    for k in 0..5 {
+                        let f = k as f32 / 4.0 * 2.0 - 1.0;
+                        let d = Vec2::from_angle(base + f * NGP_GLUT_INHALE_ARC * 0.8);
+                        let phase = ((t * 1.4 + k as f32 * 0.2) % 1.0).clamp(0.0, 1.0);
+                        let far = NGP_GLUT_INHALE_REACH * (1.0 - phase * 0.75);
+                        gizmos.line_2d(c + d * far, c + d * (far - 26.0), dim(dc, 0.75));
+                    }
+                }
+            }
+            if dv.spit > 0.0 {
+                // the FIRING LINE it's about to spit along, plus a swelling gullet
+                let f = 1.0 - (dv.spit / NGP_GLUT_SPIT_WIND).clamp(0.0, 1.0);
+                let base = facing.to_angle();
+                for i in 0..NGP_GLUT_SPIT_ROCKS {
+                    let k = if NGP_GLUT_SPIT_ROCKS > 1 { i as f32 / (NGP_GLUT_SPIT_ROCKS - 1) as f32 - 0.5 } else { 0.0 };
+                    let d = Vec2::from_angle(base + k * NGP_GLUT_SPIT_ARC);
+                    gizmos.line_2d(c + d * r, c + d * (r + 150.0 * f), dim(Color::srgb(6.0, 2.6, 1.4), 0.35 + 0.55 * f));
+                }
+                gizmos.circle_2d(Isometry2d::from_translation(c), r * (0.3 + 0.25 * f), dim(Color::srgb(6.0, 2.2, 1.2), 0.5 + 0.5 * f));
+            }
+        }
         // HP bar (top-center) — tracks its heal-toward-max; hidden once dying
         if dv.dying <= 0.0 {
             boss_hp_bar(&mut gizmos, h.y - 42.0, dv.hp as f32 / DEVOURER_HP_MAX as f32, devourer_color());
@@ -13359,6 +13516,20 @@ mod tests {
     }
 
     #[test]
+    fn the_glutton_plus_inhale_is_escapable_and_coned() {
+        // The fairness constants (pull < THRUST, a coned wedge, a readable gape) are compile-time
+        // asserts beside their definitions. What's left to check here is the PHASE MACHINE:
+
+        // and the phase machine: gaping first (harmless), only then inhaling
+        let winding = Devourer { hp: 10, grow: 0.0, fed: 0, dying: 0.0, pulse: 0.0, inhale: NGP_GLUT_INHALE_DUR + 0.5, inhale_cd: 0.0, spit: 0.0 };
+        assert!(winding.inhale_winding() && !winding.inhaling(), "the gape pulls nothing");
+        let pulling = Devourer { inhale: NGP_GLUT_INHALE_DUR - 0.1, ..winding };
+        assert!(pulling.inhaling() && !pulling.inhale_winding(), "then it bites");
+        let idle = Devourer { inhale: 0.0, ..winding };
+        assert!(!idle.inhaling() && !idle.inhale_winding(), "and idles between");
+    }
+
+    #[test]
     fn a_husk_cracks_open_into_hunters_and_never_cascades() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
@@ -14047,6 +14218,7 @@ mod tests {
     fn devourer_eats_a_rock_and_grows() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
+        app.insert_resource(NewGamePlus::default());
         app.add_event::<SoundFx>();
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());
@@ -14059,10 +14231,11 @@ mod tests {
         app.insert_resource(Dev::default());
         let dvr = app
             .world_mut()
-            .spawn((Devourer { hp: DEVOURER_HP - 20, grow: 0.0, fed: 0, dying: 0.0, pulse: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0)))
+            .spawn((Devourer { hp: DEVOURER_HP - 20, grow: 0.0, fed: 0, dying: 0.0, pulse: 0.0, inhale: 0.0, inhale_cd: NGP_GLUT_INHALE_EVERY, spit: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0)))
             .id();
         app.world_mut().spawn((
             Asteroid { size: 2, verts: vec![Vec2::X * 40.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+            Velocity(Vec2::ZERO), // the inhale needs to be able to haul rocks, so the query wants one
             Transform::from_xyz(0.0, 0.0, 0.0),
         ));
         app.add_systems(Update, devourer_update);
@@ -14078,6 +14251,7 @@ mod tests {
     fn a_gorged_devourer_bursts_wipes_the_field_and_shrinks() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
+        app.insert_resource(NewGamePlus::default());
         app.add_event::<SoundFx>();
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());
@@ -14089,13 +14263,14 @@ mod tests {
         app.insert_resource(WaveBanner::default());
         app.insert_resource(Dev::default());
         // fully gorged (grow == 1.0), still alive → it should OVERLOAD this frame
-        app.world_mut().spawn((Devourer { hp: 50, grow: 1.0, fed: 20, dying: 0.0, pulse: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0)));
+        app.world_mut().spawn((Devourer { hp: 50, grow: 1.0, fed: 20, dying: 0.0, pulse: 0.0, inhale: 0.0, inhale_cd: NGP_GLUT_INHALE_EVERY, spit: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0)));
         // a ship within the burst reach but OUTSIDE contact range → the burst is what kills it
         app.world_mut().spawn((Ship { angle: 0.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 }, Velocity(Vec2::ZERO), Transform::from_xyz(300.0, 0.0, 0.0)));
         // field rocks (out of eating reach) → wiped by the burst
         for i in 0..5 {
             app.world_mut().spawn((
                 Asteroid { size: 1, verts: vec![Vec2::X * 22.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+                Velocity(Vec2::ZERO), // required by the devourer's (now velocity-mutating) rock query
                 Transform::from_xyz(-300.0 + i as f32 * 20.0, 250.0, 0.0),
             ));
         }
@@ -14115,7 +14290,7 @@ mod tests {
         app.insert_resource(Stats::default());
         app.insert_resource(RunFlags::default());
         app.insert_resource(Score(0));
-        app.world_mut().spawn((Devourer { hp: DEVOURER_HP, grow: 0.5, fed: 0, dying: 0.0, pulse: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0)));
+        app.world_mut().spawn((Devourer { hp: DEVOURER_HP, grow: 0.5, fed: 0, dying: 0.0, pulse: 0.0, inhale: 0.0, inhale_cd: NGP_GLUT_INHALE_EVERY, spit: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0)));
         app.world_mut().spawn((Bullet { life: 1.0, trail: Vec::new(), mass: false }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0)));
         app.add_systems(Update, collisions);
         app.update();
