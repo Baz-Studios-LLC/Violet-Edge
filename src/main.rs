@@ -98,6 +98,14 @@ const LAPSE_FADE_IN: f32 = 1.6; // the TELEGRAPH: a neon tube STRIKING back into
 // to read and fly out of. Enforced at compile time so nobody can tune it into a cheap death.
 const _: () = assert!(LAPSE_FADE_IN >= 1.0);
 
+// HUSK (NG+ roster): a rock that isn't a rock. It looks ordinary bar a hollow core, and breaking it
+// doesn't produce chunks — the shell cracks and lets out a PAIR OF HUNTERS that were riding inside.
+// Deliberately NOT a cascade: the shell releases live rocks instead of splitting, so a husk can never
+// contain another husk and one careless shot can't snowball into a screen of chasers. The hollow is
+// always drawn, so a player who looks can tell one from a drift rock before firing.
+const HUSK_BROOD: usize = 2; // hunters inside
+const HUSK_BROOD_SPEED: f32 = 130.0; // how fast they scatter out of the shell
+
 // FACET (NG+ roster): a mirrored rock. Its faces REFLECT your rounds — and a reflected round is
 // live, so your own fire can kill you. Exactly ONE face is open, and it rotates with the rock, so the
 // counter is to read the gap and time the shot rather than to hold the trigger down. Blasts, the
@@ -130,7 +138,7 @@ const WARP_CONSUME_R: f32 = 120.0; // event horizon — anything whose EDGE cros
 // instantly destroyed (rocks/enemies/mines), like a real black hole. Big enough that pulled-in
 // rocks are eaten on contact instead of clumping + colliding around a tiny mouth.
 const WARP_GRID_RADIUS: f32 = 340.0; // the grid bends toward the hole within this
-const GRID_SHIMMER_AMP: f32 = 4.5; // brightness of the moving grid shimmer CREST (× base grid color, over a ~0.5 dim floor). Was 1.1 — too dim; this makes the lit shimmer waves read clearly. Tunable.
+const GRID_SHIMMER_AMP: f32 = 2.8; // eased 4.5 → 2.8 (user, 2026-07-31): the crest was too hot. This is ONLY the moving shimmer wave — the warp's own grid flicker (`warp_flick`) is separate and untouched. Brightness of the shimmer CREST (× base grid color, over a ~0.5 dim floor). Was 1.1 — too dim; this makes the lit shimmer waves read clearly. Tunable.
 const WARP_GRID_STRENGTH: f32 = 82.0; // max inward grid displacement (px) at the hole
 const WARP_SNAP_DUR: f32 = 0.7; // rubber-band snapback time after the hole closes
 
@@ -174,7 +182,9 @@ const ENEMY_AVOID_R: f32 = 95.0; // steer away from mines/rocks within this
 const ENEMY_SEP_R: f32 = ENEMY_R * 4.0; // steer away from EACH OTHER within this (no stacking)
 const ENEMY_FIRE_EVERY: f32 = 2.4; // s between shots (deliberately slow, dodgeable)
 const ENEMY_FIRE_JITTER: f32 = 0.9;
-const ENEMY_BULLET_SPEED: f32 = 250.0; // px/s (ship is faster, so it's dodgeable)
+const ENEMY_BULLET_SPEED: f32 = 205.0; // px/s — eased from 250 (user, 2026-07-31): still a real
+// threat, but slow enough that a shot fired across the field can be read and slipped rather than
+// reacted to. The ship's 560 top speed means you can always outrun one.
 const ENEMY_BULLET_R: f32 = 5.0;
 const ENEMY_BULLET_LIFE: f32 = 4.5; // s
 const ENEMY_LIFETIME: f32 = 11.0; // s on-screen before it flees (never overstays)
@@ -570,6 +580,11 @@ fn well_color() -> Color {
 fn pulser_lit(offset: f32, t: f32) -> bool {
     (t * PULSE_RATE + offset).sin() > PULSE_LIT_THRESHOLD
 }
+fn husk_color() -> Color {
+    Color::srgb(2.6, 2.2, 1.5)
+} // drab BONE — deliberately dull and rock-like, because it's meant to pass for one. The tell is the
+  // hollow core (drawn, always), not the hue.
+
 fn facet_color() -> Color {
     Color::srgb(4.6, 4.9, 5.4)
 } // hard SILVER-WHITE — a mirror. Its identity is the flat faces + the open notch (silhouette, not
@@ -975,6 +990,7 @@ struct Flavor {
     hunter: bool,
     lapse: bool,
     facet: bool,
+    husk: bool,
 }
 
 // Build it from the optional components every rock query already carries.
@@ -989,6 +1005,7 @@ fn flavor(
     hunter: Option<&Hunter>,
     lapse: Option<&Lapse>,
     facet: Option<&Facet>,
+    husk: Option<&Husk>,
 ) -> Flavor {
     Flavor {
         dense,
@@ -1000,13 +1017,16 @@ fn flavor(
         hunter: hunter.is_some(),
         lapse: lapse.is_some(),
         facet: facet.is_some(),
+        husk: husk.is_some(),
     }
 }
 
 fn credit_rock_kill(stats: &mut Stats, f: Flavor) {
     let (dense, pulser, red, cluster, beacon, hunter, lapse) =
         (f.dense, f.pulser, f.red, f.cluster, f.beacon, f.hunter, f.lapse);
-    if f.facet {
+    if f.husk {
+        stats.husk += 1;
+    } else if f.facet {
         stats.facet += 1;
     } else if lapse {
         stats.lapse += 1;
@@ -1433,6 +1453,10 @@ struct Beacon;
 // and `charge` ramps 0→1 over HUNTER_RAMP seconds, so the longer one lives the harder it drives —
 // you cannot park and farm. Breaking one resets the hunt: children inherit the marker at charge 0
 // (see `break_asteroid`), so a split buys you real breathing room instead of doubling the pressure.
+// A HUSK: hollow, with a brood of Hunters inside (see `break_asteroid`).
+#[derive(Component)]
+struct Husk;
+
 // A FACET rock: mirrored but for one open face. `open` is that face's angle RELATIVE to the rock's
 // own rotation, so the vulnerable side sweeps as the rock spins and you have to track it.
 #[derive(Component, Clone, Copy)]
@@ -1879,6 +1903,7 @@ enum Ach {
     Whostheprey,
     ObjectPermanence,
     ThroughTheCracks,
+    EmptyNest,
     PlannedObsolescence,
     Minesweeper,
     GoldRush,
@@ -1895,7 +1920,7 @@ enum Ach {
 // Order defines the index into `Achievements.unlocked` and the menu list: the boss ladder, the
 // rock-type grinds (one per type), the other lifetime grinds, the restart ladder, then the
 // beat-the-game capstones.
-const ACHIEVEMENTS: [Ach; 28] = [
+const ACHIEVEMENTS: [Ach; 29] = [
     Ach::FirstBlood,
     Ach::Warden,
     Ach::Glutton,
@@ -1912,6 +1937,7 @@ const ACHIEVEMENTS: [Ach; 28] = [
     Ach::Whostheprey,
     Ach::ObjectPermanence,
     Ach::ThroughTheCracks,
+    Ach::EmptyNest,
     Ach::PlannedObsolescence,
     Ach::Minesweeper,
     Ach::GoldRush,
@@ -1936,6 +1962,7 @@ const ACH_PULSER: u32 = 300; // every one is a timed dark-beat kill
 const ACH_RED: u32 = 400;
 const ACH_CLUSTER: u32 = 300;
 const ACH_BEACON: u32 = 100;
+const ACH_HUSK: u32 = 300; // each one hands you two chasers, so they're never cheap
 const ACH_FACET: u32 = 400; // each one has to go through a MOVING gap — a real career
 const ACH_LAPSE: u32 = 500; // NG+-only and common there, but NG+ itself is earned — a long career
 const ACH_TENDERS: u32 = 100; // one at a time, late NG+ waves only: ~8-10 full second laps
@@ -1963,6 +1990,7 @@ fn ach_meta(a: Ach) -> (&'static str, &'static str) {
         Ach::Whostheprey => ("Who's the Prey Now", "Destroy 350 hunters"),
         Ach::ObjectPermanence => ("Object Permanence", "Destroy 500 lapse rocks — catch them while they exist"),
         Ach::ThroughTheCracks => ("Through the Cracks", "Crack 400 facets — every one through its open face"),
+        Ach::EmptyNest => ("Empty Nest", "Crack open 300 husks — and deal with what was inside"),
         Ach::PlannedObsolescence => ("Planned Obsolescence", "Scrap 100 Tender repair drones"),
         Ach::Minesweeper => ("Minesweeper", "Destroy 250 mines"),
         Ach::GoldRush => ("Gold Rush", "Earn 25 extra lives from gold rocks"),
@@ -1996,6 +2024,7 @@ fn ach_met(a: Ach, s: &Stats) -> bool {
         Ach::Whostheprey => s.hunter >= ACH_HUNTER,
         Ach::ObjectPermanence => s.lapse >= ACH_LAPSE,
         Ach::ThroughTheCracks => s.facet >= ACH_FACET,
+        Ach::EmptyNest => s.husk >= ACH_HUSK,
         Ach::PlannedObsolescence => s.tenders >= ACH_TENDERS,
         Ach::Minesweeper => s.mines >= ACH_MINES,
         Ach::GoldRush => s.golds >= ACH_GOLDS,
@@ -2027,6 +2056,7 @@ fn ach_progress(a: Ach, s: &Stats) -> Option<(u32, u32)> {
         Ach::Whostheprey => Some((s.hunter, ACH_HUNTER)),
         Ach::ObjectPermanence => Some((s.lapse, ACH_LAPSE)),
         Ach::ThroughTheCracks => Some((s.facet, ACH_FACET)),
+        Ach::EmptyNest => Some((s.husk, ACH_HUSK)),
         Ach::PlannedObsolescence => Some((s.tenders, ACH_TENDERS)),
         Ach::Minesweeper => Some((s.mines, ACH_MINES)),
         Ach::GoldRush => Some((s.golds, ACH_GOLDS)),
@@ -2078,6 +2108,7 @@ struct Stats {
     pacifist: bool,    // ever survived two straight timer waves breaking nothing (and not dying)
     hunter: u32,       // hunter rocks destroyed (lifetime)
     lapse: u32,        // lapse rocks destroyed (lifetime)
+    husk: u32,         // husks cracked open (lifetime)
     facet: u32,        // facet rocks cracked (lifetime) — every one through its open face — caught while SOLID, which is the trick
     tenders: u32,      // Tender repair drones destroyed (lifetime)
     seen: u32,         // GALLERY sightings bitmask — one bit per subject, set the frame it first
@@ -2442,6 +2473,7 @@ enum RockKind {
     Hunter,  // vermillion predator (Act I, w6+) — HOMES on the ship, accelerating the longer it lives
     Lapse,   // NG+ roster — phases OUT of existence and materializes again elsewhere
     Facet,   // NG+ roster — mirrored: reflects your rounds off every face but one
+    Husk,    // NG+ roster — hollow: cracking it lets out a pair of hunters
     Orange,  // explosive (detonates instead of splitting)
     Pulser,  // pulses lit (invulnerable) ↔ dark (vulnerable) — hit it on the dark beat
     Red,     // growing (Act III) — absorbs nearby rocks to swell; a plain shot splits it into more reds
@@ -2568,6 +2600,9 @@ fn spawn_kind_rock(commands: &mut Commands, pos: Vec2, size: u8, vel: Vec2, rng:
         RockKind::Hunter => {
             commands.entity(e).insert(Hunter { charge: 0.0, look: Vec2::X }); // starts docile, ramps into a chaser
         }
+        RockKind::Husk => {
+            commands.entity(e).insert(Husk);
+        }
         RockKind::Facet => {
             commands.entity(e).insert(Facet { open: rng.gen_range(0.0..TAU) });
         }
@@ -2625,6 +2660,9 @@ fn roll_ngplus_kind(level: i32, rng: &mut impl Rng) -> RockKind {
     // carry waves 6-7, the Facet debuts at 8 (wave 8 is mostly mirrors — its teaching wave).
     // The roster rule means everything past wave 5 comes from here; widen as new types land.
     let cw = content_wave(level);
+    if cw >= 9 && rng.gen_bool(if cw == 9 { 0.5 } else { 0.28 }) {
+        return RockKind::Husk; // wave 9 is its teaching wave — learn to check for the hollow
+    }
     if cw >= 8 && rng.gen_bool(if cw == 8 { 0.6 } else { 0.32 }) {
         return RockKind::Facet;
     }
@@ -2695,7 +2733,7 @@ fn spawn_asteroid(commands: &mut Commands, pos: Vec2, size: u8, vel: Vec2, rng: 
 fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score, e: Entity, pos: Vec2, size: u8, chunk_mult: f32, f: Flavor, chunks: bool) {
     let (dense, gold, pulser, red, cluster, beacon, hunter, lapse) =
         (f.dense, f.gold, f.pulser, f.red, f.cluster, f.beacon, f.hunter, f.lapse);
-    let facet = f.facet;
+    let (facet, husk) = (f.facet, f.husk);
     commands.entity(e).despawn();
     let base = match size {
         3 => 20,
@@ -2713,6 +2751,8 @@ fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score
         cluster_color()
     } else if beacon {
         beacon_color()
+    } else if husk {
+        husk_color()
     } else if facet {
         facet_color()
     } else if lapse {
@@ -2733,6 +2773,19 @@ fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score
             Shockwave { age: 0.0, ttl: 0.16, max_r: asteroid_radius(size) * 1.5, color: splash },
             Transform::from_xyz(pos.x, pos.y, 0.0),
         ));
+    }
+    // ── THE HUSK CRACKS ── no chunks: the shell lets out the pair of Hunters it was carrying. They
+    // scatter outward at charge 0, so they start docile and you get a moment to deal with them. A
+    // husk never contains another husk, so this can't cascade.
+    if husk && chunks && size > 1 {
+        let base_a = rng.gen_range(0.0..TAU);
+        for i in 0..HUSK_BROOD {
+            let a = base_a + i as f32 / HUSK_BROOD as f32 * TAU;
+            let out = Vec2::from_angle(a);
+            let child = spawn_asteroid(commands, pos + out * (asteroid_radius(1) + 6.0), 1, out * HUSK_BROOD_SPEED * chunk_mult, rng, false);
+            commands.entity(child).insert((Hunter { charge: 0.0, look: out }, Fresh(FRAGMENT_GRACE)));
+        }
+        return;
     }
     // A BEACON never splits: cracking it kills the aura clean (children would re-shield the field).
     let chunks = chunks && !beacon;
@@ -2805,7 +2858,7 @@ fn break_asteroid(commands: &mut Commands, rng: &mut impl Rng, score: &mut Score
 fn blast_asteroids(
     commands: &mut Commands,
     rng: &mut impl Rng,
-    asteroids: &Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>, Option<&Facet>), (Without<Mine>, Without<Shielded>)>,
+    asteroids: &Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>, Option<&Facet>, Option<&Husk>), (Without<Mine>, Without<Shielded>)>,
     broken: &mut HashSet<Entity>,
     center: Vec2,
     t: f32,
@@ -2815,7 +2868,7 @@ fn blast_asteroids(
     let mut unscored = Score(0);
     let score = &mut unscored;
     // shared &Query → iterates read-only, so we just read size/dense/gold/explosive here
-    for (ae, at, a, gold, explosive, pulser, red, cluster, beacon, hunter, lapse, facet) in asteroids {
+    for (ae, at, a, gold, explosive, pulser, red, cluster, beacon, hunter, lapse, facet, husk) in asteroids {
         if broken.contains(&ae) {
             continue;
         }
@@ -2837,7 +2890,7 @@ fn blast_asteroids(
             } else {
                 // mine flings chunks (ignores hp + the beacon aura — blasts are the counterplay); never gold;
                 // a mined red splits into reds; a mined CLUSTER shatters spectacularly (fast shard ring)
-                break_asteroid(commands, rng, score, ae, ap, a.size, MINE_CHUNK_MULT, flavor(a.dense, None, pulser, red, cluster, beacon, hunter, lapse, facet), true);
+                break_asteroid(commands, rng, score, ae, ap, a.size, MINE_CHUNK_MULT, flavor(a.dense, None, pulser, red, cluster, beacon, hunter, lapse, facet, husk), true);
             }
         }
     }
@@ -3734,7 +3787,7 @@ fn collisions(
     mut commands: Commands,
     time: Res<Time>,
     bullets: Query<(Entity, &Transform, &Bullet, &Velocity, Has<WarheadShot>)>,
-    mut asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>, Option<&Facet>), (Without<Mine>, Without<Shielded>)>,
+    mut asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>, Option<&Facet>, Option<&Husk>), (Without<Mine>, Without<Shielded>)>,
     mines: Query<(Entity, &Transform), With<Mine>>,
     enemies: Query<(Entity, &Transform), With<Enemy>>,
     tenders: Query<(Entity, &Transform), With<Tender>>,
@@ -3766,7 +3819,7 @@ fn collisions(
     // falls. Zones are collected in a read-only pass so the mutable bullet loop below can test them.
     let beacon_zones: Vec<Vec2> = asteroids
         .iter()
-        .filter(|(.., beacon, _, _, _)| beacon.is_some())
+        .filter(|(.., beacon, _, _, _, _)| beacon.is_some())
         .map(|(_, at, ..)| at.translation.truncate())
         .collect();
     let beacon_shielded =
@@ -3779,7 +3832,7 @@ fn collisions(
         let br = bullet_radius(b.mass); // mass shots are fatter…
         let power = bullet_boss_power(b.mass); // …and (vs a boss/mob) hit a bit harder; vs free rocks, see below
         let mut warhead_blast_at: Option<Vec2> = None; // set when a warhead round detonates on a rock
-        for (ae, at, mut a, gold, explosive, pulser, red, cluster, beacon, hunter, lapse, facet) in &mut asteroids {
+        for (ae, at, mut a, gold, explosive, pulser, red, cluster, beacon, hunter, lapse, facet, husk) in &mut asteroids {
             if dead_a.contains(&ae) {
                 continue;
             }
@@ -3843,7 +3896,7 @@ fn collisions(
                     // it struck dies outright, and the violet ring is now a REAL blast: everything
                     // within WARHEAD_BLAST_R is destroyed in the after-pass below.
                     dead_a.insert(ae);
-                    break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, flavor(a.dense, gold, pulser, red, cluster, beacon, hunter, lapse, facet), false);
+                    break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, flavor(a.dense, gold, pulser, red, cluster, beacon, hunter, lapse, facet, husk), false);
                     commands.spawn((
                         Shockwave { age: 0.0, ttl: 0.28, max_r: WARHEAD_BLAST_R, color: warhead_color() },
                         Transform::from_xyz(ap.x, ap.y, 0.0),
@@ -3852,7 +3905,7 @@ fn collisions(
                     if explosive.is_some() {
                         stats.orange += 1; // the round deletes an orange whole — still a player-credited kill
                     } else {
-                        credit_rock_kill(&mut stats, flavor(a.dense, gold, pulser, red, cluster, beacon, hunter, lapse, facet));
+                        credit_rock_kill(&mut stats, flavor(a.dense, gold, pulser, red, cluster, beacon, hunter, lapse, facet, husk));
                     }
                     warhead_blast_at = Some(ap); // AoE applied after this loop (can't nest a second &mut pass)
                     dead_b.insert(be);
@@ -3873,9 +3926,9 @@ fn collisions(
                         commands.entity(ae).insert(Detonating { fuse: ORANGE_FUSE, friendly: false }); // orange detonates + chains
                         stats.orange += 1; // you lit it — the kill is yours
                     } else {
-                        break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, flavor(a.dense, gold, pulser, red, cluster, beacon, hunter, lapse, facet), true);
+                        break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, flavor(a.dense, gold, pulser, red, cluster, beacon, hunter, lapse, facet, husk), true);
                         sfx.write(SoundFx::Break(a.size));
-                        credit_rock_kill(&mut stats, flavor(a.dense, gold, pulser, red, cluster, beacon, hunter, lapse, facet));
+                        credit_rock_kill(&mut stats, flavor(a.dense, gold, pulser, red, cluster, beacon, hunter, lapse, facet, husk));
                     }
                 }
                 break;
@@ -3885,7 +3938,7 @@ fn collisions(
         // Blast rules apply, same as a mine's: gold is spared (only aimed shots may break the 1UP),
         // a LIT pulser shrugs it off, and the beacon aura does NOT protect (blasts are its counter).
         if let Some(c) = warhead_blast_at {
-            for (ae, at, a, gold, explosive, pulser, red, cluster, beacon, hunter, lapse, facet) in &mut asteroids {
+            for (ae, at, a, gold, explosive, pulser, red, cluster, beacon, hunter, lapse, facet, husk) in &mut asteroids {
                 if dead_a.contains(&ae) || gold.is_some() {
                     continue;
                 }
@@ -3896,11 +3949,11 @@ fn collisions(
                 let rr = WARHEAD_BLAST_R + asteroid_radius(a.size);
                 if c.distance_squared(ap) < rr * rr {
                     dead_a.insert(ae);
-                    break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, flavor(a.dense, None, pulser, red, cluster, beacon, hunter, lapse, facet), false);
+                    break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, a.size, 1.0, flavor(a.dense, None, pulser, red, cluster, beacon, hunter, lapse, facet, husk), false);
                     if explosive.is_some() {
                         stats.orange += 1; // the blast deletes an orange whole — yours
                     } else {
-                        credit_rock_kill(&mut stats, flavor(a.dense, gold, pulser, red, cluster, beacon, hunter, lapse, facet));
+                        credit_rock_kill(&mut stats, flavor(a.dense, gold, pulser, red, cluster, beacon, hunter, lapse, facet, husk));
                     }
                 }
             }
@@ -4330,7 +4383,7 @@ fn mine_update(
     ships: Query<(Entity, &Transform, &Ship), Without<Mine>>,
     mut mines: Query<(Entity, &mut Transform, &mut Velocity, &mut Mine)>,
     // &mut to match blast_asteroids' type; only read here (iter + shared borrow)
-    asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>, Option<&Facet>), (Without<Mine>, Without<Shielded>)>,
+    asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>, Option<&Facet>, Option<&Husk>), (Without<Mine>, Without<Shielded>)>,
 ) {
     let dt = time.delta_secs();
     let h = arena.half;
@@ -5549,7 +5602,7 @@ fn chain_update(
     mut sfx: EventWriter<SoundFx>,
     mut stats: ResMut<Stats>,
     mut chains: Query<(Entity, &Transform, &mut ChainShot)>,
-    asteroids: Query<(Entity, &Transform, &Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>, Option<&Facet>), (Without<Mine>, Without<Shielded>)>,
+    asteroids: Query<(Entity, &Transform, &Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>, Option<&Facet>, Option<&Husk>), (Without<Mine>, Without<Shielded>)>,
     enemies: Query<(Entity, &Transform), With<Enemy>>,
     mines: Query<(Entity, &Transform), With<Mine>>,
 ) {
@@ -5569,10 +5622,10 @@ fn chain_update(
         // beacon auras block the beam too — collect the zones once per beam sweep
         let beacon_zones: Vec<Vec2> = asteroids
             .iter()
-            .filter(|(.., beacon, _, _, _)| beacon.is_some())
+            .filter(|(.., beacon, _, _, _, _)| beacon.is_some())
             .map(|(_, at, ..)| at.translation.truncate())
             .collect();
-        for (ae, at, ast, gold, explosive, pulser, red, cluster, beacon, hunter, lapse, facet) in &asteroids {
+        for (ae, at, ast, gold, explosive, pulser, red, cluster, beacon, hunter, lapse, facet, husk) in &asteroids {
             if dead.contains(&ae) {
                 continue;
             }
@@ -5599,9 +5652,9 @@ fn chain_update(
                 }
                 // chain beam shears dense rocks outright — the beam ignores hp, like a mine (a BEACON dies
                 // in one sweep: the beam is a clean answer to an aura)
-                break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, ast.size, 1.0, flavor(ast.dense, gold, pulser, red, cluster, beacon, hunter, lapse, facet), true); // chain shears rocks; a red splits into reds (they stay red + regrow)
+                break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, ast.size, 1.0, flavor(ast.dense, gold, pulser, red, cluster, beacon, hunter, lapse, facet, husk), true); // chain shears rocks; a red splits into reds (they stay red + regrow)
                 sfx.write(SoundFx::Break(ast.size));
-                credit_rock_kill(&mut stats, flavor(ast.dense, gold, pulser, red, cluster, beacon, hunter, lapse, facet));
+                credit_rock_kill(&mut stats, flavor(ast.dense, gold, pulser, red, cluster, beacon, hunter, lapse, facet, husk));
             }
         }
         for (ee, et) in &enemies {
@@ -6075,7 +6128,7 @@ fn render(
     wf: Res<WarpField>,
     stars: Query<(&Star, &Transform)>,
     ships: Query<(&Ship, &Transform, Option<&ShipTrail>)>,
-    asteroids: Query<(&Asteroid, &Transform, Option<&Gold>, Option<&Explosive>, Option<&Detonating>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>, Option<&Facet>)>,
+    asteroids: Query<(&Asteroid, &Transform, Option<&Gold>, Option<&Explosive>, Option<&Detonating>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>, Option<&Facet>, Option<&Husk>)>,
     bullets: Query<(&Bullet, &Transform, Has<WarheadShot>, &Velocity)>,
     particles: Query<(&Particle, &Transform)>,
     holes: Query<(&BlackHole, &Transform)>,
@@ -6184,7 +6237,7 @@ fn render(
     // they're chipped, so their tanky state reads at a glance.
     let rock = rock_color();
     let dense = dense_color();
-    for (a, at, gold, explosive, det, pulser, red, cluster, beacon, hunter, lapse, facet) in &asteroids {
+    for (a, at, gold, explosive, det, pulser, red, cluster, beacon, hunter, lapse, facet, husk) in &asteroids {
         let c = at.translation.truncate();
         let rot = Vec2::from_angle(a.rot);
         // colour by type: a lit orange flashes white-hot as its fuse burns; a live orange pulses; gold
@@ -6205,6 +6258,8 @@ fn render(
             dim(red_color(), 0.7 + 0.3 * (t * 4.0).sin()) // a slow, menacing throb — it's alive and hungry
         } else if beacon.is_some() {
             dim(beacon_color(), 0.8 + 0.2 * (t * 2.0).sin()) // steady teal breathe — the aura's living key
+        } else if husk.is_some() {
+            husk_color()
         } else if facet.is_some() {
             facet_color()
         } else if let Some(l) = lapse {
@@ -6234,6 +6289,11 @@ fn render(
             gizmos.circle_2d(Isometry2d::from_translation(c), BEACON_AURA_R, dim(col, 0.22 + 0.06 * (t * 2.0).sin()));
             let frac = a.hp.max(1) as f32 / a.size.max(1) as f32;
             gizmos.linestrip_2d(ring(0.35 + 0.3 * frac), col);
+        } else if husk.is_some() {
+            // THE HOLLOW: the honest tell. A husk is drab and rock-like on purpose, so the inner
+            // void is what separates it from a drift rock BEFORE you shoot it.
+            gizmos.linestrip_2d(ring(0.48), dim(husk_color(), 0.75));
+            gizmos.linestrip_2d(ring(0.3), dim(husk_color(), 0.4));
         } else if let Some(fc) = facet {
             // THE OPEN FACE: a bright inward wedge marking the one angle that takes damage. It
             // sweeps with the rock's own spin, so tracking the gap IS the fight.
@@ -9361,6 +9421,7 @@ fn gallery_bit(art: GalleryArt) -> u32 {
         GalleryArt::Rock(RockKind::Hunter) => 2,
         GalleryArt::Rock(RockKind::Lapse) => 18,
         GalleryArt::Rock(RockKind::Facet) => 20,
+        GalleryArt::Rock(RockKind::Husk) => 21,
         GalleryArt::Rock(RockKind::Orange) => 3,
         GalleryArt::Rock(RockKind::Pulser) => 4,
         GalleryArt::Rock(RockKind::Red) => 5,
@@ -9418,6 +9479,8 @@ fn gallery_entries(s: &Stats) -> Vec<(GalleryArt, &'static str, &'static str, &'
         (GalleryArt::Rock(RockKind::Red), "GROWER", "Appetite", "It pulls in whatever drifts near and swells with it - other growers included. Shooting it plainly only makes two of them, and both start feeding again. The mass shot, a warhead, the beam or a mine ends one outright. It eats the way the big one in the deep field ate. I don't think that's coincidence.", gallery_seen(s, GalleryArt::Rock(RockKind::Red))),
         (GalleryArt::Rock(RockKind::Cluster), "CLUSTER", "Fractured through", "Riddled with cracks before I ever fired. Break it close and it bursts into a ring of fast shards that will take the ship with it - keep your distance, vaporize it with the mass shot, or let the warp swallow it whole. Whatever shattered this did it a long way from here.", gallery_seen(s, GalleryArt::Rock(RockKind::Cluster))),
         (GalleryArt::Rock(RockKind::Beacon), "BEACON", "A keeper, not a rock", "It holds a field around itself and everything inside goes untouchable - my rounds and my beam simply wash over them. Kill the beacon and the field drops. Blasts, the warp and a grower's appetite ignore it entirely. It isn't defending itself. It's defending the others, and something taught it to.", gallery_seen(s, GalleryArt::Rock(RockKind::Beacon))),
+        (GalleryArt::Rock(RockKind::Husk), "HUSK", "It was carrying something",
+         "It passes for a drift rock right up until it comes apart, and then it is not rock at all - it is a SHELL, and there were two of the chasers folded up inside it. They come out slow and confused, which is the only mercy in it. I have started checking for the hollow before I fire. Rocks do not grow hollow, and nothing out here is carrying young. Something PACKED these.", gallery_seen(s, GalleryArt::Rock(RockKind::Husk))),
         (GalleryArt::Rock(RockKind::Facet), "FACET", "It gives the shot back",
          "Faces like cut glass, and they throw my rounds straight back - I have put my own fire through my own hull twice learning that. There is exactly ONE open face and it travels as the rock turns, so it is a matter of waiting for the gap rather than leaning on the trigger. The beam and any blast go through it regardless; they are not rounds, and whatever polished those faces did not plan for them.", gallery_seen(s, GalleryArt::Rock(RockKind::Facet))),
         (GalleryArt::Rock(RockKind::Lapse), "LAPSE", "Here, then not",
@@ -9444,17 +9507,19 @@ fn gallery_entries(s: &Stats) -> Vec<(GalleryArt, &'static str, &'static str, &'
 // Persists ONLY on a change, so this never touches the disk on a normal frame.
 fn gallery_sightings(
     mut stats: ResMut<Stats>,
-    rocks: Query<(Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>, Option<&Facet>, &Asteroid)>,
+    rocks: Query<(Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>, Option<&Facet>, Option<&Husk>, &Asteroid)>,
     mines: Query<(), With<Mine>>,
     mobs: Query<(), With<Enemy>>,
     tenders: Query<(), With<Tender>>,
     wells: Query<(), With<Well>>,
 ) {
     let mut fresh = false;
-    for (gold, explosive, pulser, red, cluster, beacon, hunter, lapse, facet, a) in &rocks {
+    for (gold, explosive, pulser, red, cluster, beacon, hunter, lapse, facet, husk, a) in &rocks {
         // one rock, one subject — mirrors `credit_rock_kill`'s priority so the tags can't double up
         let art = if gold.is_some() {
             GalleryArt::Gold
+        } else if husk.is_some() {
+            GalleryArt::Rock(RockKind::Husk)
         } else if facet.is_some() {
             GalleryArt::Rock(RockKind::Facet)
         } else if lapse.is_some() {
@@ -9549,6 +9614,7 @@ fn draw_gallery_art(gizmos: &mut Gizmos, c: Vec2, t: f32, art: GalleryArt, zoom:
                 RockKind::Hunter => hunter_color(),
                 RockKind::Lapse => lapse_color(),
                 RockKind::Facet => facet_color(),
+                RockKind::Husk => husk_color(),
                 RockKind::Orange => orange_color(),
                 RockKind::Pulser => Color::srgb(6.0, 6.2, 7.0),
                 RockKind::Red => red_color(),
@@ -9590,6 +9656,20 @@ fn draw_gallery_art(gizmos: &mut Gizmos, c: Vec2, t: f32, art: GalleryArt, zoom:
                     for i in 0..2 {
                         let a = t * 0.7 + i as f32 * TAU / 2.0;
                         gizmos.linestrip_2d(gallery_rock_ring(c + Vec2::from_angle(a) * r * 1.7, 13.0 * zoom), dim(col, 0.6));
+                    }
+                }
+                RockKind::Husk => {
+                    // an ordinary-looking shell, cracked open, with the brood coming out
+                    gizmos.linestrip_2d(gallery_rock_ring(c, r), col);
+                    gizmos.linestrip_2d(gallery_rock_ring(c, r * 0.5), dim(col, 0.5)); // the HOLLOW
+                    // two hunters scattering, eyes leading
+                    for s in [-1.0f32, 1.0] {
+                        let out = Vec2::new(s * 0.82, 0.34).normalize();
+                        let hp = c + out * r * 1.15;
+                        gizmos.linestrip_2d(gallery_rock_ring(hp, r * 0.3), hunter_color());
+                        let eye = hp + out * r * 0.14;
+                        gizmos.circle_2d(Isometry2d::from_translation(eye), r * 0.07, Color::srgb(7.0, 5.6, 4.6));
+                        gizmos.circle_2d(Isometry2d::from_translation(eye), r * 0.032, Color::srgb(9.0, 2.0, 1.0));
                     }
                 }
                 RockKind::Facet => {
@@ -9729,7 +9809,8 @@ fn gallery_art_extent(art: GalleryArt) -> f32 {
     match art {
         GalleryArt::Rock(RockKind::Beacon) => 58.0 * 2.3, // the aura is the widest thing in the book
         GalleryArt::Rock(RockKind::Orange) => 58.0 * 1.9, // blast reach
-        GalleryArt::Rock(RockKind::Red) => 58.0 * 1.7 + 13.0, // the two rocks it's pulling in
+        GalleryArt::Rock(RockKind::Red) => 58.0 * 1.7 + 13.0,
+        GalleryArt::Rock(RockKind::Husk) => 58.0 * 1.15 + 58.0 * 0.3, // the brood sits outside the shell // the two rocks it's pulling in
         GalleryArt::Rock(_) => 58.0,
         GalleryArt::Gold => 58.0,
         GalleryArt::Mine => 40.0 * (MINE_BLAST_R / MINE_R), // lethal reach ring
@@ -10180,12 +10261,13 @@ fn read_progress() -> Option<Stats> {
         lapse: num(25),
         tenders: num(26),
         facet: num(27),
+        husk: num(28),
     })
 }
 #[cfg(not(test))]
 fn save_progress(s: &Stats) {
     let line = format!(
-        "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+        "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
         s.blue,
         s.green,
         s.enemies,
@@ -10213,7 +10295,8 @@ fn save_progress(s: &Stats) {
         s.seen,
         s.lapse,
         s.tenders,
-        s.facet
+        s.facet,
+        s.husk
     );
     let _ = std::fs::write(SAVE_PATH, line); // best-effort — never block gameplay on I/O
 }
@@ -12377,10 +12460,11 @@ mod tests {
             lapse: 17,
             tenders: 19,
             facet: 21,
+            husk: 23,
         };
         // mirror save_progress's field order (the real fn is a test no-op so runs can't clobber saves)
         let line = format!(
-            "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+            "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
             s.blue,
             s.green,
             s.enemies,
@@ -12408,10 +12492,11 @@ mod tests {
             s.seen,
             s.lapse,
             s.tenders,
-            s.facet
+            s.facet,
+            s.husk
         );
         let n: Vec<&str> = line.split_whitespace().collect();
-        assert_eq!(n.len(), 28, "the save line carries all 28 fields");
+        assert_eq!(n.len(), 29, "the save line carries all 29 fields");
         let flag = |i: usize| n[i] == "1";
         let num = |i: usize| n[i].parse::<u32>().unwrap();
         assert_eq!((num(0), num(1), num(2)), (s.blue, s.green, s.enemies));
@@ -12425,7 +12510,7 @@ mod tests {
         assert!(flag(22), "pacifist rides in slot 22");
         assert_eq!(num(23), s.hunter, "hunter kills ride in slot 23");
         assert_eq!(num(24), s.seen, "the gallery sightings bitmask rides in slot 24");
-        assert_eq!((num(25), num(26), num(27)), (s.lapse, s.tenders, s.facet), "the lapse / tender / facet tallies ride in the final slots");
+        assert_eq!((num(25), num(26), num(27), num(28)), (s.lapse, s.tenders, s.facet, s.husk), "the lapse / tender / facet / husk tallies ride in the final slots");
         // an OLD 12-field save (pre-expansion) must still load — new counters default to zero
         let old = "5 4 3 1 0 0 1 0 0 0 2 1";
         assert_eq!(old.split_whitespace().count(), 12);
@@ -12609,7 +12694,7 @@ mod tests {
         let done = Stats {
             blue: ACH_BLUE, green: ACH_GREEN, orange: ACH_ORANGE, pulser: ACH_PULSER, red: ACH_RED,
             cluster: ACH_CLUSTER, beacon: ACH_BEACON, hunter: ACH_HUNTER, lapse: ACH_LAPSE,
-            tenders: ACH_TENDERS, facet: ACH_FACET, mines: ACH_MINES,
+            tenders: ACH_TENDERS, facet: ACH_FACET, husk: ACH_HUSK, mines: ACH_MINES,
             golds: ACH_GOLDS, waves: ACH_WAVES, warps: ACH_WARPS, runs: 50, ..default()
         };
         assert!(nearest_grind(&done).is_none(), "with every counter capped the ticker goes quiet");
@@ -13020,7 +13105,7 @@ mod tests {
                 RockKind::Cluster => cluster += 1,
                 RockKind::Beacon => beacon += 1,
                 RockKind::Hunter => hunter += 1,
-                RockKind::Lapse | RockKind::Facet => panic!("Lapse/Facet are NG+-only and must never appear in the base finale mix"),
+                RockKind::Lapse | RockKind::Facet | RockKind::Husk => panic!("Lapse/Facet/Husk are NG+-only and must never appear in the base finale mix"),
             }
         }
         for (name, n) in [("blue", blue), ("green", green), ("orange", orange), ("pulser", pulser), ("red", red), ("cluster", cluster), ("beacon", beacon), ("hunter", hunter)] {
@@ -13043,7 +13128,7 @@ mod tests {
                     // Hunter (Act I) + the Act III-only kinds; covered by their own tests. The Lapse is
                     // NG+-only, so a base-game roll must never produce one.
                     RockKind::Hunter | RockKind::Red | RockKind::Cluster | RockKind::Beacon => {}
-                    RockKind::Lapse | RockKind::Facet => panic!("Lapse/Facet are NG+-only and must never appear in a base-game wave"),
+                    RockKind::Lapse | RockKind::Facet | RockKind::Husk => panic!("Lapse/Facet/Husk are NG+-only and must never appear in a base-game wave"),
                 }
             }
             (blue, green, orange, pulser)
@@ -13274,6 +13359,44 @@ mod tests {
     }
 
     #[test]
+    fn a_husk_cracks_open_into_hunters_and_never_cascades() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_event::<SoundFx>();
+        app.insert_resource(Stats::default());
+        app.insert_resource(Score(0));
+        app.world_mut().spawn((
+            Asteroid { size: 3, verts: vec![Vec2::X * 88.0], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+            Husk,
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+        ));
+        app.world_mut().spawn((
+            Bullet { life: 1.0, trail: Vec::new(), mass: false },
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+        ));
+        app.add_systems(Update, collisions);
+        app.update();
+        // the shell releases a BROOD, not chunks
+        let (hunters, husks, total) = {
+            let mut q = app.world_mut().query::<(&Asteroid, Option<&Hunter>, Option<&Husk>)>();
+            let all: Vec<_> = q.iter(app.world()).map(|(a, h, k)| (a.size, h.is_some(), k.is_some())).collect();
+            (all.iter().filter(|x| x.1).count(), all.iter().filter(|x| x.2).count(), all.len())
+        };
+        assert_eq!(hunters, HUSK_BROOD, "the shell lets out its brood of hunters");
+        assert_eq!(total, HUSK_BROOD, "…and nothing else — no ordinary chunks alongside them");
+        assert_eq!(husks, 0, "NO CASCADE: a husk never contains another husk");
+        assert_eq!(app.world().resource::<Stats>().husk, 1, "cracking it credits the husk tally");
+        // the brood starts docile, so you get a beat to react
+        let charges: Vec<f32> = {
+            let mut q = app.world_mut().query::<&Hunter>();
+            q.iter(app.world()).map(|h| h.charge).collect()
+        };
+        assert!(charges.iter().all(|&c| c == 0.0), "the brood emerges at zero charge");
+    }
+
+    #[test]
     fn a_facet_reflects_closed_faces_and_takes_the_open_one() {
         // The whole mechanic: a round on a CLOSED face comes back live; a round through the OPEN
         // face kills the rock normally. `open` is relative to the rock's rotation, so the gap moves.
@@ -13463,7 +13586,7 @@ mod tests {
         // NG+ waves 1-5 recap the OLD roster ONLY — the new bestiary is held back until wave 6
         for _ in 0..400 {
             match roll_rock_kind(3, true, &mut rng) {
-                RockKind::Hunter | RockKind::Lapse | RockKind::Facet => panic!("the new roster must not appear in NG+ waves 1-5"),
+                RockKind::Hunter | RockKind::Lapse | RockKind::Facet | RockKind::Husk => panic!("the new roster must not appear in NG+ waves 1-5"),
                 _ => {}
             }
         }
@@ -13474,7 +13597,7 @@ mod tests {
             match roll_rock_kind(12, true, &mut rng) {
                 RockKind::Hunter => hunters += 1,
                 RockKind::Lapse => lapses += 1,
-                RockKind::Facet => {} // debuts at wave 8; counted by its own test
+                RockKind::Facet | RockKind::Husk => {} // debut at waves 8/9; counted by their own tests
                 other => panic!("an OLD-roster rock leaked into NG+ past wave 5: {:?}", other as u8),
             }
         }

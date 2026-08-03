@@ -5,6 +5,17 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
+- **THE HUSK — a rock that was carrying something** (NG+, debuts wave 9). It passes for a drift rock,
+  and breaking it produces no chunks at all: the shell cracks and lets out **two Hunters** that were
+  folded up inside. They emerge docile, so you get a beat to deal with them. The tell is honest — the
+  hollow core is always drawn, so you can check before you fire — and a husk can never contain
+  another husk, so one careless shot can't snowball. New achievement: **Empty Nest** (crack 300).
+  It's also the loudest lore beat yet: rocks don't grow hollow, and nothing out here has young.
+- **Mob shots are slower** (250 → 205 px/s). Still a real threat, but a shot fired across the field
+  can be read and slipped rather than reacted to.
+- **The grid's moving shimmer is dialled back** — the crest was running too hot. The warp's own grid
+  flicker is a separate effect and is untouched.
+
 - **THE FACET — a rock that gives your shot back** (NG+, debuts wave 8). Its faces are mirrors: a
   round that lands on one is **reflected, and the reflection is live** — your own fire can kill you.
   Exactly one face is open, and it sweeps as the rock turns, so the counter is to read the gap and
