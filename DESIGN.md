@@ -55,7 +55,7 @@ with the asteroids for attention.
 
 | Enemy | Status | Behaviour |
 | --- | --- | --- |
-| **Yellow mob** | ✅ | Standard enemy ship. Glides in, hovers and strafes around the player, steers clear of rocks/mines, lobs slow shots, and flees off-screen after a lifetime. Runs in two windows: waves 3–4 and 8–9. **Its fire is fair BY CONSTRUCTION (reworked 2026-08-03, user: "still firing too fast and too accurately"):** it **LOCKS** a line `ENEMY_AIM_WIND` (0.5s) before firing and **shows it** (the muzzle swings out along that exact line and brightens), and the line is **never re-aimed** — so moving off it beats the shot outright and attention is the counter, not luck. Every lock takes a random **angular** error (`ENEMY_AIM_ERROR` 0.17rad), compile-time asserted to exceed the hull's width at hover range, so a stationary ship is **not** a free hit; because the error is angular it scatters far more at range (±44px at 260px, ±95px at 560px) — the mob is worst at the shots it has least business taking. It refuses cross-arena potshots entirely (`ENEMY_FIRE_RANGE` 560, asserted well beyond its hover range so it still fights), and it abandons any committed shot the moment it starts fleeing — no parting potshot. Cadence 3.2–4.6s + the tell ≈ **35% fewer shots** than before. |
+| **Yellow mob** | ✅ | Standard enemy ship. Glides in, hovers and strafes around the player, steers clear of rocks/mines, lobs slow shots, and flees off-screen after a lifetime. Runs in two windows: waves 3–4 and 8–9. **Its aim is imperfect by construction:** every shot takes a random **angular** error (`ENEMY_AIM_ERROR` 0.17rad), compile-time asserted to exceed the hull's width at hover range, so a stationary ship is **not** a free hit; because the error is angular it scatters far more at range (±44px at 260px), meaning the mob is worst at the shots it has least business taking. Cadence 3.2–4.6s with a wide jitter so a pack never settles into a rhythm. ⚠️ A visible **wind-up telegraph was tried and CUT** (user, 2026-08-03) — don't re-propose it; the slow round *is* the tell. Its rounds leave the **muzzle**, not the hull centre — required, not cosmetic: with friendly fire on, a round spawned at the centre kills the mob that fired it. |
 | **Tender** | ✅ | **NG+ only, content wave 26+.** The Belt's repair crew, and the first mob that's a real priority target. It doesn't shoot: it locks a **tractor beam** onto two size-1 fragments and reels them together until they **FUSE into a mid rock** — a split run backwards, so an unattended Tender rebuilds what you broke. Aborts the moment either fragment dies (shoot one to interrupt), dies itself in one hit, hard-capped at ONE on the field, and it never harms the ship directly — the threat is purely that the field stops shrinking. Machined-looking frame + dashed beams as the in-progress tell. |
 | **Darter** | 🔷 SHELVED | Fast interceptor — telegraphs, then charges. Shelved with the mob de-emphasis (2026-07-28): the asteroids are the star; the Limpet was removed outright and no Act II/III mob replaces it. |
 
@@ -88,6 +88,36 @@ full-screen tint pulse — all rates ≤3 Hz (`boss_warning_update` + the banner
 ## Pickups (powerups) ↔ boss mapping
 
 Each boss drops a powerup that echoes its own mechanic.
+
+### ⭐ Two standing laws for anything that isn't the player
+
+**1. THE SPEED LAW** (user, 2026-08-03): *"Nothing should move faster than the player except bosses and
+some mechanics."* Disengaging is a **skill**, and no free-field hazard may take it away by simply being
+faster than the ship. If you can't win a fight you must always be able to leave it. Encoded as a block
+of `const _: () = assert!(... < MAX_SPEED)` next to `MAX_SPEED`, covering every free-field mover
+(raider, its rounds, Hunter, cluster shards, husk brood, mines, Tender, and the two *seeking* boss
+behaviours). Named exceptions only: **the player's own kit** (their shots must outrun their ship),
+**bosses and their telegraphed mechanics** (a boss you could always outrun wouldn't be a fight), and
+**cinematics** (nothing is at stake). Adding a new hazard means adding its assert.
+
+**2. NO PRIVILEGES** (user, 2026-08-03): *"Everything is hostile, mobs should be just as affected by the
+same things as the player. Bosses are the obvious exception."* A mob is a body in the same world, not a
+scripted actor floating above it. Concretely, a mob is now:
+- **killed by rock contact**, exactly as the player is (it gets to *try* to dodge — see the avoidance
+  note below — but the field wins ties, and a mob wedged between rocks is simply gone);
+- **dragged by gravity wells**, through the *same* `well_pull` helper the ship uses;
+- **eaten by the warp** (already was) and **killed by mine/orange blasts** (already was);
+- **able to set off a mine** by touching it (it used to sit on one untouched);
+- **killed by another mob's round** — friendly fire is on, because nothing out here is friendly.
+No score or kill credit is paid for any *field* kill: the rock/mine/other mob made it, not the player,
+and paying out would let you farm 300s a head by herding mobs into hazards.
+**Mob rounds are STOPPED by rocks (rocks are real cover) but do NOT break them** — mob fire clearing
+the field would hand out free wave progress, and a stray round popping a gold fragment would silently
+forfeit a 1UP you had earned.
+**Mob rock-avoidance steers off the single most urgent rock, never the sum of all of them.** Summing
+cancels itself out in a dense field — exactly when it matters — which is why mobs *looked* like they
+clipped rocks: a boxed-in mob got a near-zero net push and drifted straight on, and it had no collision
+with the field to stop it either.
 
 | Boss (drop) | Powerup | Status | Thematic tie |
 | --- | --- | --- | --- |

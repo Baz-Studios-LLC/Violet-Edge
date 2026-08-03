@@ -35,6 +35,26 @@ const TURN_RATE: f32 = 5.2; // rad/s (~300°/s) — raised from 4.6 in the fligh
 const THRUST: f32 = 1200.0; // px/s^2 — raised in lockstep with the heavier drag below so terminal speed stays ~520 (less drift must never read as a slower ship)
 const FRICTION: f32 = 0.10; // velocity kept per second — tightened from 0.15 per playtest ("drift too great"): glide-out is ~20% shorter (~0.30s half-life), still a drift game, not a stop-on-release one
 const MAX_SPEED: f32 = 560.0; // px/s (a cap; sustained thrust settles a bit under it)
+
+// ⭐ THE SPEED LAW (user, 2026-08-03): "Nothing should move faster than the player except bosses and
+// some mechanics." Disengaging is a SKILL, and no free-field hazard may take it away by simply being
+// faster than the ship — if you can't win a fight you must always be able to leave it. Checked here
+// rather than trusted, because every one of these is a number someone will nudge later.
+// The deliberate exceptions, all of them named:
+//   • THE PLAYER'S OWN KIT (BULLET_SPEED, CHAIN_SPEED, GORGE_SPEED, WARP_MISSILE_SPEED) — your shots
+//     must outrun your ship or you'd fly into them.
+//   • BOSSES AND THEIR MECHANICS (SLINGER_CANNON_SPEED, PHANTOM_CHARGE_SPEED, the glide-ins) — a boss
+//     you could always outrun wouldn't be a fight. Each of those is telegraphed instead.
+//   • CINEMATICS (PHANTOM_SHARD_*, SHIP_DEPART_SPEED) — nothing is at stake during them.
+const _: () = assert!(ENEMY_MAX_SPEED < MAX_SPEED); // the raider can never run you down…
+const _: () = assert!(ENEMY_BULLET_SPEED < MAX_SPEED); // …nor can its round outrun you
+const _: () = assert!(HUNTER_MAX_SPEED < MAX_SPEED); // the chaser is a chase you can always break off
+const _: () = assert!(CLUSTER_SHARD_SPEED < MAX_SPEED); // even the fastest shrapnel in the game
+const _: () = assert!(HUSK_BROOD_SPEED < MAX_SPEED);
+const _: () = assert!(MINE_SPEED < MAX_SPEED);
+const _: () = assert!(TENDER_SPEED < MAX_SPEED);
+const _: () = assert!(DEVOURER_SPEED < MAX_SPEED); // (a boss, but a SEEKING one — it must stay outrunnable)
+const _: () = assert!(PHANTOM_POSSESS_SPEED < MAX_SPEED); // ditto: homing rocks you can always outpace
 const FIRE_COOLDOWN: f32 = 0.18; // s
 
 const BULLET_SPEED: f32 = 720.0; // px/s
@@ -183,20 +203,16 @@ const ENEMY_SEP_R: f32 = ENEMY_R * 4.0; // steer away from EACH OTHER within thi
 const ENEMY_FIRE_EVERY: f32 = 3.2; // s between shots — eased from 2.4 (user, 2026-08-03: still too fast)
 const ENEMY_FIRE_JITTER: f32 = 1.4; // …and a wider jitter, so a pack never settles into a rhythm
 // MOB AIM IS DELIBERATELY IMPERFECT. It used to lock onto the ship's exact position at the instant of
-// firing, which made a stationary or braking ship a guaranteed hit — the "too accurate" complaint. Now
-// every shot takes a random angular error, so a shot from hover range can MISS a ship that never moved.
-// The error is ANGULAR, so distant potshots scatter far more than close ones (the mob is worse at the
-// shots it has no business taking) — which is also why it now refuses the truly long ones outright.
-const ENEMY_AIM_ERROR: f32 = 0.17; // rad, symmetric (±) — applied once, when the shot is LOCKED
+// firing, which made a stationary or braking ship a guaranteed hit. Every shot takes a random angular
+// error now, so a shot from hover range can MISS a ship that never moved. The error is ANGULAR, so
+// distant potshots scatter far more than close ones — the mob is worst at the shots it has least
+// business taking, which is how it should read.
+// (A visible wind-up TELEGRAPH was tried here and CUT — user, 2026-08-03: they didn't like it. The slow
+// round is the tell: you watch the shot crossing the field, not the shooter.)
+const ENEMY_AIM_ERROR: f32 = 0.17; // rad, symmetric (±) — rolled fresh per shot
 const _: () = assert!(ENEMY_PREF_DIST * ENEMY_AIM_ERROR > SHIP_R); // at hover range the spread must exceed the hull — no free hits
-const ENEMY_FIRE_RANGE: f32 = 560.0; // it won't take cross-arena potshots at all
-const _: () = assert!(ENEMY_FIRE_RANGE > ENEMY_PREF_DIST * 1.5); // …but a mob at its hover range still fights
-// THE TELL. The mob LOCKS its firing line ENEMY_AIM_WIND before the shot and shows it (a brightening
-// muzzle nub along the locked line). The direction is fixed at lock time and never re-aimed, so MOVING
-// during the tell defeats the shot outright — paying attention is the counter, not luck.
-const ENEMY_AIM_WIND: f32 = 0.5; // s of visible wind-up before the round leaves
-const _: () = assert!(ENEMY_AIM_WIND < ENEMY_FIRE_EVERY); // the tell can never overrun into the next shot
-const ENEMY_BULLET_SPEED: f32 = 205.0; // px/s — eased from 250 (user, 2026-07-31): still a real
+const ENEMY_BULLET_SPEED: f32 = 150.0; // px/s — eased 250 → 205 → 150 (user, 2026-08-03). Per the SPEED
+// LAW, at 150 against the ship's 560 cap you can outright OUTRUN a round. Still a real
 // threat, but slow enough that a shot fired across the field can be read and slipped rather than
 // reacted to. The ship's 560 top speed means you can always outrun one.
 const ENEMY_BULLET_R: f32 = 5.0;
@@ -1183,10 +1199,6 @@ struct Enemy {
     strafe: f32,   // ±1 orbit direction
     entered: bool, // has it finished gliding onto the screen?
     fleeing: bool, // lifetime elapsed → heading for the nearest edge
-    // The committed shot: `aim` counts down the visible wind-up and `aim_dir` is the line it locked
-    // in when the wind-up started — deliberately NOT re-aimed, so the tell is honest and dodging works.
-    aim: f32,
-    aim_dir: Vec2,
 }
 
 // A TENDER drone. `job` holds the pair of fragments it's currently fusing plus the beam's progress;
@@ -4504,6 +4516,7 @@ fn mine_update(
     wave: Res<Wave>,
     mut sfx: EventWriter<SoundFx>,
     ships: Query<(Entity, &Transform, &Ship), Without<Mine>>,
+    mobs: Query<&Transform, (With<Enemy>, Without<Mine>)>,
     mut mines: Query<(Entity, &mut Transform, &mut Velocity, &mut Mine)>,
     // &mut to match blast_asteroids' type; only read here (iter + shared borrow)
     asteroids: Query<(Entity, &Transform, &mut Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>, Option<&Facet>, Option<&Husk>), (Without<Mine>, Without<Shielded>)>,
@@ -4557,15 +4570,20 @@ fn mine_update(
         // rock — clearing it and its neighbours with fast chunks. No life is lost
         // here (that's only ship contact); this is the JS "asteroid-management" mine.
         // Gold rocks are excluded (handled above) so a mine never detonates on one.
+        // A MOB sets one off too — it isn't a privileged body (the blast then kills it, same path as
+        // any other rock/mob caught in range). It used to be able to sit right on a mine untouched.
         let inside = p.x.abs() < h.x && p.y.abs() < h.y;
-        if inside
-            && asteroids.iter().any(|(_, at, a, gold, ..)| {
-                gold.is_none() && {
-                    let rr = MINE_R + asteroid_radius(a.size);
-                    p.distance_squared(at.translation.truncate()) < rr * rr
-                }
-            })
-        {
+        let touched_rock = asteroids.iter().any(|(_, at, a, gold, ..)| {
+            gold.is_none() && {
+                let rr = MINE_R + asteroid_radius(a.size);
+                p.distance_squared(at.translation.truncate()) < rr * rr
+            }
+        });
+        let touched_mob = mobs.iter().any(|mp| {
+            let rr = MINE_R + ENEMY_R;
+            p.distance_squared(mp.translation.truncate()) < rr * rr
+        });
+        if inside && (touched_rock || touched_mob) {
             burst(&mut commands, p, mine_color(), 26, 300.0, &mut rng);
             blast_asteroids(&mut commands, &mut rng, &asteroids, &mut broken, p, time.elapsed_secs());
             sfx.write(SoundFx::Mine);
@@ -4713,8 +4731,6 @@ fn spawn_edge_enemy(commands: &mut Commands, half: Vec2, rng: &mut impl Rng) {
             fire: ENEMY_FIRE_EVERY + rng.gen_range(0.0..ENEMY_FIRE_JITTER),
             life: ENEMY_LIFETIME,
             strafe: if rng.gen_bool(0.5) { 1.0 } else { -1.0 },
-            aim: 0.0,
-            aim_dir: Vec2::ZERO,
             entered: false,
             fleeing: false,
         },
@@ -4902,6 +4918,15 @@ fn tender_update(
 // clear of mines and rocks and lobbing slow shots. A live warp overrides all of it
 // (they get dragged in — handled in black_hole_update). After ENEMY_LIFETIME they
 // flee the nearest edge and despawn, so they never overstay.
+//
+// —— MOBS GET NO PRIVILEGES ——
+// User, 2026-08-03: "everything is hostile, mobs should be just as affected by the same things as the
+// player. Bosses are the obvious exception." So a rock that catches a mob KILLS it, exactly as it
+// would kill you — it gets to try to dodge (the steering below), but the field wins ties, and a mob
+// wedged between rocks is simply gone. This is also why they used to LOOK like they clipped rocks:
+// they had no collision with the field at all, so rocks passed straight through them.
+// Deliberately NO score or kill credit for a field kill — the rock made it, not the player, and
+// paying out would let you farm 300s a head by herding mobs into rocks.
 fn enemy_update(
     time: Res<Time>,
     mut commands: Commands,
@@ -4938,12 +4963,26 @@ fn enemy_update(
             continue;
         }
 
+        // caught by a rock — it dies where it stands, exactly as the player would. Checked once it
+        // has ENTERED (rocks stream in across the same edges it does, so an entering mob would be
+        // killed off-screen before it ever appeared) but BEFORE the flee branch, so a mob on its way
+        // out stays just as mortal as one that's still fighting.
+        if let Some(rp) = rocks.iter().find_map(|(rt, a)| {
+            let q = rt.translation.truncate();
+            (q.distance(p) < ENEMY_R + asteroid_radius(a.size)).then_some(q)
+        }) {
+            burst(&mut commands, p, enemy_color(), 18, 300.0, &mut rng);
+            burst(&mut commands, (p + rp) * 0.5, dim(rock_color(), 0.9), 6, 200.0, &mut rng); // debris at the impact
+            sfx.write(SoundFx::EnemyDie);
+            commands.entity(e).despawn();
+            continue;
+        }
+
         // lifetime → flee straight out and despawn once gone. A boss also clears the field: any mob
         // still around in the run-up flees so the boss arrives to a clean arena.
         en.life -= dt;
         if en.life <= 0.0 || boss_incoming(&wave) {
             en.fleeing = true;
-            en.aim = 0.0; // …and it drops any shot it had committed to: no parting potshot on the way out
         }
         if en.fleeing {
             v.0 += p.normalize_or_zero() * ENEMY_ACCEL * dt;
@@ -4978,13 +5017,23 @@ fn enemy_update(
                 acc += away / d * (1.0 - d / ENEMY_AVOID_R) * 2.2;
             }
         }
+        // rocks: steer off the SINGLE most urgent one rather than the sum of all of them. Summing
+        // cancels itself out in a dense field — a mob boxed in on all sides got a near-zero net push
+        // and drifted straight on. Picking the worst threat means it always commits to a way out.
+        let mut worst = (0.0f32, Vec2::ZERO);
         for (rt, a) in &rocks {
             let away = p - rt.translation.truncate();
             let d = away.length();
             let reach = ENEMY_AVOID_R + asteroid_radius(a.size);
             if d > 0.01 && d < reach {
-                acc += away / d * (1.0 - d / reach) * 2.6;
+                let urgency = 1.0 - d / reach;
+                if urgency > worst.0 {
+                    worst = (urgency, away / d);
+                }
             }
+        }
+        if worst.0 > 0.0 {
+            acc += worst.1 * worst.0 * 3.4; // harder than the old per-rock push, since it's now the only one
         }
         // keep clear of EACH OTHER — enemies spread into a loose formation, never a stack
         for &(oe, op) in &others {
@@ -5010,37 +5059,26 @@ fn enemy_update(
             v.0.y = -v.0.y;
         }
 
-        // ── lob a slow shot at the ship: LOCK a line (with error), SHOW it, then release ──
-        // Two steps on purpose. The lock is what the muzzle tell draws, and because the line is never
-        // re-aimed afterwards, a ship that moves during the wind-up simply isn't there any more.
-        if en.aim > 0.0 {
-            en.aim -= dt;
-            if en.aim <= 0.0 {
-                commands.spawn((
-                    EnemyBullet { life: ENEMY_BULLET_LIFE },
-                    Velocity(en.aim_dir * ENEMY_BULLET_SPEED),
-                    Transform::from_xyz(p.x, p.y, 0.0),
-                ));
-                sfx.write(SoundFx::EnemyShot);
-                en.fire = ENEMY_FIRE_EVERY + rng.gen_range(0.0..ENEMY_FIRE_JITTER);
-            }
-        } else {
-            en.fire -= dt;
-            if en.fire <= 0.0 {
-                // only commit if the ship is close enough to be a shot worth taking, and never while
-                // bugging out — a fleeing mob is done fighting
-                let target = ship.filter(|sp| !en.fleeing && sp.distance(p) <= ENEMY_FIRE_RANGE);
-                if let Some(sp) = target {
-                    let dir = (sp - p).normalize_or_zero();
-                    if dir != Vec2::ZERO {
-                        // the error is rolled ONCE, here — the mob is now committed to a line that may
-                        // well miss, and no amount of ship movement makes it any more accurate
-                        let err = rng.gen_range(-ENEMY_AIM_ERROR..ENEMY_AIM_ERROR);
-                        en.aim_dir = Vec2::from_angle(dir.to_angle() + err);
-                        en.aim = ENEMY_AIM_WIND;
-                    }
-                } else {
-                    en.fire = ENEMY_FIRE_EVERY * 0.5; // out of range: check back soon, don't burn the shot
+        // ── lob a slow shot at the ship ──
+        en.fire -= dt;
+        if en.fire <= 0.0 {
+            en.fire = ENEMY_FIRE_EVERY + rng.gen_range(0.0..ENEMY_FIRE_JITTER);
+            if let Some(sp) = ship {
+                let dir = (sp - p).normalize_or_zero();
+                if dir != Vec2::ZERO {
+                    // aim ERROR, rolled per shot: it shoots at roughly where you are, not exactly
+                    let aim = Vec2::from_angle(dir.to_angle() + rng.gen_range(-ENEMY_AIM_ERROR..ENEMY_AIM_ERROR));
+                    // leave from the MUZZLE, clear of its own hull. With friendly fire on, a round
+                    // spawned at the mob's centre kills the mob that fired it on the very next frame;
+                    // firing from outside the hull fixes that structurally, with no "ignore my own
+                    // bullet" bookkeeping for someone to get wrong later.
+                    let muzzle = p + aim * (ENEMY_R + ENEMY_BULLET_R + 2.0);
+                    commands.spawn((
+                        EnemyBullet { life: ENEMY_BULLET_LIFE },
+                        Velocity(aim * ENEMY_BULLET_SPEED),
+                        Transform::from_xyz(muzzle.x, muzzle.y, 0.0),
+                    ));
+                    sfx.write(SoundFx::EnemyShot);
                 }
             }
         }
@@ -5085,11 +5123,14 @@ fn top_up_wells(
 
 // Gravity Wells: tick each one's life (collapse at 0) and drag the ship toward every live one. The
 // pull is weaker than thrust (`well_pull`), so the player can always fly out.
+// Mobs are dragged by the very same pull, through the very same helper — a well is a hazard, not a
+// player-only inconvenience, and a raider hauled off its hover line is exactly the point.
 fn well_update(
     time: Res<Time>,
     mut commands: Commands,
     mut wells: Query<(Entity, &Transform, &mut Well)>,
     mut ships: Query<(&Transform, &mut Velocity), With<Ship>>,
+    mut mobs: Query<(&Transform, &mut Velocity), (With<Enemy>, Without<Ship>)>,
 ) {
     let dt = time.delta_secs();
     let mut rng = rand::thread_rng();
@@ -5101,11 +5142,12 @@ fn well_update(
             commands.entity(we).despawn();
         }
     }
-    if let Some((st, mut sv)) = ships.iter_mut().next() {
-        let sp = st.translation.truncate();
+    // the ship and every mob get identical treatment
+    for (t, mut v) in ships.iter_mut().chain(mobs.iter_mut()) {
+        let q = t.translation.truncate();
         for (_we, wt, w) in &wells {
             if w.life > 0.0 {
-                sv.0 += well_pull(sp, wt.translation.truncate(), dt);
+                v.0 += well_pull(q, wt.translation.truncate(), dt);
             }
         }
     }
@@ -5113,6 +5155,13 @@ fn well_update(
 
 // Enemy shots: `integrate` carries them; here we expire them (time / off-screen) and
 // kill the ship on contact (respecting invuln + dev invincibility).
+//
+// Their rounds are no more privileged than they are. A rock STOPS a mob round, so rocks are genuine
+// COVER — putting one between you and a raider actually works. (It stops the round rather than
+// breaking the rock: mob fire clearing the field for you would hand out free wave progress, and a
+// stray round popping a gold fragment would silently forfeit a 1UP you had earned.)
+// A mob round also kills ANOTHER MOB outright — friendly fire is on, because nothing out here is
+// friendly. No score for it: the mob made that kill, not you.
 fn enemy_bullets(
     mut commands: Commands,
     time: Res<Time>,
@@ -5123,6 +5172,8 @@ fn enemy_bullets(
     dev: Res<Dev>,
     mut bullets: Query<(Entity, &Transform, &mut EnemyBullet)>,
     ships: Query<(Entity, &Transform, &Ship)>,
+    rocks: Query<(&Transform, &Asteroid)>,
+    mobs: Query<(Entity, &Transform), With<Enemy>>,
 ) {
     let dt = time.delta_secs();
     let h = arena.half;
@@ -5132,6 +5183,22 @@ fn enemy_bullets(
         b.life -= dt;
         let p = bt.translation.truncate();
         if b.life <= 0.0 || p.x.abs() > h.x + 30.0 || p.y.abs() > h.y + 30.0 {
+            commands.entity(be).despawn();
+            continue;
+        }
+        // a rock in the way eats the round — cover works
+        if rocks.iter().any(|(rt, a)| rt.translation.truncate().distance(p) < ENEMY_BULLET_R + asteroid_radius(a.size)) {
+            burst(&mut commands, p, enemy_color(), 4, 140.0, &mut rng);
+            commands.entity(be).despawn();
+            continue;
+        }
+        // friendly fire: a mob's round kills another mob (never the one that fired it — the round
+        // spawns at its own centre, so it would otherwise shoot itself the instant it fired)
+        if let Some((me, mt)) = mobs.iter().find(|(_, mt)| mt.translation.truncate().distance(p) < ENEMY_BULLET_R + ENEMY_R) {
+            let mp = mt.translation.truncate();
+            burst(&mut commands, mp, enemy_color(), 18, 300.0, &mut rng);
+            sfx.write(SoundFx::EnemyDie);
+            commands.entity(me).despawn();
             commands.entity(be).despawn();
             continue;
         }
@@ -5244,7 +5311,6 @@ fn boss_director(
     // spawn (top_up_mines / top_up_enemies are gated off on boss waves).
     for mut en in &mut enemies {
         en.fleeing = true;
-        en.aim = 0.0; // any committed shot is abandoned — the boss arrives to a clean arena
     }
 }
 
@@ -6610,19 +6676,6 @@ fn render(
         let body = if en.fleeing { dim(ec, 0.55) } else { ec };
         gizmos.circle_2d(Isometry2d::from_translation(c), ENEMY_R * throb, body);
         gizmos.circle_2d(Isometry2d::from_translation(c), ENEMY_R * 0.45 * throb, body);
-        // ── THE TELL ── it has LOCKED a firing line and is winding up. The muzzle swings out along
-        // that exact line and brightens as the shot nears, so you can see who committed and where —
-        // and because the line never re-aims, moving off it beats the shot. A single smooth ramp per
-        // shot (no blinking), so a pack of mobs can't strobe.
-        if en.aim > 0.0 {
-            let f = 1.0 - (en.aim / ENEMY_AIM_WIND).clamp(0.0, 1.0); // 0 at lock → 1 at release
-            let d = en.aim_dir;
-            let muzzle = c + d * (ENEMY_R * (1.0 + 0.45 * f));
-            gizmos.circle_2d(Isometry2d::from_translation(muzzle), ENEMY_BULLET_R * (0.35 + 0.75 * f), dim(ec, 0.5 + 1.4 * f));
-            // a short stub of the line it's about to fire down — enough to read the direction, far too
-            // short to be a laser sight (you're meant to react to it, not follow it to the pixel)
-            gizmos.line_2d(muzzle, muzzle + d * (ENEMY_R * 1.4 * f), dim(ec, 0.25 + 0.5 * f));
-        }
     }
     // enemy shots — yellow dots with a white-hot core
     for et in &foes.1 {
@@ -14747,7 +14800,7 @@ mod tests {
         app.insert_resource(RunFlags::default());
         app.insert_resource(Score(0));
         app.world_mut().spawn((
-            Enemy { fire: 1.0, life: 5.0, strafe: 1.0, entered: true, fleeing: false, aim: 0.0, aim_dir: Vec2::ZERO },
+            Enemy { fire: 1.0, life: 5.0, strafe: 1.0, entered: true, fleeing: false },
             Velocity(Vec2::ZERO),
             Transform::from_xyz(0.0, 0.0, 0.0),
         ));
@@ -14802,7 +14855,7 @@ mod tests {
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
         app.world_mut().spawn((BlackHole { life: 1.0, spin: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0)));
         app.world_mut().spawn((
-            Enemy { fire: 1.0, life: 5.0, strafe: 1.0, entered: true, fleeing: false, aim: 0.0, aim_dir: Vec2::ZERO },
+            Enemy { fire: 1.0, life: 5.0, strafe: 1.0, entered: true, fleeing: false },
             Velocity(Vec2::ZERO),
             Transform::from_xyz(0.0, 0.0, 0.0),
         ));
@@ -14824,7 +14877,7 @@ mod tests {
         app.insert_resource(Wave { level: 1, timer: WAVE_SECS, calm: 0.0 }); // not a boss run-up (flee is via lifetime)
         // entered, out of life, already past the far edge → the flee branch despawns it
         app.world_mut().spawn((
-            Enemy { fire: 5.0, life: 0.0, strafe: 1.0, entered: true, fleeing: true, aim: 0.0, aim_dir: Vec2::ZERO },
+            Enemy { fire: 5.0, life: 0.0, strafe: 1.0, entered: true, fleeing: true },
             Velocity(Vec2::ZERO),
             Transform::from_xyz(900.0, 0.0, 0.0),
         ));
@@ -14834,9 +14887,8 @@ mod tests {
         assert_eq!(enemies, 0, "an enemy that has fled off-screen despawns");
     }
 
-    // MOB FIRE IS A FAIR THREAT, and all three properties that make it fair are easy to break by
-    // accident later: it TELEGRAPHS before shooting, the line it locked is never re-aimed (so moving
-    // is a real counter), and it refuses shots it has no business taking.
+    // MOB FIRE IS A FAIR THREAT and mobs get NO PRIVILEGES over the player. Both are easy to break
+    // by accident later, and neither is obvious from reading the systems.
     fn mob_app(mob_at: Vec2, ship_at: Vec2, fleeing: bool) -> (App, Entity) {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
@@ -14849,7 +14901,7 @@ mod tests {
         // clobbered; this is the supported hook for a deterministic step per update.
         app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_millis(50)));
         let mob = app.world_mut().spawn((
-            Enemy { fire: 0.0, life: 5.0, strafe: 1.0, entered: true, fleeing, aim: 0.0, aim_dir: Vec2::ZERO },
+            Enemy { fire: 0.0, life: 5.0, strafe: 1.0, entered: true, fleeing },
             Velocity(Vec2::ZERO),
             Transform::from_xyz(mob_at.x, mob_at.y, 0.0),
         )).id();
@@ -14859,68 +14911,116 @@ mod tests {
     }
 
     #[test]
-    fn a_mob_telegraphs_its_shot_and_never_re_aims() {
-        let (mut app, mob) = mob_app(Vec2::ZERO, Vec2::new(ENEMY_PREF_DIST, 0.0), false);
-        app.update();
-        // it COMMITS first and shows the line — no round yet
-        let locked = {
-            let en = app.world().entity(mob).get::<Enemy>().unwrap();
-            assert!(en.aim > 0.0, "it winds up visibly before firing");
-            assert!(en.aim_dir.length() > 0.9, "and it has locked an actual line");
-            en.aim_dir
-        };
-        assert_eq!(app.world_mut().query::<&EnemyBullet>().iter(app.world()).count(), 0, "nothing has been fired during the tell");
-        // now MOVE the ship somewhere else entirely and let the wind-up finish
-        {
-            let mut ships = app.world_mut().query_filtered::<&mut Transform, With<Ship>>();
-            for mut st in ships.iter_mut(app.world_mut()) {
-                st.translation = Vec3::new(0.0, -ENEMY_PREF_DIST, 0.0);
-            }
-        }
-        for _ in 0..40 {
-            app.update();
-            if app.world().entity(mob).get::<Enemy>().unwrap().aim <= 0.0 {
-                break;
-            }
-        }
-        let shots: Vec<Vec2> = {
-            let mut q = app.world_mut().query::<(&EnemyBullet, &Velocity)>();
-            q.iter(app.world()).map(|(_, v)| v.0.normalize_or_zero()).collect()
-        };
-        assert_eq!(shots.len(), 1, "exactly one round comes out of one wind-up");
-        assert!(shots[0].dot(locked) > 0.999, "it fires down the line it LOCKED — dodging the tell actually works");
-        assert!(shots[0].dot(Vec2::NEG_Y) < 0.5, "so the round is nowhere near where the ship went");
-    }
-
-    #[test]
     fn a_mobs_aim_is_imperfect_so_a_still_ship_is_not_a_free_hit() {
-        // fire many locks from the same geometry: the spread must actually vary, and it must be wide
+        // fire many shots from the same geometry: the spread must actually vary, and it must be wide
         // enough at hover range to miss a ship that never moved
         let mut spread: Vec<f32> = Vec::new();
         for i in 0..40 {
-            let (mut app, mob) = mob_app(Vec2::new(0.0, i as f32 * 0.001), Vec2::new(ENEMY_PREF_DIST, 0.0), false);
+            let (mut app, _mob) = mob_app(Vec2::new(0.0, i as f32 * 0.001), Vec2::new(ENEMY_PREF_DIST, 0.0), false);
             app.update();
-            let d = app.world().entity(mob).get::<Enemy>().unwrap().aim_dir;
-            spread.push(d.to_angle());
+            let mut q = app.world_mut().query::<(&EnemyBullet, &Velocity)>();
+            let v = q.iter(app.world()).next().expect("it takes the shot").1;
+            spread.push(v.0.to_angle());
         }
         let (lo, hi) = (spread.iter().cloned().fold(f32::MAX, f32::min), spread.iter().cloned().fold(f32::MIN, f32::max));
         assert!(hi - lo > ENEMY_AIM_ERROR, "the aim genuinely scatters shot to shot — it is not a snapshot lock-on");
         assert!(hi.abs().max(lo.abs()) * ENEMY_PREF_DIST > SHIP_R, "and it misses a stationary hull often enough to matter");
     }
 
+    // With friendly fire on, a round spawned at the firer's own centre would kill it instantly. The
+    // muzzle offset is the only thing preventing that, and nothing else in the code hints at it.
     #[test]
-    fn a_mob_refuses_shots_it_has_no_business_taking() {
-        for (ship_at, fleeing, why) in [
-            (Vec2::new(ENEMY_FIRE_RANGE + 200.0, 0.0), false, "a cross-arena potshot"),
-            (Vec2::new(ENEMY_PREF_DIST, 0.0), true, "a shot while bugging out"),
-        ] {
-            let (mut app, mob) = mob_app(Vec2::ZERO, ship_at, fleeing);
-            for _ in 0..30 {
-                app.update();
-            }
-            assert_eq!(app.world().entity(mob).get::<Enemy>().unwrap().aim, 0.0, "it never commits to {why}");
-            assert_eq!(app.world_mut().query::<&EnemyBullet>().iter(app.world()).count(), 0, "and never takes {why}");
+    fn a_mob_does_not_shoot_itself() {
+        let (mut app, mob) = mob_app(Vec2::ZERO, Vec2::new(ENEMY_PREF_DIST, 0.0), false);
+        app.insert_resource(Dev::default());
+        app.insert_resource(Run { lives: 3, respawn: 0.0, ..default() });
+        app.insert_resource(NextState::<GameState>::default());
+        app.add_systems(Update, (integrate, enemy_bullets).chain());
+        for _ in 0..10 {
+            app.update();
         }
+        assert!(app.world().get_entity(mob).is_ok(), "a mob survives its own gunfire");
+    }
+
+    // "Everything is hostile. Mobs should be just as affected by the same things as the player."
+    #[test]
+    fn a_rock_kills_a_mob_that_cannot_get_clear() {
+        for (fleeing, why) in [(false, "one that's fighting"), (true, "one on its way out")] {
+            let (mut app, mob) = mob_app(Vec2::ZERO, Vec2::new(600.0, 0.0), fleeing);
+            // a rock sitting right on top of it: no steering gets it out of this
+            app.world_mut().spawn((
+                Asteroid { size: 3, verts: vec![Vec2::X * asteroid_radius(3)], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+                Velocity(Vec2::ZERO),
+                Transform::from_xyz(0.0, 0.0, 0.0),
+            ));
+            app.update();
+            assert!(app.world().get_entity(mob).is_err(), "the field takes {why}");
+            assert_eq!(app.world().resource::<Stats>().enemies, 0, "and it pays the player nothing — the rock made that kill");
+        }
+    }
+
+    #[test]
+    fn a_rock_is_cover_against_mob_fire() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_event::<SoundFx>();
+        app.insert_resource(Arena { half: Vec2::new(1200.0, 800.0) });
+        app.insert_resource(Dev::default());
+        app.insert_resource(Run { lives: 3, respawn: 0.0, ..default() });
+        app.insert_resource(NextState::<GameState>::default());
+        // a round about to reach the ship, with a rock in between
+        app.world_mut().spawn((EnemyBullet { life: 2.0 }, Velocity(Vec2::X * ENEMY_BULLET_SPEED), Transform::from_xyz(0.0, 0.0, 0.0)));
+        app.world_mut().spawn((
+            Asteroid { size: 2, verts: vec![Vec2::X * asteroid_radius(2)], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+        ));
+        let ship = app.world_mut().spawn((Ship { angle: 0.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 }, Velocity(Vec2::ZERO), Transform::from_xyz(10.0, 0.0, 0.0))).id();
+        app.add_systems(Update, enemy_bullets);
+        app.update();
+        assert_eq!(app.world_mut().query::<&EnemyBullet>().iter(app.world()).count(), 0, "the rock ate the round");
+        assert!(app.world().get_entity(ship).is_ok(), "so the ship behind it lives");
+        assert_eq!(app.world_mut().query::<&Asteroid>().iter(app.world()).count(), 1, "and the rock itself is unharmed — mob fire must not clear the field for you");
+    }
+
+    #[test]
+    fn mob_fire_kills_other_mobs() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_event::<SoundFx>();
+        app.insert_resource(Arena { half: Vec2::new(1200.0, 800.0) });
+        app.insert_resource(Dev::default());
+        app.insert_resource(Run { lives: 3, respawn: 0.0, ..default() });
+        app.insert_resource(NextState::<GameState>::default());
+        app.world_mut().spawn((EnemyBullet { life: 2.0 }, Velocity(Vec2::X * ENEMY_BULLET_SPEED), Transform::from_xyz(0.0, 0.0, 0.0)));
+        let victim = app.world_mut().spawn((
+            Enemy { fire: 5.0, life: 5.0, strafe: 1.0, entered: true, fleeing: false },
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+        )).id();
+        app.add_systems(Update, enemy_bullets);
+        app.update();
+        assert!(app.world().get_entity(victim).is_err(), "nothing out here is friendly, including to each other");
+        assert_eq!(app.world_mut().query::<&EnemyBullet>().iter(app.world()).count(), 0, "and the round is spent");
+    }
+
+    // The well is a hazard, not a player-only inconvenience.
+    #[test]
+    fn a_gravity_well_drags_mobs_as_well_as_the_ship() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_millis(50)));
+        app.world_mut().spawn((Well { life: WELL_LIFE, spin: 0.0 }, Transform::from_xyz(0.0, 0.0, 0.0)));
+        let mob = app.world_mut().spawn((
+            Enemy { fire: 5.0, life: 5.0, strafe: 1.0, entered: true, fleeing: false },
+            Velocity(Vec2::ZERO),
+            Transform::from_xyz(WELL_PULL_RADIUS * 0.5, 0.0, 0.0),
+        )).id();
+        app.add_systems(Update, well_update);
+        app.update(); // Bevy's first frame has a zero delta — the pull only integrates from the second
+        app.update();
+        let v = app.world().entity(mob).get::<Velocity>().unwrap().0;
+        assert!(v.x < 0.0, "the mob is hauled toward the well, not ignored by it (got {v:?})");
     }
 
     #[test]
@@ -14948,7 +15048,7 @@ mod tests {
             .id();
         let enemy = app
             .world_mut()
-            .spawn((Enemy { fire: 1.0, life: 5.0, strafe: 1.0, entered: true, fleeing: false, aim: 0.0, aim_dir: Vec2::ZERO }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0)))
+            .spawn((Enemy { fire: 1.0, life: 5.0, strafe: 1.0, entered: true, fleeing: false }, Velocity(Vec2::ZERO), Transform::from_xyz(0.0, 0.0, 0.0)))
             .id();
         app.add_systems(Update, boss_director);
         app.update();

@@ -5,22 +5,27 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
-- **MOB FIRE IS FAIR NOW — it tells you first, and it can miss.** Three separate things were wrong,
-  not one:
-  - **It telegraphs.** A mob now LOCKS its firing line half a second before it shoots and shows you
-    that line — the muzzle swings out along it and brightens as the shot nears. You can see who
-    committed, and where. Nothing fires without warning any more.
-  - **The line is never re-aimed.** It's fixed the instant it locks, so *moving off it beats the
-    shot*. That's the point: paying attention is the counter, not luck. You can also just kill the
-    mob during its wind-up.
-  - **Its aim is genuinely imperfect.** It used to lock onto your exact position at the instant of
-    firing, which made a stationary or braking ship a guaranteed hit. Every shot now takes a random
-    error, wide enough at hover range to miss a ship that never moved. The error is angular, so the
-    long shots scatter hardest — a mob across the arena is now clearly worse at hitting you than one
-    in your face, which is how it should have always read.
-  - Plus: **it won't take cross-arena potshots at all**, it fires **~35% less often** (3.2–4.6s, with
-    a wider jitter so a pack never settles into a rhythm), and it **drops a committed shot when it
-    bugs out** — no parting shot from a mob that's already leaving.
+- **EVERYTHING IS HOSTILE — mobs live in the same world you do.** They were quietly immune to the
+  entire field, which is why they looked like they clipped straight through asteroids: they had no
+  collision with rocks at all. Now a raider is:
+  - **killed by a rock**, the same as you are. It tries to dodge — and it's much better at dodging
+    than it was, because it now commits to getting clear of the *nearest* rock instead of being
+    shoved by all of them at once and going nowhere — but if it's boxed in, that's the end of it.
+  - **dragged by gravity wells**, hauled off its hover line like anything else caught in one.
+  - **able to trip a mine** by touching it. It used to be able to sit on one.
+  - **vulnerable to other raiders' fire.** Friendly fire is on. Nothing out here is friendly.
+  None of it pays you points — the field made those kills, not you, and paying out would just mean
+  herding mobs into rocks for score.
+- **Rocks are cover now.** A mob's round is stopped dead by an asteroid, so putting one between you and
+  a raider genuinely works. Their fire won't *break* rocks, though — mob shots clearing the field would
+  hand you free wave progress, and a stray round popping a gold fragment would quietly cost you a life
+  you'd earned.
+- **Mob shots are slower again** (205 → 150 px/s) and their aim is properly imperfect. Under a new
+  standing rule that **nothing outside of bosses moves faster than your ship**, you can now simply
+  *outrun* a round. The aim error is widest on long shots, so a raider across the arena is visibly
+  worse at hitting you than one in your face.
+- **The mob wind-up telegraph is gone.** It was tried, and it wasn't liked — the slow round is the
+  tell. You watch the shot crossing the field, not the shooter.
 
 - **THE GORGE ROUND — a shot that eats** (the Glutton+'s drop, NG+ wave 10). A slow, heavy round that
   **doesn't stop when it hits something**: it destroys the rock, visibly swells, and keeps going,
