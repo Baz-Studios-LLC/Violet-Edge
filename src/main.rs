@@ -778,8 +778,10 @@ fn counts_against_special_cap(baseline: Option<RockKind>, ex: bool, pu: bool, re
     true
 }
 
-// How many mechanic-bearing rocks may be out at once, given the field size. Small fields still get
-// SPECIAL_FLOOR so wave 6 doesn't roll a hunter and then hide it.
+// How many mechanic-bearing rocks may be out at once, for a field of `field` rocks. Callers pass the
+// wave's population TARGET rather than the live count — the live count rises as rocks break apart, and
+// keying off it would allow more specials exactly when the field is already cluttered with debris.
+// Small fields still get SPECIAL_FLOOR so wave 6 doesn't roll a hunter and then hide it.
 fn special_allowance(field: i32) -> i32 {
     ((field as f32 * SPECIAL_MAX_FRACTION) as i32).max(SPECIAL_FLOOR)
 }
@@ -4572,7 +4574,10 @@ fn top_up_asteroids(
         // SPECIALS ARE CAPPED: over the allowance, this spawn becomes the act's plain rock instead.
         // Rolling first and then demoting (rather than biasing the roll) keeps the whole authored wave
         // mix in `roll_rock_kind` untouched — this only limits how many land at once.
-        if is_special_kind(kind) && specials >= special_allowance(count.max(1)) {
+        // NOTE the allowance is keyed off the wave's TARGET, not the live count. Keying it off the
+        // live count would let debris raise it: breaking rocks pushes the count up, which would permit
+        // MORE specials exactly when the field is at its most cluttered.
+        if is_special_kind(kind) && specials >= special_allowance(population_target(wave.level, plus.0)) {
             if let Some(plain) = baseline {
                 kind = plain;
             }
