@@ -1803,6 +1803,7 @@ enum MenuAction {
     Quit,   // pause menu → abandon the run to the main menu
     SetInput(InputMethod), // controls screen: choose the input method
     ResetBinds,            // controls screen: restore default bindings
+    Exit,                  // main menu: quit to the desktop
 }
 #[derive(Component)]
 struct MenuButton(MenuAction);
@@ -1810,8 +1811,14 @@ struct MenuButton(MenuAction);
 struct MenuTitle {
     age: f32, // seconds since spawn — drives the neon flicker-on then a steady breathe
 }
+// One layer of the neon border frame. It's built from TWO nested nodes — a thick dim HALO outside and
+// a thin hot CORE inside — because that layering is what reads as a glass tube; a single stroke, however
+// bright, only ever reads as a drawn rectangle. Each layer carries its own base colour so the shared
+// pulse in `menu_title_fx` can breathe them together without flattening them to one tint.
 #[derive(Component)]
-struct MenuFrame; // the neon border frame — pulses with the title
+struct MenuFrame {
+    base: Color,
+}
 #[derive(Event)]
 struct MenuClick(MenuAction); // fired on click; menu_start / submenu_back / pause_toggle consume it
 #[derive(Component)]
@@ -9381,8 +9388,16 @@ fn menu_start(
     mut warp: ResMut<Warp>,
     mut progress: (ResMut<BossState>, ResMut<Chain>, ResMut<MassShot>, ResMut<RunFlags>, ResMut<GoldRush>, ResMut<Warhead>, ResMut<Stats>, ResMut<PacifistWatch>, ResMut<NewGamePlus>, ResMut<Gorge>), // bundled (16-param limit)
     mut clicks: EventReader<MenuClick>,
+    mut quit: EventWriter<AppExit>,
 ) {
     let actions: Vec<MenuAction> = clicks.read().map(|c| c.0).collect(); // read once, then test
+    // EXIT is BUTTON-ONLY, deliberately — every other entry here has a letter shortcut, but a stray
+    // keypress that closes the game is a different class of mistake from one that opens a menu. Same
+    // reasoning as NEW GAME+ below.
+    if actions.contains(&MenuAction::Exit) {
+        quit.write(AppExit::Success);
+        return;
+    }
     // sub-screens: their button, or a keyboard shortcut
     if keys.just_pressed(KeyCode::KeyA) || actions.contains(&MenuAction::Achievements) {
         next.set(GameState::Achievements);
@@ -9427,7 +9442,18 @@ fn ach_earned_color() -> Color {
 
 // A slick menu button — a bordered violet pill with a label. `button_shimmer` animates the hover
 // glow and `button_click` fires its `MenuAction`; the keyboard shortcuts do the same thing.
+// The main menu's buttons are all locked to ONE width so the column reads as a stack of equal
+// controls rather than a ragged pile sized by however long each word happens to be. Only the main
+// menu wants this: the Controls screen puts three buttons in a ROW, and the pause menu's labels
+// carry their shortcut in the text, so both of those still size to their content.
+const MENU_BTN_W: f32 = 300.0;
+
 fn menu_button(p: &mut ChildSpawnerCommands, font: &Handle<Font>, action: MenuAction, label: &str) {
+    menu_button_sized(p, font, action, label, None);
+}
+
+// Same button, optionally width-locked. `menu_button` is the content-sized case.
+fn menu_button_sized(p: &mut ChildSpawnerCommands, font: &Handle<Font>, action: MenuAction, label: &str, width: Option<f32>) {
     p.spawn((
         MenuButton(action),
         Button,
@@ -9439,6 +9465,7 @@ fn menu_button(p: &mut ChildSpawnerCommands, font: &Handle<Font>, action: MenuAc
             border: UiRect::all(Val::Px(2.0)),
             justify_content: JustifyContent::Center,
             align_items: AlignItems::Center,
+            width: width.map_or(Val::Auto, Val::Px),
             ..default()
         },
         BorderColor(Color::srgb(0.38, 0.24, 0.66)),
@@ -9452,29 +9479,58 @@ fn menu_button(p: &mut ChildSpawnerCommands, font: &Handle<Font>, action: MenuAc
 
 // A glowing violet border framing the screen (behind the content, so it never eats clicks).
 // `MenuFrame` lets `menu_title_fx` pulse it in sync with the title.
+//
+// Drawn as a NEON TUBE, not a stroke: a thick soft HALO on the outside with a thin hot CORE nested
+// just inside it. The core sits above 1.0 so it blooms where the pipeline allows and clamps to a
+// white-hot violet where it doesn't — either way it reads as glass with light inside it rather than a
+// border. The halo is the wider, dimmer spill that sells the glow.
 fn spawn_frame(commands: &mut Commands, marker: impl Component) {
-    commands.spawn((
-        marker,
-        MenuFrame,
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(24.0),
-            left: Val::Px(24.0),
-            right: Val::Px(24.0),
-            bottom: Val::Px(24.0),
-            border: UiRect::all(Val::Px(2.0)),
-            ..default()
-        },
-        BorderColor(Color::srgb(0.5, 0.25, 0.9)),
-        BorderRadius::all(Val::Px(16.0)),
-    ));
+    // the HALO: wide and soft — the light spilling off the tube
+    let halo = Color::srgb(0.42, 0.16, 0.86);
+    // the CORE: thin and hot. Above 1.0 so it blooms where the pipeline allows and clamps to a
+    // white-hot violet where it doesn't; either way it reads as light INSIDE glass.
+    let core = Color::srgb(1.35, 0.62, 2.0);
+    commands
+        .spawn((
+            marker,
+            MenuFrame { base: halo },
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(20.0),
+                left: Val::Px(20.0),
+                right: Val::Px(20.0),
+                bottom: Val::Px(20.0),
+                border: UiRect::all(Val::Px(7.0)),
+                ..default()
+            },
+            BorderColor(halo),
+            BorderRadius::all(Val::Px(20.0)),
+        ))
+        // The core is a CHILD of the halo, which matters twice over: it inherits the screen marker's
+        // despawn (only the parent can carry the caller's marker, and an unparented second node would
+        // survive every screen change and stack up), and inset 0 lands it exactly against the inside
+        // of the halo's stroke — so the two are guaranteed to stay concentric if either is retuned.
+        .with_children(|c| {
+            c.spawn((
+                MenuFrame { base: core },
+                Node {
+                    position_type: PositionType::Absolute,
+                    top: Val::Px(0.0),
+                    left: Val::Px(0.0),
+                    right: Val::Px(0.0),
+                    bottom: Val::Px(0.0),
+                    border: UiRect::all(Val::Px(3.0)),
+                    ..default()
+                },
+                BorderColor(core),
+                BorderRadius::all(Val::Px(14.0)),
+            ));
+        });
 }
 
-fn spawn_menu_ui(mut commands: Commands, achieved: Res<Achievements>, stats: Res<Stats>, intro: Res<TitleIntroPlayed>, hs: Res<HighScores>, logo: Res<LogoImage>, font: Res<MenuFont>) {
+fn spawn_menu_ui(mut commands: Commands, stats: Res<Stats>, intro: Res<TitleIntroPlayed>, hs: Res<HighScores>, logo: Res<LogoImage>, font: Res<MenuFont>) {
     spawn_frame(&mut commands, MenuUi); // behind the content (spawned first)
     let root = overlay(&mut commands, MenuUi, 0.25); // light — let the starfield show through
-    let done = achieved.unlocked.iter().filter(|u| **u).count();
-    let lore_n = lore_entries(&stats).iter().filter(|(_, _, u, _)| *u).count();
     let f = &font.0;
     // flicker the title on the FIRST show only; later returns start it already lit (past the warm-up)
     let title_age = if intro.0 { NEON_WARMUP } else { 0.0 };
@@ -9485,28 +9541,35 @@ fn spawn_menu_ui(mut commands: Commands, achieved: Res<Achievements>, stats: Res
         // their OWN column with a wider gap. That keeps the overlay's shared tight `row_gap` (which
         // the dense screens — Controls, Pilot Log — depend on to fit) untouched, while this screen
         // reads open instead of stacked. Budget: ~720px of the 800px design height.
-        p.spawn((ImageNode::new(logo.0.clone()), Node { width: Val::Px(144.0), height: Val::Px(144.0), margin: UiRect::bottom(Val::Px(-16.0)), ..default() }));
+        p.spawn((ImageNode::new(logo.0.clone()), Node { width: Val::Px(132.0), height: Val::Px(132.0), margin: UiRect::bottom(Val::Px(-16.0)), ..default() }));
         p.spawn((MenuTitle { age: title_age }, text_f(f, 74.0, title_color(), "VIOLET EDGE")));
         p.spawn(Node {
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::Center,
-            row_gap: Val::Px(12.0), // the airiness lives here, not in the shared overlay gap
+            row_gap: Val::Px(9.0), // the airiness lives here, not in the shared overlay gap (trimmed
+            // from 12 when EXIT made this an EIGHT-button column: 8 buttons + 7 gaps has to fit the
+            // 800px design height alongside the masthead, wordmark and BEST line)
             margin: UiRect::top(Val::Px(10.0)),
             ..default()
         })
         .with_children(|m| {
-            menu_button(m, f, MenuAction::Play, "PLAY");
+            let b = |m: &mut ChildSpawnerCommands, a, l: &str| menu_button_sized(m, f, a, l, Some(MENU_BTN_W));
+            b(m, MenuAction::Play, "PLAY");
             if stats.phantom {
                 // the second lap exists only for pilots who've finished the first — beat the game
                 // once (ever, any run) and NEW GAME+ is on the menu forever
-                menu_button(m, f, MenuAction::PlayPlus, "NEW GAME+");
+                b(m, MenuAction::PlayPlus, "NEW GAME+");
             }
-            menu_button(m, f, MenuAction::Controls, "CONTROLS");
-            menu_button(m, f, MenuAction::Briefing, "BRIEFING");
-            menu_button(m, f, MenuAction::Lore, &format!("PILOT LOG  ({lore_n} / 8)"));
-            let gal = gallery_entries(&stats);
-            menu_button(m, f, MenuAction::Gallery, &format!("GALLERY  ({} / {})", gal.iter().filter(|e| e.4).count(), gal.len()));
-            menu_button(m, f, MenuAction::Achievements, &format!("ACHIEVEMENTS  ({done} / {})", ACHIEVEMENTS.len()));
+            b(m, MenuAction::Controls, "CONTROLS");
+            b(m, MenuAction::Briefing, "BRIEFING");
+            // The counts used to ride on these three labels. They're progress readouts, not part of
+            // the button's job, and they made the column look like three different controls; each one
+            // now lives as a subtitle inside the section it belongs to, where there's room to say it
+            // properly.
+            b(m, MenuAction::Lore, "PILOT LOG");
+            b(m, MenuAction::Gallery, "GALLERY");
+            b(m, MenuAction::Achievements, "ACHIEVEMENTS");
+            b(m, MenuAction::Exit, "EXIT");
         });
         if best > 0 {
             p.spawn((text_f(f, 18.0, Color::srgb(0.72, 0.76, 0.95), &format!("BEST   {best}")), Node { margin: UiRect::top(Val::Px(14.0)), ..default() }));
@@ -9538,6 +9601,10 @@ fn spawn_achievements_ui(mut commands: Commands, achieved: Res<Achievements>, fo
     let f = &font.0;
     commands.entity(root).with_children(|p| {
         p.spawn(text_f(f, 40.0, title_color(), "ACHIEVEMENTS")); // static — no neon warm-up here
+        // the progress line lives HERE rather than on the menu button that opens this screen: it's a
+        // readout, and this is the screen that can afford to state it plainly
+        let done = achieved.unlocked.iter().filter(|u| **u).count();
+        p.spawn(text_f(f, 13.0, Color::srgb(0.45, 0.48, 0.6), &format!("Unlocked {done} of {}", ACHIEVEMENTS.len())));
         // two-column table: name | description (aligns cleanly, no separator glyph). All 23 rows
         // live in ONE column node so the overlay's row_gap is paid once, not 23 times.
         p.spawn(Node { flex_direction: FlexDirection::Column, align_items: AlignItems::Center, ..default() }).with_children(|table| {
@@ -9712,13 +9779,23 @@ fn spawn_lore_ui(mut commands: Commands, stats: Res<Stats>, font: Res<MenuFont>)
     let body_col = Color::srgb(0.74, 0.78, 0.95);
     let locked_t = Color::srgb(0.42, 0.44, 0.55);
     let locked_b = Color::srgb(0.32, 0.34, 0.44);
+    let entries = lore_entries(&stats); // built once — the count and the rows below share it
+    let lore_n = entries.iter().filter(|(_, _, u, _)| *u).count();
+    let total = entries.len();
     commands.entity(root).with_children(|p| {
         p.spawn(text_f(f, 40.0, title_color(), "PILOT LOG"));
-        p.spawn(text_f(f, 14.0, locked_b, "Transmissions from the VIOLET CUTTER, relayed home."));
+        // the count joins the existing flavour line rather than adding a row of its own — this screen
+        // already fills the design height, and a new line would clip the journal
+        p.spawn(text_f(
+            f,
+            14.0,
+            locked_b,
+            &format!("Transmissions from the VIOLET CUTTER, relayed home.   ·   Decrypted {lore_n} of {total}"),
+        ));
         // all 8 reports live in ONE column node: the overlay's row_gap is paid once for the whole
         // journal (26 per-line gaps used to push the stack past the design height and clip both ends)
         p.spawn(Node { flex_direction: FlexDirection::Column, align_items: AlignItems::Center, row_gap: Val::Px(2.0), ..default() }).with_children(|log| {
-            for (i, (title, body, unlocked, accent)) in lore_entries(&stats).into_iter().enumerate() {
+            for (i, (title, body, unlocked, accent)) in entries.into_iter().enumerate() {
                 // the boss ladder gates each report: waves 5,10,15,20,25 then the two wave-30 reveals
                 let gap = if i == 0 { 0.0 } else { 10.0 };
                 if unlocked {
@@ -10530,7 +10607,7 @@ const NEON_FADE_START: f32 = 1.55; // the tube "catches" here and fades up smoot
 
 // Neon flicker-on for the title (scripted blinks settling into a steady breathe), and a matching
 // pulse on the frame border. `dim` scales the (≤1) UI colours, so b<1 reads as the sign "off".
-fn menu_title_fx(time: Res<Time>, mut titles: Query<(&mut MenuTitle, &mut TextColor)>, mut frames: Query<&mut BorderColor, With<MenuFrame>>) {
+fn menu_title_fx(time: Res<Time>, mut titles: Query<(&mut MenuTitle, &mut TextColor)>, mut frames: Query<(&MenuFrame, &mut BorderColor)>) {
     let dt = time.delta_secs();
     let base = Color::srgb(0.72, 0.28, 1.0);
     let mut brightness = 0.9;
@@ -10553,10 +10630,10 @@ fn menu_title_fx(time: Res<Time>, mut titles: Query<(&mut MenuTitle, &mut TextCo
         brightness = b;
         *tc = TextColor(dim(base, b));
     }
-    // frame border tracks the same brightness (uses the last title's value — there's only one)
-    let fbase = Color::srgb(0.5, 0.25, 0.9);
-    for mut bc in &mut frames {
-        *bc = BorderColor(dim(fbase, brightness.max(0.2)));
+    // both tube layers track the same brightness (from the last title's value — there's only one),
+    // each scaling its OWN base so the halo stays a halo and the core stays hot
+    for (frame, mut bc) in &mut frames {
+        *bc = BorderColor(dim(frame.base, brightness.max(0.25)));
     }
 }
 
@@ -15255,6 +15332,41 @@ mod tests {
         assert_eq!(baseline_kind(3, true), Some(RockKind::Blue), "NG+ waves 1-5 recap the old roster");
         assert_eq!(baseline_kind(9, true), None, "past wave 5 lap two has NO plain rock to fall back to");
         assert_eq!(baseline_kind(30, true), None, "…including its finale");
+    }
+
+    // The neon frame is TWO nodes, and only the outer one can carry the caller's screen marker. If the
+    // inner core is ever unparented from it, every screen change leaves an orphan behind and they
+    // stack up invisibly until the border is a smear. This is the guard for that.
+    #[test]
+    fn the_neon_frame_despawns_completely_with_its_screen() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_systems(Update, |mut c: Commands| spawn_frame(&mut c, MenuUi));
+        app.update();
+        assert_eq!(app.world_mut().query::<&MenuFrame>().iter(app.world()).count(), 2, "a halo and a hot core — that layering IS the tube");
+        // exactly one of them carries the screen marker (the other must be its child)
+        let marked: Vec<Entity> = {
+            let mut q = app.world_mut().query_filtered::<Entity, (With<MenuFrame>, With<MenuUi>)>();
+            q.iter(app.world()).collect()
+        };
+        assert_eq!(marked.len(), 1, "only the outer layer carries the marker");
+        // despawning the marked entity (what despawn_*_ui does) must take BOTH layers
+        app.world_mut().entity_mut(marked[0]).despawn();
+        assert_eq!(app.world_mut().query::<&MenuFrame>().iter(app.world()).count(), 0, "no orphaned frame survives the screen");
+    }
+
+    // Every main-menu button is width-locked to one size, and the column has to fit the design height
+    // now that EXIT makes eight of them.
+    #[test]
+    fn the_main_menu_column_fits_the_screen() {
+        let btn = 8.0 + 20.0 + 8.0 + 4.0 + 10.0; // padding y + text + border + margin y
+        let gap = 9.0;
+        let n = 8.0; // PLAY, NEW GAME+, CONTROLS, BRIEFING, PILOT LOG, GALLERY, ACHIEVEMENTS, EXIT
+        let column = n * btn + (n - 1.0) * gap;
+        let masthead = 132.0 + 74.0 + 10.0 + 20.0 + 24.0; // logo + wordmark + margins + BEST + overlay gaps
+        assert!(column + masthead < DESIGN_H, "the full menu fits {DESIGN_H}px, got {}", column + masthead);
+        // and the locked width must actually clear the longest label ("ACHIEVEMENTS" at 20px + padding)
+        assert!(MENU_BTN_W > 12.0 * 14.0 + 48.0, "the locked width clears the longest label");
     }
 
     #[test]

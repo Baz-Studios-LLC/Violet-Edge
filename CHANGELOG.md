@@ -3,6 +3,20 @@
 Patch notes for the Rust + Bevy build. Newest first. (Releases are cut to GitHub and picked up by the
 Baz Studios launcher.) **Keep this current with every change** — it's the record testers read.
 
+## Unreleased
+
+- **The screen border is a neon TUBE now, not a line.** It's built from two layers — a thick soft halo
+  with a thin white-hot core sitting inside it — which is what actually reads as glass with light in it.
+  A single stroke only ever reads as a drawn rectangle, however bright you make it. Both layers breathe
+  with the title.
+- **Every main-menu button is the same width.** The column was sized by however long each label
+  happened to be, so it read as a ragged pile rather than a stack of controls.
+- **The progress counts moved off the menu and into their sections.** PILOT LOG, GALLERY and
+  ACHIEVEMENTS are just their names now; each screen states its own progress under its title, where
+  there's room to say it properly ("Unlocked 11 of 29" rather than a number crammed onto a button).
+- **There's an EXIT button.** Bottom of the menu. Button-only, no keyboard shortcut — a stray keypress
+  that closes the game is a different class of mistake from one that opens a menu.
+
 ## v0.6.0 — The Facet, the Husk, the Gorge Round, and a field you can read (2026-08-03)
 
 - **Act III keeps all three of its rock types.** The new special-rock cap counted Act III's *carrier*
