@@ -5,6 +5,14 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
+- **The starfield drifts, and it's brighter.** The stars slide slowly down-left — so the field reads as
+  the ship making way — and they move at different speeds depending on how bright they are, which gives
+  the backdrop actual depth instead of looking like one flat sheet. The brightest cross the screen in
+  about two and a half minutes, the faintest in over four. They're also a touch brighter overall, most
+  noticeably the faint ones that were nearly invisible mid-run.
+  Worth noting: the brightness came from raising the floor of the twinkle rather than its peak, so the
+  field is brighter *and* flickers less than it did.
+
 - **The screen border is a neon TUBE now, not a line.** It's built from two layers — a thick soft halo
   with a thin white-hot core sitting inside it — which is what actually reads as glass with light in it.
   A single stroke only ever reads as a drawn rectangle, however bright you make it. Both layers breathe

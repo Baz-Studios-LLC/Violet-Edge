@@ -466,6 +466,32 @@ const SPAWN_INVULN: f32 = 2.0; // s of blink-invulnerability on (re)spawn
 const TRAIL_LEN: usize = 10; // bullet trail points kept
 const SHIP_TRAIL_LEN: usize = 72; // ship light-ribbon points kept (~1.2s of motion — extended THREE times per playtest; the user wants a real Tron presence)
 const STAR_COUNT: usize = 90;
+// THE STARFIELD DRIFTS. Slowly, and with PARALLAX: a star's speed scales with its brightness, so the
+// bright ones read as near and the faint ones as far away, which is what turns a flat backdrop into
+// depth. Everything moves the same direction — varying the headings instead would read as debris
+// blowing about rather than the ship making way.
+//
+// The drift is computed ANALYTICALLY from elapsed time at draw time rather than by mutating each
+// star's Transform: no extra system, nothing to desync, and it can't drift out of sync with a pause.
+// Speed is in PIXELS per second and divided by the arena half at draw time, because star positions are
+// normalized [-1,1] and the arena isn't square — drifting in normalized units directly would run
+// visibly faster across a wide screen than down it.
+// How dim a star gets at the bottom of its twinkle. Raised 0.35 → 0.5: it lifts the field's average
+// brightness AND narrows the flicker's swing, so this is one of the rare knobs where "brighter" and
+// "gentler on photosensitive players" are the same turn. Named so the swing can be asserted.
+const STAR_TWINKLE_FLOOR: f32 = 0.5;
+const STAR_TWINKLE_RATE: f32 = 1.6; // rad/s
+// PHOTOSENSITIVITY + BACKDROP DISCIPLINE, both compile-time so neither can be tuned away by accident:
+const _: () = assert!(STAR_TWINKLE_RATE / TAU < 3.0); // ~0.25 Hz, far inside the 3 Hz ceiling
+const _: () = assert!(1.0 - STAR_TWINKLE_FLOOR <= 0.5); // dips at most halfway — a breathe, not a blink
+const STAR_DRIFT: f32 = 6.5; // px/s for a mid-brightness star (crosses a 1400px screen in ~3.5 min)
+const STAR_DRIFT_DIR: Vec2 = Vec2::new(-0.82, -0.57); // down-left — so the field reads as the ship making way up-right
+// The backdrop must never outpace the field, or the scenery competes with the gameplay for the eye;
+// and the bright/faint spread has to be wide enough to actually read as depth rather than as jitter.
+const STAR_DRIFT_MAX: f32 = STAR_DRIFT * 1.45; // a brightness-1.0 star
+const STAR_DRIFT_MIN: f32 = STAR_DRIFT * 0.85; // a brightness-0.4 star
+const _: () = assert!(STAR_DRIFT_MAX < MINE_SPEED); // slower than the slowest thing in play
+const _: () = assert!(STAR_DRIFT_MAX > STAR_DRIFT_MIN * 1.4); // real parallax, not noise
 // The game renders at a fixed DESIGN height, scale-to-fit to the window: on ANY monitor the camera
 // magnifies so DESIGN_H world-units fill the window height (a bigger screen magnifies — it does NOT reveal
 // more empty arena). The arena's half-WIDTH follows the window aspect so it fills the screen edge-to-edge.
@@ -918,6 +944,14 @@ fn draw_tentacle(gizmos: &mut Gizmos, from: Vec2, to: Vec2, curl_phase: f32, col
     gizmos.linestrip_2d(pts, color);
 }
 
+
+// Wrap a NORMALIZED star coordinate back into [-1, 1). The starfield drifts forever, so this is what
+// makes a star leaving one edge re-enter the opposite one instead of sailing off into nothing. Pulled
+// out of the draw loop so it can be tested at large elapsed times — the offset it's fed grows without
+// bound, and a wrap that fails after an hour of play is exactly the kind of bug nobody sees coming.
+fn wrap_norm(v: f32) -> f32 {
+    (v + 1.0).rem_euclid(2.0) - 1.0
+}
 
 // Inward pull a black hole applies to a body at `pos` this frame (velocity delta).
 // Zero outside `pull_r`; a strong floor at the rim, ramping harder toward the core.
@@ -2487,7 +2521,7 @@ fn setup(mut commands: Commands) {
         // whatever its size or aspect (a fixed world box left dark starless margins on big/ultrawide monitors).
         let pos = Vec2::new(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0));
         commands.spawn((
-            Star { phase: rng.gen_range(0.0..TAU), bright: rng.gen_range(0.3..1.0) },
+            Star { phase: rng.gen_range(0.0..TAU), bright: rng.gen_range(0.4..1.0) }, // floor lifted 0.3 → 0.4: the faintest were nearly invisible mid-run
             Transform::from_xyz(pos.x, pos.y, 0.0),
         ));
     }
@@ -6616,10 +6650,20 @@ fn render(
     // bigger, brighter, with a soft glow and diagonal sparkle rays on the brightest ones.
     let star = star_color();
     let menu = !show_run;
+    // Drift direction pre-divided by the arena half, so a star covers the same PIXEL distance per
+    // second whichever way the screen is stretched. Hoisted out of the loop — it's the same for all 90.
+    let drift = STAR_DRIFT_DIR / h.max(Vec2::splat(1.0));
     for (s, st) in &stars {
-        let tw = 0.35 + 0.65 * (t * 1.6 + s.phase).sin().max(0.0);
-        let c = st.translation.truncate() * h; // star pos is NORMALIZED [-1,1] → scale to the live arena so the field fills any screen
-        let bright = s.bright * tw * if menu { 2.0 } else { 1.0 };
+        // ~0.25 Hz twinkle. The floor was raised 0.35 → 0.5, which lifts the field's average brightness
+        // AND shrinks the flicker's swing — brighter and calmer at once, so the photosensitivity budget
+        // improves rather than pays for this.
+        let tw = STAR_TWINKLE_FLOOR + (1.0 - STAR_TWINKLE_FLOOR) * (t * STAR_TWINKLE_RATE + s.phase).sin().max(0.0);
+        // PARALLAX: brighter reads as nearer, so it slides faster. Wrapped in normalized space, which
+        // is exactly the screen edge, so a star leaving one side re-enters the other.
+        let slide = drift * (STAR_DRIFT * (0.45 + s.bright) * t);
+        let p = st.translation.truncate() + slide;
+        let c = Vec2::new(wrap_norm(p.x), wrap_norm(p.y)) * h; // NORMALIZED [-1,1] → the live arena, so the field fills any screen
+        let bright = s.bright * tw * if menu { 2.2 } else { 1.3 };
         let col = dim(star, bright);
         let arm = if menu { 2.3 } else { 1.3 };
         gizmos.line_2d(c - Vec2::X * arm, c + Vec2::X * arm, col);
@@ -15410,6 +15454,32 @@ mod tests {
         // the locked button width must clear the longest label ("ACHIEVEMENTS" at 20px + padding)
         const { assert!(MENU_BTN_W > 12.0 * 14.0 + 48.0) }; // the locked width clears the longest label ("ACHIEVEMENTS")
     }
+
+    // The starfield drifts off an ever-growing elapsed time, so its wrap has to hold for a whole
+    // session, not just the first minute. If it ever returns a value outside [-1, 1) the star lands
+    // off-screen (or piles up on an edge) and the field quietly thins out as you play.
+    #[test]
+    fn drifting_stars_wrap_forever() {
+        let mut rng = rand::thread_rng();
+        for _ in 0..500 {
+            let start: f32 = rng.gen_range(-1.0..1.0);
+            let bright: f32 = rng.gen_range(0.4..1.0);
+            // sample across a long session: a few seconds out to ten hours
+            for &secs in &[0.0f32, 1.0, 60.0, 600.0, 3600.0, 36_000.0] {
+                let slide = STAR_DRIFT * (0.45 + bright) * secs / 700.0; // /h.x for a 1400px-wide arena
+                let w = wrap_norm(start - slide);
+                assert!((-1.0..1.0).contains(&w), "star wrapped to {w} after {secs}s — that's off-screen");
+            }
+        }
+        // and it is a genuine WRAP, not a clamp: just past an edge comes back at the other one
+        assert!((wrap_norm(1.02) - -0.98).abs() < 1e-5, "past the right edge re-enters on the left");
+        assert!((wrap_norm(-1.02) - 0.98).abs() < 1e-5, "and vice versa");
+    }
+
+    // Parallax, the backdrop speed ceiling and the twinkle's photosensitivity budget are all
+    // compile-time asserts next to the STAR_* constants — they're pure const arithmetic, so proving
+    // them at build time beats a test that can be skipped. What actually needs a runtime test is the
+    // WRAP above, because that one is fed an unbounded elapsed time.
 
     #[test]
     fn boss_wave_detection() {
