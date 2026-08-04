@@ -3,7 +3,7 @@
 Patch notes for the Rust + Bevy build. Newest first. (Releases are cut to GitHub and picked up by the
 Baz Studios launcher.) **Keep this current with every change** — it's the record testers read.
 
-## Unreleased
+## v0.6.1 — The front door: a neon tube, a lockup, and a sky that moves (2026-08-04)
 
 - **The starfield drifts, and it's brighter.** The stars slide slowly down-left — so the field reads as
   the ship making way — and they move at different speeds depending on how bright they are, which gives
