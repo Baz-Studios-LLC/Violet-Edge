@@ -9,6 +9,12 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
   with a thin white-hot core sitting inside it — which is what actually reads as glass with light in it.
   A single stroke only ever reads as a drawn rectangle, however bright you make it. Both layers breathe
   with the title.
+- **The title is one lockup now: VIOLET ▸ EDGE**, with the ship sitting between the two words instead
+  of floating above them. The dart already reads as a slash, so it looks deliberate — and it fixed a
+  real problem at the same time: the stacked masthead was 4px taller than the space inside the border,
+  and because the menu is vertically centred that overflow spilled from both ends, which is why the
+  BEST score was sitting on the bottom of the tube. The whole screen now has ~56px clear at top and
+  bottom. The logo breathes with the letters, so the lockup flickers on as one sign.
 - **Every main-menu button is the same width.** The column was sized by however long each label
   happened to be, so it read as a ragged pile rather than a stack of controls.
 - **The progress counts moved off the menu and into their sections.** PILOT LOG, GALLERY and

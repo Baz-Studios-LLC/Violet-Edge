@@ -1811,6 +1811,11 @@ struct MenuButton(MenuAction);
 struct MenuTitle {
     age: f32, // seconds since spawn — drives the neon flicker-on then a steady breathe
 }
+// The logo sitting INSIDE the wordmark (VIOLET ▸ EDGE). Tagged so the title pulse tints it along with
+// the letters — a lockup where the words breathe and the glyph doesn't would read as two signs, not one.
+#[derive(Component)]
+struct TitleGlyph;
+
 // One layer of the neon border frame. It's built from TWO nested nodes — a thick dim HALO outside and
 // a thin hot CORE inside — because that layering is what reads as a glass tube; a single stroke, however
 // bright, only ever reads as a drawn rectangle. Each layer carries its own base colour so the shared
@@ -9536,13 +9541,32 @@ fn spawn_menu_ui(mut commands: Commands, stats: Res<Stats>, intro: Res<TitleIntr
     let title_age = if intro.0 { NEON_WARMUP } else { 0.0 };
     let best = hs.top[0];
     commands.entity(root).with_children(|p| {
-        // logo masthead above the wordmark. The menu carries SEVEN buttons now, so it earns its own
-        // breathing room: the masthead and wordmark are trimmed a little, and the buttons live in
-        // their OWN column with a wider gap. That keeps the overlay's shared tight `row_gap` (which
-        // the dense screens — Controls, Pilot Log — depend on to fit) untouched, while this screen
-        // reads open instead of stacked. Budget: ~720px of the 800px design height.
-        p.spawn((ImageNode::new(logo.0.clone()), Node { width: Val::Px(132.0), height: Val::Px(132.0), margin: UiRect::bottom(Val::Px(-16.0)), ..default() }));
-        p.spawn((MenuTitle { age: title_age }, text_f(f, 74.0, title_color(), "VIOLET EDGE")));
+        // THE LOCKUP: the logo sits BETWEEN the two words rather than stacked above them (user's call,
+        // and it earns its place twice over). The dart already reads as a slash, so VIOLET ▸ EDGE looks
+        // deliberate — and collapsing a 206px stacked masthead into one 89px row is what makes the whole
+        // screen FIT. It didn't before: the stack overflowed the tube's usable height by 4px, and since
+        // a centered column spills from both ends, that's what put the BEST line on the bottom border.
+        // Budget now ~634px of the 746px inside the frame, so ~56px clear top and bottom.
+        //
+        // Both words carry `MenuTitle`, so they flicker on together (same age → same brightness), and the
+        // glyph carries `TitleGlyph` so the pulse tints it too.
+        p.spawn(Node {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(6.0),
+            ..default()
+        })
+        .with_children(|t| {
+            t.spawn((MenuTitle { age: title_age }, text_f(f, 74.0, title_color(), "VIOLET")));
+            // nudged up a touch: the dart's mass sits low, so optically centring it on the cap height
+            // needs a little lift off the text baseline
+            t.spawn((
+                TitleGlyph,
+                ImageNode::new(logo.0.clone()),
+                Node { width: Val::Px(92.0), height: Val::Px(92.0), margin: UiRect::bottom(Val::Px(8.0)), ..default() },
+            ));
+            t.spawn((MenuTitle { age: title_age }, text_f(f, 74.0, title_color(), "EDGE")));
+        });
         p.spawn(Node {
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::Center,
@@ -10607,7 +10631,7 @@ const NEON_FADE_START: f32 = 1.55; // the tube "catches" here and fades up smoot
 
 // Neon flicker-on for the title (scripted blinks settling into a steady breathe), and a matching
 // pulse on the frame border. `dim` scales the (≤1) UI colours, so b<1 reads as the sign "off".
-fn menu_title_fx(time: Res<Time>, mut titles: Query<(&mut MenuTitle, &mut TextColor)>, mut frames: Query<(&MenuFrame, &mut BorderColor)>) {
+fn menu_title_fx(time: Res<Time>, mut titles: Query<(&mut MenuTitle, &mut TextColor)>, mut frames: Query<(&MenuFrame, &mut BorderColor)>, mut glyphs: Query<&mut ImageNode, With<TitleGlyph>>) {
     let dt = time.delta_secs();
     let base = Color::srgb(0.72, 0.28, 1.0);
     let mut brightness = 0.9;
@@ -10630,8 +10654,13 @@ fn menu_title_fx(time: Res<Time>, mut titles: Query<(&mut MenuTitle, &mut TextCo
         brightness = b;
         *tc = TextColor(dim(base, b));
     }
-    // both tube layers track the same brightness (from the last title's value — there's only one),
-    // each scaling its OWN base so the halo stays a halo and the core stays hot
+    // the logo inside the wordmark breathes with the letters (ImageNode tints multiplicatively, so
+    // dimming white keeps the art's own violet and just rides the brightness)
+    for mut img in &mut glyphs {
+        img.color = dim(Color::WHITE, brightness.max(0.12));
+    }
+    // both tube layers track the same brightness (from the last title's value — there are two words,
+    // same age, so they agree), each scaling its OWN base so the halo stays a halo and the core stays hot
     for (frame, mut bc) in &mut frames {
         *bc = BorderColor(dim(frame.base, brightness.max(0.25)));
     }
@@ -15355,18 +15384,31 @@ mod tests {
         assert_eq!(app.world_mut().query::<&MenuFrame>().iter(app.world()).count(), 0, "no orphaned frame survives the screen");
     }
 
-    // Every main-menu button is width-locked to one size, and the column has to fit the design height
-    // now that EXIT makes eight of them.
+    // The menu has to fit INSIDE the neon tube, not just inside the window. It overflowed by 4px once
+    // already — and because a centred column spills from BOTH ends, the symptom was the BEST line
+    // sitting on the bottom border. Two things this test gets right that eyeballing it didn't:
+    //   • text occupies ~1.2× its font size, not 1.0× (that error is exactly what hid the overflow);
+    //   • the budget is the height inside the FRAME (minus its inset and both strokes), not DESIGN_H.
     #[test]
-    fn the_main_menu_column_fits_the_screen() {
-        let btn = 8.0 + 20.0 + 8.0 + 4.0 + 10.0; // padding y + text + border + margin y
-        let gap = 9.0;
+    fn the_main_menu_fits_inside_the_neon_tube() {
+        let line = |px: f32| px * 1.2; // Bevy's laid-out line height
+        const FRAME_INSET: f32 = 20.0;
+        const FRAME_STROKE: f32 = 7.0;
+        let usable = DESIGN_H - 2.0 * FRAME_INSET - 2.0 * FRAME_STROKE;
+
+        let btn = line(20.0) + 16.0 + 4.0 + 10.0; // text + padding y + border y + margin y
         let n = 8.0; // PLAY, NEW GAME+, CONTROLS, BRIEFING, PILOT LOG, GALLERY, ACHIEVEMENTS, EXIT
-        let column = n * btn + (n - 1.0) * gap;
-        let masthead = 132.0 + 74.0 + 10.0 + 20.0 + 24.0; // logo + wordmark + margins + BEST + overlay gaps
-        assert!(column + masthead < DESIGN_H, "the full menu fits {DESIGN_H}px, got {}", column + masthead);
-        // and the locked width must actually clear the longest label ("ACHIEVEMENTS" at 20px + padding)
-        assert!(MENU_BTN_W > 12.0 * 14.0 + 48.0, "the locked width clears the longest label");
+        let column = n * btn + (n - 1.0) * 9.0;
+        // the LOCKUP is one row: the logo sits between the words, so its height is the max of the two,
+        // not their sum. That collapse is what bought the headroom back.
+        let lockup = line(74.0).max(92.0);
+        let total = lockup + 10.0 + column + line(20.0) + 2.0 * 8.0; // + col margin + BEST + overlay gaps
+
+        assert!(total < usable, "the menu must fit the {usable}px inside the tube, got {total}");
+        // and it must not merely squeeze in — leave real air, or the next button added clips again
+        assert!(usable - total > 40.0, "only {}px of headroom left — too tight to add anything", usable - total);
+        // the locked button width must clear the longest label ("ACHIEVEMENTS" at 20px + padding)
+        const { assert!(MENU_BTN_W > 12.0 * 14.0 + 48.0) }; // the locked width clears the longest label ("ACHIEVEMENTS")
     }
 
     #[test]
