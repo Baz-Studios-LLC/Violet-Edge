@@ -311,6 +311,71 @@ pub fn warp_wav() -> Vec<u8> {
 /// A faint hollow detuned dyad drifting down (the "presence") under an airy band-swept noise breath whose
 /// centre glides down — eerie and ghostly, not the portal-tearing plunge of `warp_wav`. Swept filters need
 /// state, so it runs its own loop.
+/// THE LANCE spooling up (0.7s, matching LANCE_CHARGE). A capacitor bank filling: a RISING tone that
+/// accelerates as it climbs, over a band of noise tightening from a hiss to a whine, with an amplitude
+/// tremble that quickens toward the top. Deliberately unlike anything else in the bank — every other
+/// cue here FALLS (the warp plunges, the haunt sinks, breaks decay); this is the only sound in the game
+/// that rises the whole way, so the ear knows instantly that something is being wound up, not spent.
+pub fn lance_charge_wav() -> Vec<u8> {
+    let dur = 0.7;
+    let n = (dur * SR) as usize;
+    let mut buf = vec![0f32; n];
+    let (mut la, mut lb) = (0.0f32, 0.0f32);
+    for (i, out) in buf.iter_mut().enumerate() {
+        let t = i as f32 / SR;
+        let k = t / dur; // 0 → 1 over the spool
+        // the tone ACCELERATES upward (k²), so it feels like it's straining toward a release rather
+        // than sliding evenly — phase is the integral of 150 + 900k², i.e. 150t + 300t³/dur²
+        let cyc = 150.0 * t + 300.0 * t * t * t / (dur * dur);
+        let tone = saw(cyc) * 0.45 + (TAU * cyc * 2.0).sin() * 0.2;
+        // noise band tightening 400 → 5200 Hz: hiss becomes whine
+        let fc = 400.0 * (5200.0f32 / 400.0).powf(k);
+        let x = noise(i);
+        la += (1.0 - (-TAU * (fc * 1.25) / SR).exp()) * (x - la);
+        lb += (1.0 - (-TAU * (fc * 0.8) / SR).exp()) * (x - lb);
+        let whine = (la - lb) * 2.6;
+        // tremble quickening 14 → 46 Hz — the "charge is nearly there" tell, in the ear
+        let trem = 1.0 + 0.22 * (TAU * (14.0 + 32.0 * k) * t).sin();
+        let env = (t / 0.04).min(1.0) * (0.25 + 0.75 * k * k); // swells into the release
+        *out = (tone + whine * 0.5) * env * trem * 0.55;
+    }
+    let peak = buf.iter().fold(0f32, |m, &v| m.max(v.abs())).max(1e-6);
+    let norm = 0.86 / peak;
+    let samples: Vec<i16> = buf.iter().map(|&v| (v * norm * i16::MAX as f32) as i16).collect();
+    wav_bytes(&samples, SR as u32)
+}
+
+/// THE LANCE firing (0.5s). The release the charge was promising: a hard transient, then a sustained
+/// bright CUTTING tone with a fast shimmer on it (the sparks wrapping the beam, in sound), tailing off
+/// as the beam closes. Bright and steady where `warp_wav` is dark and plunging — the two must never be
+/// mistaken for one another mid-fight.
+pub fn lance_fire_wav() -> Vec<u8> {
+    let dur = 0.5;
+    let n = (dur * SR) as usize;
+    let mut buf = vec![0f32; n];
+    let (mut la, mut lb) = (0.0f32, 0.0f32);
+    for (i, out) in buf.iter_mut().enumerate() {
+        let t = i as f32 / SR;
+        // the crack: a very short broadband snap so the shot has a leading edge
+        let crack = noise(i) * (-t * 90.0).exp() * 1.4;
+        // the sustained cut: a bright dyad, barely detuned so it beats slightly and sounds "live"
+        let body = ((TAU * 1180.0 * t).sin() * 0.5 + (TAU * 1773.0 * t).sin() * 0.3 + saw(880.0 * t) * 0.25) * 0.7;
+        // shimmer: a fast ring-mod flutter, the audible cousin of the sparks spiralling the beam
+        let shimmer = 1.0 + 0.3 * (TAU * 62.0 * t).sin() * (TAU * 137.0 * t).sin();
+        // a high noise band riding along the beam
+        let x = noise(i.wrapping_mul(3));
+        la += (1.0 - (-TAU * 6400.0 / SR).exp()) * (x - la);
+        lb += (1.0 - (-TAU * 3000.0 / SR).exp()) * (x - lb);
+        let air = (la - lb) * 1.8;
+        let env = (t / 0.006).min(1.0) * (1.0 - (t / dur).powf(2.2)).max(0.0); // instant on, eased off
+        *out = (crack + (body * shimmer + air * 0.45) * env) * 0.6;
+    }
+    let peak = buf.iter().fold(0f32, |m, &v| m.max(v.abs())).max(1e-6);
+    let norm = 0.92 / peak;
+    let samples: Vec<i16> = buf.iter().map(|&v| (v * norm * i16::MAX as f32) as i16).collect();
+    wav_bytes(&samples, SR as u32)
+}
+
 pub fn haunt_sfx_wav() -> Vec<u8> {
     let dur = 0.4;
     let n = (dur * SR) as usize;
@@ -448,6 +513,8 @@ mod tests {
             log_sfx_wav(),
             boss_down_sfx_wav(),
             vortex_sfx_wav(),
+            lance_charge_wav(),
+            lance_fire_wav(),
         ] {
             assert_eq!(&wav[0..4], b"RIFF", "sfx starts with a RIFF header");
             assert_eq!(&wav[8..12], b"WAVE", "sfx is a WAVE file");

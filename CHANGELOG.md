@@ -3,6 +3,22 @@
 Patch notes for the Rust + Bevy build. Newest first. (Releases are cut to GitHub and picked up by the
 Baz Studios launcher.) **Keep this current with every change** — it's the record testers read.
 
+## Unreleased
+
+- **THE LANCE — a beam you have to stand still for** (the Slinger+'s drop, NG+ wave 15). Press **E** and
+  the ship anchors itself, sparks come screaming inward onto the muzzle for three quarters of a second,
+  and then a white-hot beam opens along your nose and stays open for **two full seconds**, cutting
+  everything on the line and running all the way to the edge of the arena from wherever you fired it —
+  point-blank at a wall or right across the long diagonal. Energy sparks spiral around it the whole time.
+  It goes straight through Facet mirrors and Beacon auras, because it's a beam, not a round.
+  **You cannot move while it charges or fires.** Not slowed — stopped, and you can't turn either: you
+  pick your line before you know what's going to be standing in it, and then you live with it for
+  2.7 seconds in a field that is still very much moving. That's the whole weapon. Thirteen second
+  cooldown, one shot, no way to cancel it.
+  It gets its own key rather than a slot on the Q wheel, so it can never leave you disarmed while it
+  recharges — and its own sound: the only cue in the game that *rises* the whole way, so a wind-up is
+  never mistaken for anything else.
+
 ## v0.6.1 — The front door: a neon tube, a lockup, and a sky that moves (2026-08-04)
 
 - **The starfield drifts, and it's brighter.** The stars slide slowly down-left — so the field reads as

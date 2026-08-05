@@ -382,6 +382,26 @@ const DEVOURER_SPEED: f32 = 95.0; // px/s seek speed (below the ship's, so it's 
 
 // Chain shot: a wide lightning BEAM secondary weapon. Unlocked by the pickup that
 // appears in the calm after the first boss (wave 5). 3 charges that regenerate.
+// THE LANCE — the Slinger+'s drop (NG+ boss 3). The Slinger's signature isn't throwing, it's the
+// SUSTAINED BEAM it holds on a target; this is that beam in the player's hands. One shot on a long
+// cooldown, charged then fired, reaching all the way to the arena edge from wherever it's fired.
+//
+// ITS PRICE IS THAT YOU CANNOT MOVE (user requirement). Position AND facing lock the instant you
+// trigger it, and stay locked through the charge and the shot — in an Asteroids game, planting
+// yourself is the most dangerous thing you can do, so the strongest weapon in the kit is paid for with
+// the one thing that keeps you alive. That's the whole design: it isn't a gun, it's a commitment.
+const LANCE_CHARGE: f32 = 0.7; // s of spool-up before it fires (you are already rooted here)
+const LANCE_FIRE: f32 = 2.0; // s the beam is live and lethal — a SUSTAINED lance, not a flash (user)
+const LANCE_COOLDOWN: f32 = 13.0; // s before it can be fired again — one shot, deliberately not spammable
+const LANCE_R: f32 = 15.0; // half-thickness of the lethal line
+const LANCE_BOSS_DMG: i32 = 6; // per DAMAGE TICK, not per frame — see LANCE_DMG_EVERY
+const LANCE_DMG_EVERY: f32 = 0.4; // s between boss damage ticks while the beam is on it
+// Rocks/mobs/mines die the instant the beam touches them, so only HP-bearing things need a tick — but
+// they need it badly: at 60fps a 2s beam would otherwise land 120 hits and delete any boss in the game.
+const _: () = assert!(LANCE_DMG_EVERY > 0.1);
+const _: () = assert!(LANCE_CHARGE + LANCE_FIRE < LANCE_COOLDOWN * 0.25); // rooted for a fraction of the cycle, never most of it
+const _: () = assert!(LANCE_R > SHIP_R); // the beam is visibly wider than the ship that fired it
+
 const CHAIN_MAX_CHARGES: i32 = 3;
 const CHAIN_RECHARGE: f32 = 5.5; // s to regenerate one charge
 const CHAIN_COOLDOWN: f32 = 0.27; // min s between shots
@@ -455,6 +475,7 @@ const HUD_FLASH_TIME: f32 = 0.7; // s the warp pips / life icons flicker after r
 // and the gizmo glyphs (world `-h.x + X`) share these, so the two layers can't drift apart (the
 // camera scale-to-fits DESIGN_H and UiScale tracks the same factor, so ui px == design-world px).
 const HUD_SLOT_WARP: f32 = 32.0;
+const HUD_SLOT_LANCE: f32 = 108.0; // between WARP and CHAIN — it's core-feeling kit, not a shot mode
 const HUD_SLOT_CHAIN: f32 = 150.0;
 const HUD_SLOT_MODE: f32 = 296.0;
 const HUD_SLOT_SHIELD: f32 = 388.0;
@@ -694,6 +715,11 @@ fn lapse_glow(l: &Lapse) -> Color {
     }
 }
 
+// The Lance. Player kit, so it lives in the reserved violet — but pushed white-hot, brighter than the
+// standard round, because it is the biggest thing the player owns.
+fn lance_color() -> Color {
+    Color::srgb(1.5, 0.85, 2.6)
+}
 fn lapse_color() -> Color {
     Color::srgb(1.4, 3.0, 5.6)
 } // cold spectral STEEL-BLUE — the intermittent rock. Kept desaturated so its fade reads as absence
@@ -1003,6 +1029,28 @@ fn blast_mobs(
         }
     }
     killed
+}
+
+// How far a ray from `origin` along `dir` travels before it leaves the arena box. The Lance always
+// reaches the EDGE regardless of where it's fired from (user requirement), so its length is geometry,
+// not a constant — fired from the centre it's half an arena long, fired from a corner it can span the
+// whole diagonal. Returns 0 for a degenerate direction.
+fn ray_to_edge(origin: Vec2, dir: Vec2, half: Vec2) -> f32 {
+    if dir.length_squared() < 1e-6 {
+        return 0.0;
+    }
+    let d = dir.normalize();
+    // slab method, but we only want the EXIT distance, so take the nearer positive wall on each axis
+    let axis = |o: f32, dd: f32, h: f32| -> f32 {
+        if dd.abs() < 1e-6 {
+            f32::MAX // parallel to this pair of walls — never exits through them
+        } else if dd > 0.0 {
+            (h - o) / dd
+        } else {
+            (-h - o) / dd
+        }
+    };
+    axis(origin.x, d.x, half.x).min(axis(origin.y, d.y, half.y)).max(0.0)
 }
 
 // Squared distance from point `p` to segment `a`–`b` (for chain-beam vs target hits).
@@ -1766,6 +1814,7 @@ enum PickupKind {
     Nova, // the Pulsar's drop (boss 5): the regenerating one-hit Nova Shield
     Aegis, // the Warden+'s drop (NG+ boss 1): orbiting shards that grind rocks off your hull
     Gorge, // the Glutton+'s drop (NG+ boss 2): a round that eats rocks and grows
+    Lance, // the Slinger+'s drop (NG+ boss 3): a charged beam that roots you and cuts to the edge
 }
 
 // An ally drone (boss-3 reward): orbits the ship a short distance out and auto-fires at the nearest
@@ -1884,6 +1933,7 @@ struct ShotModeText; // top-center "MASS/STANDARD SHOT" label (under the wave te
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
 enum AbilitySlot {
     Warp,
+    Lance,
     Chain,
     Mode,   // the Q-cycled shot modes (mass / Warhead / Gorge)
     Shield, // the Nova Shield
@@ -2093,6 +2143,41 @@ struct Chain {
 struct MassShot {
     unlocked: bool,
     active: bool,
+}
+
+// Where the Lance is in its one-shot cycle. `Charging` and `Firing` both ROOT the ship; `Idle` covers
+// both ready and cooling (`cooldown` tells them apart), because neither restricts the player.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum LanceState {
+    #[default]
+    Idle,
+    Charging,
+    Firing,
+}
+
+// The Lance (NG+ only — dropped by the Slinger+). Its own ability with its own key and its own charge
+// pip, deliberately NOT a Q shot-mode: a 10s cooldown on the Q wheel would leave the fire button dead
+// for ten seconds at a time, and being disarmed is never an acceptable cost.
+#[derive(Resource, Default)]
+struct Lance {
+    unlocked: bool,
+    state: LanceState,
+    t: f32,          // counts down within the current state
+    cooldown: f32,   // > 0 = recharging
+    origin: Vec2,    // locked when the charge starts — the beam does NOT follow the ship
+    dir: Vec2,       // ditto: you commit to the line before you know what will be standing in it
+    dmg_tick: f32,   // countdown between boss damage ticks while firing
+}
+
+impl Lance {
+    // Is the ship rooted right now? Both phases root it; this is the one question the rest of the
+    // game asks, so it lives here rather than being re-derived at each call site.
+    fn rooted(&self) -> bool {
+        matches!(self.state, LanceState::Charging | LanceState::Firing)
+    }
+    fn ready(&self) -> bool {
+        self.unlocked && self.state == LanceState::Idle && self.cooldown <= 0.0
+    }
 }
 
 // Warhead-rounds state (the Detonator's drop). A toggle shot mode (cycled with the mass shot via Q): a
@@ -2560,6 +2645,7 @@ fn spawn_hud(mut commands: Commands) {
     // reveals only once that ability is earned (see `hud_ability_labels`)
     for (slot, name, x) in [
         (AbilitySlot::Warp, "WARP", HUD_SLOT_WARP),
+        (AbilitySlot::Lance, "LANCE", HUD_SLOT_LANCE),
         (AbilitySlot::Chain, "CHAIN", HUD_SLOT_CHAIN),
         (AbilitySlot::Mode, "MODE", HUD_SLOT_MODE),
         (AbilitySlot::Shield, "SHIELD", HUD_SLOT_SHIELD),
@@ -3373,6 +3459,7 @@ enum Action {
     Fire,
     Warp,
     Chain,
+    Lance,
     ToggleShot,
     Pause,
     Mute,
@@ -3409,6 +3496,7 @@ impl Default for Bindings {
                 (Warp, Bind::Key(KeyCode::ShiftLeft)),
                 (Warp, Bind::Key(KeyCode::ShiftRight)),
                 (Chain, Bind::Mouse(MouseButton::Right)),
+                (Lance, Bind::Key(KeyCode::KeyE)),
                 (ToggleShot, Bind::Key(KeyCode::KeyQ)),
                 (Pause, Bind::Key(KeyCode::Escape)),
                 (Mute, Bind::Key(KeyCode::KeyM)),
@@ -3420,6 +3508,7 @@ impl Default for Bindings {
                 (Fire, Bind::Pad(GamepadButton::South)),
                 (Warp, Bind::Pad(GamepadButton::LeftTrigger2)),
                 (Chain, Bind::Pad(GamepadButton::RightTrigger)),
+                (Lance, Bind::Pad(GamepadButton::North)),
                 (ToggleShot, Bind::Pad(GamepadButton::West)),
                 (Pause, Bind::Pad(GamepadButton::Start)),
             ],
@@ -3428,13 +3517,14 @@ impl Default for Bindings {
 }
 
 // Every rebindable action, in the order the settings screen lists them.
-const ACTIONS: [Action; 9] = [
+const ACTIONS: [Action; 10] = [
     Action::TurnLeft,
     Action::TurnRight,
     Action::Thrust,
     Action::Fire,
     Action::Warp,
     Action::Chain,
+    Action::Lance,
     Action::ToggleShot,
     Action::Pause,
     Action::Mute,
@@ -3447,6 +3537,7 @@ fn action_label(a: Action) -> &'static str {
         Action::Thrust => "Thrust",
         Action::Fire => "Fire",
         Action::Warp => "Warp",
+        Action::Lance => "Lance",
         Action::Chain => "Chain shot",
         Action::ToggleShot => "Cycle shot mode",
         Action::Pause => "Pause",
@@ -3529,6 +3620,7 @@ struct ActionState {
     fire_held: bool,
     warp: bool,
     chain: bool,
+    lance: bool,
     toggle: bool,
     pause: bool,
     mute: bool,
@@ -3548,7 +3640,7 @@ fn gather_input(
     let mut turn = 0.0f32;
     let mut thrust = 0.0f32;
     let mut fire_held = false;
-    let (mut warp, mut chain, mut toggle, mut pause, mut mute) = (false, false, false, false, false);
+    let (mut warp, mut chain, mut lance, mut toggle, mut pause, mut mute) = (false, false, false, false, false, false);
     for (act, b) in bindings.kbm.iter().chain(bindings.pad.iter()) {
         let (h, j) = match b {
             Bind::Key(k) => (keys.pressed(*k), keys.just_pressed(*k)),
@@ -3575,6 +3667,7 @@ fn gather_input(
             }
             Action::Fire => fire_held |= h,
             Action::Warp => warp |= j,
+            Action::Lance => lance |= j,
             Action::Chain => chain |= j,
             Action::ToggleShot => toggle |= j,
             Action::Pause => pause |= j,
@@ -3607,17 +3700,35 @@ fn gather_input(
             }
         }
     }
-    *state = ActionState { turn: turn.clamp(-1.0, 1.0), thrust: thrust.clamp(0.0, 1.0), fire_held, warp, chain, toggle, pause, mute };
+    *state = ActionState { turn: turn.clamp(-1.0, 1.0), thrust: thrust.clamp(0.0, 1.0), fire_held, warp, chain, lance, toggle, pause, mute };
 }
 
 // ─────────────────────────────── gameplay systems (Playing only) ──────
 fn ship_control(
     time: Res<Time>,
     input: Res<ActionState>,
+    lance: Option<Res<Lance>>, // Option so headless movement tests needn't insert it
     mut q: Query<(&mut Ship, &mut Velocity)>,
 ) {
     let dt = time.delta_secs();
+    // THE LANCE ROOTS YOU. Charging and firing both lock position AND facing: you commit to a line
+    // before you know what will be standing in it, and you cannot dodge what arrives while you hold it.
+    // Turning is locked as well as thrust — being able to steer mid-charge would turn a commitment
+    // into a free sweeping beam, which is a completely different (and much weaker) idea.
+    let rooted = lance.is_some_and(|l| l.rooted());
     for (mut ship, mut vel) in &mut q {
+        if rooted {
+            // ANCHORED. Velocity is zeroed outright, not damped: a soft brake let the ship coast
+            // ~230px/s into the charge, which is "slowed" rather than "cannot move", and the whole
+            // price of this weapon is that you genuinely cannot move. The spool-up visual (sparks
+            // slamming inward onto the muzzle) is what sells the stop as the ship planting itself.
+            vel.0 = Vec2::ZERO;
+            ship.flame = (ship.flame - dt * 6.0).max(0.0);
+            if ship.invuln > 0.0 {
+                ship.invuln -= dt;
+            }
+            continue;
+        }
         ship.angle += input.turn * TURN_RATE * dt;
         let thrusting = input.thrust > 0.05;
         if thrusting {
@@ -6029,6 +6140,210 @@ fn shield_deflect(
 // ─────────────────────────────── chain shot (secondary weapon) ────────
 // Right-click fires a wide lightning BEAM — 3 charges that regenerate on a timer.
 // Unlocked by the post-boss pickup. (Shift is the warp; primary fire is Space/LMB.)
+// THE LANCE: trigger → spool → one beam to the arena edge → a long cooldown. See the LANCE_* consts
+// for why it roots the ship. The line is locked at TRIGGER time, not at fire time, so the wind-up is
+// an honest commitment rather than a free aim.
+fn lance_fire(
+    time: Res<Time>,
+    input: Res<ActionState>,
+    mut lance: ResMut<Lance>,
+    mut sfx: EventWriter<SoundFx>,
+    run: Res<Run>,
+    ships: Query<(&Ship, &Transform)>,
+) {
+    let dt = time.delta_secs();
+    if lance.cooldown > 0.0 {
+        lance.cooldown -= dt;
+    }
+    // a dead ship drops the shot — no beam fires out of a respawn
+    if run.respawn > 0.0 {
+        lance.state = LanceState::Idle;
+        lance.t = 0.0;
+        return;
+    }
+    match lance.state {
+        LanceState::Idle => {
+            if input.lance && lance.ready() {
+                if let Some((ship, st)) = ships.iter().next() {
+                    lance.origin = st.translation.truncate();
+                    lance.dir = Vec2::from_angle(ship.angle);
+                    lance.state = LanceState::Charging;
+                    lance.t = LANCE_CHARGE;
+                    lance.dmg_tick = 0.0; // the first frame of the beam lands a hit immediately
+                    sfx.write(SoundFx::LanceCharge);
+                }
+            }
+        }
+        LanceState::Charging => {
+            lance.t -= dt;
+            if lance.t <= 0.0 {
+                lance.state = LanceState::Firing;
+                lance.t = LANCE_FIRE;
+                sfx.write(SoundFx::LanceFire);
+            }
+        }
+        LanceState::Firing => {
+            lance.t -= dt;
+            if lance.t <= 0.0 {
+                lance.state = LanceState::Idle;
+                lance.cooldown = LANCE_COOLDOWN;
+            }
+        }
+    }
+}
+
+// What the live beam destroys. A BEAM, not a round — so by the established rule it ignores Facet
+// mirrors and Beacon auras (they answer rounds), which is the real reason to reach for it. Everything
+// on the line dies outright with no chunks; bosses take LANCE_BOSS_DMG once per shot, not per frame.
+#[allow(clippy::too_many_arguments)]
+fn lance_damage(
+    mut commands: Commands,
+    mut lance: ResMut<Lance>,
+    arena: Res<Arena>,
+    mut score: ResMut<Score>,
+    mut stats: ResMut<Stats>,
+    mut sfx: EventWriter<SoundFx>,
+    time: Res<Time>,
+    mut asteroids: Query<(Entity, &Transform, &Asteroid, Option<&Gold>, Option<&Explosive>, Option<&Pulser>, Option<&Red>, Option<&Cluster>, Option<&Beacon>, Option<&Hunter>, Option<&Lapse>, Option<&Facet>, Option<&Husk>), (Without<Mine>, Without<Shielded>)>,
+    mobs: Query<(Entity, &Transform), With<Enemy>>,
+    mines: Query<(Entity, &Transform), With<Mine>>,
+) {
+    if lance.state != LanceState::Firing {
+        return;
+    }
+    let mut rng = rand::thread_rng();
+    let a = lance.origin;
+    let b = a + lance.dir * ray_to_edge(a, lance.dir, arena.half);
+    let t = time.elapsed_secs();
+    for (ae, at, ast, gold, explosive, pulser, red, cluster, beacon, hunter, lapse, facet, husk) in &mut asteroids {
+        let ap = at.translation.truncate();
+        // an absent lapse rock isn't physically here — the beam passes through it, same as gunfire
+        if lapse.is_some_and(|l| !l.tangible()) {
+            continue;
+        }
+        // a LIT pulser still shrugs it off: its shield is the one thing in the field that answers
+        // everything, and the Lance is not allowed to be the universal solvent
+        if pulser.is_some_and(|pl| pulser_lit(pl.offset, t)) {
+            continue;
+        }
+        let rr = LANCE_R + asteroid_radius(ast.size);
+        if seg_dist2(ap, a, b) < rr * rr {
+            if explosive.is_some() {
+                commands.entity(ae).insert(Detonating { fuse: ORANGE_FUSE, friendly: false }); // you lit it
+                stats.orange += 1;
+            } else {
+                let f = flavor(ast.dense, gold, pulser, red, cluster, beacon, hunter, lapse, facet, husk);
+                break_asteroid(&mut commands, &mut rng, &mut score, ae, ap, ast.size, 1.0, f, false); // vaporized, no chunks
+                credit_rock_kill(&mut stats, f);
+            }
+        }
+    }
+    for (me, mt) in &mobs {
+        let mp = mt.translation.truncate();
+        if seg_dist2(mp, a, b) < (LANCE_R + ENEMY_R) * (LANCE_R + ENEMY_R) {
+            kill_enemy(&mut commands, &mut score, &mut sfx, me, mp, &mut rng);
+            stats.enemies += 1;
+        }
+    }
+    for (me, mt) in &mines {
+        let mp = mt.translation.truncate();
+        if seg_dist2(mp, a, b) < (LANCE_R + MINE_R) * (LANCE_R + MINE_R) {
+            burst(&mut commands, mp, mine_color(), 24, 320.0, &mut rng);
+            commands.entity(me).despawn();
+            score.0 += MINE_SCORE;
+            stats.mines += 1;
+            sfx.write(SoundFx::Mine);
+        }
+    }
+    let _ = &mut lance; // state is advanced by `lance_fire`; this pass only deals damage
+}
+
+// The Lance grinding a BOSS. Separate from `lance_damage` because it needs every boss query and would
+// blow the parameter budget in one system; ticked on LANCE_DMG_EVERY because a per-frame beam would
+// deal 120 hits over its two seconds and delete any boss outright.
+#[allow(clippy::too_many_arguments)]
+fn lance_boss_damage(
+    time: Res<Time>,
+    mut lance: ResMut<Lance>,
+    arena: Res<Arena>,
+    mut commands: Commands,
+    // every boss core, bundled to stay inside Bevy's parameter budget
+    mut cores: (
+        Query<(&Transform, &mut Boss)>,
+        Query<(&Transform, &mut Devourer)>,
+        Query<(&Transform, &mut Slinger)>,
+        Query<(&Transform, &mut Detonator)>,
+        Query<(&Transform, &mut Pulsar)>,
+        Query<(&Transform, &mut Phantom)>,
+    ),
+) {
+    if lance.state != LanceState::Firing {
+        return;
+    }
+    lance.dmg_tick -= time.delta_secs();
+    if lance.dmg_tick > 0.0 {
+        return;
+    }
+    lance.dmg_tick = LANCE_DMG_EVERY;
+    let now = time.elapsed_secs();
+    let a = lance.origin;
+    let b = a + lance.dir * ray_to_edge(a, lance.dir, arena.half);
+    let mut rng = rand::thread_rng();
+    let spark = |commands: &mut Commands, p: Vec2, rng: &mut rand::rngs::ThreadRng| {
+        burst(commands, p, lance_color(), 8, 220.0, rng);
+    };
+    // `on_line` asks the same question for every boss: is its core inside the beam?
+    let on_line = |p: Vec2, r: f32| seg_dist2(p, a, b) < (LANCE_R + r) * (LANCE_R + r);
+    // Every gate below mirrors the one `collisions` applies to gunfire. The Lance is a bigger weapon,
+    // not a lawless one: if a boss is invulnerable to a bullet right now, it is invulnerable to this.
+    for (t, mut boss) in &mut cores.0 {
+        let p = t.translation.truncate();
+        if boss.charge <= 0.0 && boss.dying <= 0.0 && on_line(p, BOSS_R) {
+            boss.hp -= LANCE_BOSS_DMG;
+            spark(&mut commands, p, &mut rng);
+        }
+    }
+    for (t, mut dv) in &mut cores.1 {
+        let p = t.translation.truncate();
+        if dv.dying <= 0.0 && on_line(p, devourer_radius(dv.grow)) {
+            dv.hp -= LANCE_BOSS_DMG;
+            spark(&mut commands, p, &mut rng);
+        }
+    }
+    for (t, mut sl) in &mut cores.2 {
+        let p = t.translation.truncate();
+        if sl.dying <= 0.0 && sl.charge <= 0.0 && on_line(p, SLINGER_R) {
+            sl.hp -= LANCE_BOSS_DMG;
+            spark(&mut commands, p, &mut rng);
+        }
+    }
+    for (t, mut det) in &mut cores.3 {
+        let p = t.translation.truncate();
+        // armored EXCEPT while priming — that channel is still the only damage window
+        if det.dying <= 0.0 && det.prime > 0.0 && det.charge <= 0.0 && on_line(p, DETONATOR_R) {
+            det.hp -= LANCE_BOSS_DMG;
+            spark(&mut commands, p, &mut rng);
+        }
+    }
+    for (t, mut pl) in &mut cores.4 {
+        let p = t.translation.truncate();
+        // sealed while LIT, open while dark — same contract the guns obey
+        if pl.charge <= 0.0 && pl.dying <= 0.0 && !pulser_lit(pl.phase, now) && on_line(p, PULSAR_R) {
+            pl.hp -= LANCE_BOSS_DMG;
+            spark(&mut commands, p, &mut rng);
+        }
+    }
+    for (t, mut sg) in &mut cores.5 {
+        let p = t.translation.truncate();
+        // a GHOST takes nothing: the beam passes through the apparition exactly as a round does
+        let ghost = sg.vuln <= 0.0 && sg.phase < 3;
+        if !ghost && sg.charge <= 0.0 && sg.transition <= 0.0 && sg.victory <= 0.0 && on_line(p, PHANTOM_R) {
+            sg.hp -= LANCE_BOSS_DMG;
+            spark(&mut commands, p, &mut rng);
+        }
+    }
+}
+
 fn chain_fire(
     time: Res<Time>,
     input: Res<ActionState>,
@@ -6181,7 +6496,8 @@ fn pickup_update(
     mut chain: ResMut<Chain>,
     mut mass: ResMut<MassShot>,
     mut warhead: Option<ResMut<Warhead>>, // Option so headless tests needn't insert it
-    mut gorge: Option<ResMut<Gorge>>,     // (same)
+    mut gorge: Option<ResMut<Gorge>>,
+    mut lance: Option<ResMut<Lance>>,     // (same)
     mut run: Option<ResMut<Run>>,         // (same) — carries the Nova Shield state
     mut flags: ResMut<RunFlags>,
     ships: Query<&Transform, With<Ship>>,
@@ -6255,6 +6571,13 @@ fn pickup_update(
                         r.nova = Nova { unlocked: true, down: 0.0, grace: 0.0 }; // raised, and UP right away
                     }
                     nova_color()
+                }
+                PickupKind::Lance => {
+                    if let Some(l) = lance.as_mut() {
+                        l.unlocked = true;
+                        l.cooldown = 0.0; // hand it over ready to fire
+                    }
+                    lance_color()
                 }
                 PickupKind::Gorge => {
                     if let Some(g) = gorge.as_mut() {
@@ -6569,6 +6892,7 @@ fn hud_ability_labels(
     mass: Res<MassShot>,
     warhead: Res<Warhead>,
     gorge: Res<Gorge>,
+    lance: Res<Lance>,
     run: Res<Run>,
     drones: Query<(), With<Drone>>,
     mut labels: Query<(&mut Visibility, &AbilitySlot)>,
@@ -6580,6 +6904,7 @@ fn hud_ability_labels(
                 AbilitySlot::Warp => true,
                 AbilitySlot::Chain => chain.unlocked,
                 AbilitySlot::Mode => mass.unlocked || warhead.unlocked || gorge.unlocked,
+                AbilitySlot::Lance => lance.unlocked,
                 AbilitySlot::Shield => run.nova.unlocked,
                 AbilitySlot::Drone => !drones.is_empty(),
             };
@@ -6621,7 +6946,7 @@ fn render(
     run: Res<Run>,
     dev: Res<Dev>,
     // warp + chain + state + hud-flash + shot modes grouped into one tuple param to stay within Bevy's 16-param limit
-    abilities: (Res<Warp>, Res<Chain>, Res<State<GameState>>, Res<HudFlash>, Res<MassShot>, Res<Warhead>, Res<Gorge>),
+    abilities: (Res<Warp>, Res<Chain>, Res<State<GameState>>, Res<HudFlash>, Res<MassShot>, Res<Warhead>, Res<Gorge>, Res<Lance>),
     wf: Res<WarpField>,
     stars: Query<(&Star, &Transform)>,
     ships: Query<(&Ship, &Transform, Option<&ShipTrail>)>,
@@ -6640,6 +6965,7 @@ fn render(
     let show_run = run_active(abilities.2.get()); // grid + HUD icons only while a run is on
     let hud_flash = &abilities.3;
     let (mass, warhead, gorge) = (&abilities.4, &abilities.5, &abilities.6); // shot modes — drive the HUD's Q-slot
+    let lance = &abilities.7; // the Lance — its beam is drawn in-world, its pip on the strip
     let nova = &run.nova; // the Nova Shield's state (ship bubble + HUD icon)
     let aegis = &run.aegis; // the Aegis Shards' state (the orbiting chips drawn around the hull)
     let has_drone = !foes.2.is_empty();
@@ -7035,6 +7361,75 @@ fn render(
         }
     }
 
+    // ── THE LANCE ── the charge-up, then the beam. Drawn before the ship so the hull sits ON the
+    // effect rather than under it. Photosensitivity: both phases are smooth ramps and steady light —
+    // the sparks MOVE along the beam rather than blinking it, so nothing here flashes.
+    if lance.rooted() {
+        let a = lance.origin;
+        let dir = lance.dir;
+        let lc = lance_color();
+        if lance.state == LanceState::Charging {
+            // SPOOL-UP: sparks converge from all round onto the muzzle and the core swells. The
+            // gather is the tell — anyone watching knows a shot is coming and roughly when.
+            let k = 1.0 - (lance.t / LANCE_CHARGE).clamp(0.0, 1.0); // 0 → 1 as it fills
+            let muzzle = a + dir * (SHIP_R + 6.0);
+            for i in 0..14 {
+                let ang = i as f32 / 14.0 * TAU + t * 2.2;
+                // each spark falls inward as the charge fills, so the ring visibly tightens
+                let far = 92.0 * (1.0 - k) + 16.0;
+                let near = far * 0.55;
+                let d = Vec2::from_angle(ang);
+                gizmos.line_2d(muzzle + d * far, muzzle + d * near, dim(lc, 0.35 + 0.65 * k));
+            }
+            // the core: a hot point growing to the beam's own width
+            gizmos.circle_2d(Isometry2d::from_translation(muzzle), 2.0 + LANCE_R * k, dim(lc, 0.6 + 0.9 * k));
+            gizmos.circle_2d(Isometry2d::from_translation(muzzle), (1.0 + LANCE_R * k) * 0.45, dim(Color::WHITE, 0.8 + 1.2 * k));
+            // and the LINE it has committed to, drawn faint — you locked this in, so you get to see it
+            let end = a + dir * ray_to_edge(a, dir, h);
+            gizmos.line_2d(muzzle, end, dim(lc, 0.10 + 0.16 * k));
+        } else {
+            // THE BEAM. A white-hot core inside a wider glow, with energy sparks spiralling around it.
+            let f = (lance.t / LANCE_FIRE).clamp(0.0, 1.0); // 1 → 0 over the shot
+            let end = a + dir * ray_to_edge(a, dir, h);
+            let len = (end - a).length().max(1.0);
+            let perp = dir.perp();
+            // ease the width out at the very end so it closes rather than vanishing
+            let w = LANCE_R * (0.55 + 0.45 * (f * 3.0).min(1.0));
+            for (off, bright) in [(w, 0.30), (w * 0.6, 0.55), (w * 0.28, 1.0)] {
+                gizmos.line_2d(a + perp * off, end + perp * off, dim(lc, bright));
+                gizmos.line_2d(a - perp * off, end - perp * off, dim(lc, bright));
+            }
+            gizmos.line_2d(a, end, dim(Color::WHITE, 2.2)); // the white-hot centre
+            // SPARKS WRAPPING THE BEAM: two helices counter-rotating around the axis, travelling
+            // outward along it. Drawn as short chords so they read as sparks, not as a solid tube.
+            const TURNS: f32 = 0.055; // radians of twist per pixel travelled
+            let segs = (len / 26.0).clamp(6.0, 90.0) as usize;
+            for strand in 0..2 {
+                let spin = if strand == 0 { 1.0 } else { -1.0 };
+                let lead = strand as f32 * TAU * 0.5;
+                let mut prev: Option<Vec2> = None;
+                for i in 0..=segs {
+                    let s = i as f32 / segs as f32;
+                    let along = s * len;
+                    // the phase RUNS along the beam over time — that travel is what sells "energy"
+                    let ang = spin * (along * TURNS - t * 16.0) + lead;
+                    let pnt = a + dir * along + perp * (ang.sin() * w * 1.5);
+                    if let Some(q) = prev {
+                        // skip every third chord so the helix reads as sparks rather than a wire
+                        if i % 3 != 0 {
+                            gizmos.line_2d(q, pnt, dim(lc, 0.5 + 0.5 * ang.cos().abs()));
+                        }
+                    }
+                    prev = Some(pnt);
+                }
+            }
+            // muzzle flare + a bloom where it leaves the arena
+            gizmos.circle_2d(Isometry2d::from_translation(a), w * 1.9, dim(lc, 0.9));
+            gizmos.circle_2d(Isometry2d::from_translation(a), w * 0.9, dim(Color::WHITE, 1.6));
+            gizmos.circle_2d(Isometry2d::from_translation(end), w * 1.3, dim(lc, 0.7));
+        }
+    }
+
     // ship — light trail + hull (blinks while invulnerable)
     let sc = ship_color();
     for (s, st, trail) in &ships {
@@ -7204,6 +7599,26 @@ fn render(
             }
         }
 
+        // LANCE (the Slinger+'s drop): ONE pip — the warp's language with a single charge — over a
+        // refill bar, plus a spear glyph. While charging or firing the pip runs hot so the HUD agrees
+        // with what the screen is doing.
+        if lance.unlocked {
+            let cx = sx(HUD_SLOT_LANCE, 12.0);
+            let lc = lance_color();
+            let live = lance.rooted();
+            let lit = lance.cooldown <= 0.0;
+            let col = if live { dim(lc, 1.6) } else if lit { dim(lc, 1.0) } else { dim(lc, 0.16) };
+            // the spear: a short shaft with a head, pointing right — reads as a lance at 12px
+            gizmos.line_2d(cx - Vec2::X * 9.0, cx + Vec2::X * 7.0, col);
+            gizmos.line_2d(cx + Vec2::X * 7.0, cx + Vec2::new(2.0, 4.0), col);
+            gizmos.line_2d(cx + Vec2::X * 7.0, cx + Vec2::new(2.0, -4.0), col);
+            gizmos.circle_2d(Isometry2d::from_translation(cx - Vec2::X * 9.0), 2.6, col);
+            if lance.cooldown > 0.0 {
+                let prog = 1.0 - lance.cooldown / LANCE_COOLDOWN;
+                gizmos.line_2d(cx + Vec2::new(-9.0, -11.0), cx + Vec2::new(-9.0 + 18.0 * prog, -11.0), dim(lc, 0.7));
+            }
+        }
+
         // SHIELD (the Nova — the Pulsar's drop): a mini ghost-ship outline (the shell IS the ship's
         // shape) — bright while UP; while regenerating, dim with a progress underbar, flickering in
         // the final stretch (≤3 Hz, same as the shell itself)
@@ -7243,6 +7658,7 @@ fn slinger_update(
     reward: (ResMut<Score>, ResMut<Wave>, ResMut<WaveBanner>, Option<ResMut<Stats>>),
     mut sfx: EventWriter<SoundFx>,
     dev: Res<Dev>,
+    plus: Res<NewGamePlus>, // lap two swaps its drop: the Lance instead of the Drone
     ships: Query<(Entity, &Transform, &Ship), Without<Slinger>>,
     mut slingers: Query<(Entity, &mut Transform, &mut Slinger)>,
     mut ammo_q: Query<(&mut Transform, &mut Velocity), (With<Cannonball>, Without<Slinger>, Without<Ship>)>,
@@ -7286,7 +7702,9 @@ fn slinger_update(
                 // drop the Drone orb (the boss-3 reward, content wave 15)
                 let pdir = Vec2::from_angle(rng.gen_range(0.0..TAU));
                 commands.spawn((
-                    Pickup { rot: 0.0, pulse: 0.0, life: PICKUP_LIFE, kind: PickupKind::Drone },
+                    // boss-3 reward: the ally Drone normally, the LANCE in NG+ (user rule: lap two
+                    // hands over the new tool INSTEAD of the old, never both)
+                    Pickup { rot: 0.0, pulse: 0.0, life: PICKUP_LIFE, kind: if plus.0 { PickupKind::Lance } else { PickupKind::Drone } },
                     Velocity(pdir * PICKUP_DRIFT),
                     Transform::from_xyz(0.0, 0.0, 0.0),
                 ));
@@ -8957,6 +9375,7 @@ fn render_extras(
             PickupKind::Nova => pulsar_color(), // the orb wears its boss's electric white-cyan (like Warhead wears the Detonator's orange); the granted shield itself is player-purple
             PickupKind::Aegis => boss_color(), // wears the Warden's magenta — the boss it was taken from
             PickupKind::Gorge => devourer_color(), // wears the Glutton's red — same rule
+            PickupKind::Lance => lance_color(), // the beam's own white-hot violet
         };
         let hex: Vec<Vec2> = (0..=6)
             .map(|i| c + Vec2::from_angle(i as f32 / 6.0 * TAU + pk.rot) * PICKUP_R * throb)
@@ -9384,6 +9803,7 @@ fn reset_run(
     mass: &mut MassShot,
     warhead: &mut Warhead,
     gorge: &mut Gorge,
+    lance: &mut Lance,
     flags: &mut RunFlags,
     gold: &mut GoldRush,
     stats: &mut Stats,
@@ -9411,6 +9831,7 @@ fn reset_run(
     *mass = MassShot::default(); // …and the mass shot
     *warhead = Warhead::default(); // …and the Warhead rounds
     *gorge = Gorge::default(); // …and the Gorge round
+    *lance = Lance::default(); // …and the Lance (state, cooldown and all — never start a run mid-charge)
     *flags = RunFlags::default(); // fresh "no powerups used" flag for Purist
     *gold = GoldRush::default(); // no stale gold hunt carried into the new run…
     gold.cooldown = GOLD_INITIAL_DELAY; // …and a grace before the first gold rock can appear
@@ -9435,7 +9856,7 @@ fn menu_start(
     mut wave: ResMut<Wave>,
     mut banner: ResMut<WaveBanner>,
     mut warp: ResMut<Warp>,
-    mut progress: (ResMut<BossState>, ResMut<Chain>, ResMut<MassShot>, ResMut<RunFlags>, ResMut<GoldRush>, ResMut<Warhead>, ResMut<Stats>, ResMut<PacifistWatch>, ResMut<NewGamePlus>, ResMut<Gorge>), // bundled (16-param limit)
+    mut progress: (ResMut<BossState>, ResMut<Chain>, ResMut<MassShot>, ResMut<RunFlags>, ResMut<GoldRush>, ResMut<Warhead>, ResMut<Stats>, ResMut<PacifistWatch>, ResMut<NewGamePlus>, ResMut<Gorge>, ResMut<Lance>), // bundled (16-param limit)
     mut clicks: EventReader<MenuClick>,
     mut quit: EventWriter<AppExit>,
 ) {
@@ -9475,7 +9896,7 @@ fn menu_start(
         return;
     }
     progress.8 .0 = play_plus; // the mode holds for the whole run (restarts included); normal PLAY clears it
-    reset_run(&mut commands, &mut run, &mut score, &mut wave, &mut banner, &mut warp, &mut progress.0, &mut progress.1, &mut progress.2, &mut progress.5, &mut progress.9, &mut progress.3, &mut progress.4, &mut progress.6, &mut progress.7);
+    reset_run(&mut commands, &mut run, &mut score, &mut wave, &mut banner, &mut warp, &mut progress.0, &mut progress.1, &mut progress.2, &mut progress.5, &mut progress.9, &mut progress.10, &mut progress.3, &mut progress.4, &mut progress.6, &mut progress.7);
     next.set(GameState::Playing);
 }
 
@@ -11057,7 +11478,7 @@ fn gameover_restart(
     mut wave: ResMut<Wave>,
     mut banner: ResMut<WaveBanner>,
     mut warp: ResMut<Warp>,
-    mut progress: (ResMut<BossState>, ResMut<Chain>, ResMut<MassShot>, ResMut<RunFlags>, ResMut<GoldRush>, ResMut<Warhead>, ResMut<Stats>, ResMut<PacifistWatch>, ResMut<Gorge>),
+    mut progress: (ResMut<BossState>, ResMut<Chain>, ResMut<MassShot>, ResMut<RunFlags>, ResMut<GoldRush>, ResMut<Warhead>, ResMut<Stats>, ResMut<PacifistWatch>, ResMut<Gorge>, ResMut<Lance>),
     field: Query<Entity, GameplayEntity>,
 ) {
     if keys.just_pressed(KeyCode::Escape) {
@@ -11070,7 +11491,7 @@ fn gameover_restart(
     for e in &field {
         commands.entity(e).despawn();
     }
-    reset_run(&mut commands, &mut run, &mut score, &mut wave, &mut banner, &mut warp, &mut progress.0, &mut progress.1, &mut progress.2, &mut progress.5, &mut progress.8, &mut progress.3, &mut progress.4, &mut progress.6, &mut progress.7);
+    reset_run(&mut commands, &mut run, &mut score, &mut wave, &mut banner, &mut warp, &mut progress.0, &mut progress.1, &mut progress.2, &mut progress.5, &mut progress.8, &mut progress.9, &mut progress.3, &mut progress.4, &mut progress.6, &mut progress.7);
     next.set(GameState::Playing); // field refills from the edges via top_up_asteroids
 }
 
@@ -11234,6 +11655,8 @@ enum SoundFx {
     NovaPop,   // the Nova Shield eating a hit (glassy shatter)
     NovaUp,    // the Nova Shield flickering back online (soft rising shimmer)
     BossDown,  // a boss core detonating — the biggest single kill in the game
+    LanceCharge, // the Lance spooling up — the only RISING cue in the bank, so a wind-up is unmistakable
+    LanceFire,   // the Lance releasing
     Vortex,    // the warp hole OPEN — its 2.6s feeding churn + the collapse thump (launch is `Warp`)
 }
 
@@ -11311,6 +11734,8 @@ struct SfxBank {
     haunt: Handle<AudioSource>, // the Phantom's spectral cue
     nova_pop: Handle<AudioSource>, // the Nova Shield eating a hit
     nova_up: Handle<AudioSource>,  // the Nova Shield re-lighting
+    lance_charge: Handle<AudioSource>,
+    lance_fire: Handle<AudioSource>,
     achievement: Handle<AudioSource>,
     life: Handle<AudioSource>, // gold-rock 1UP jingle
     toggle: Handle<AudioSource>, // standard ↔ mass shot switch
@@ -11331,6 +11756,8 @@ fn start_sfx(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
         haunt: sources.add(AudioSource { bytes: audio::haunt_sfx_wav().into() }),
         nova_pop: sources.add(AudioSource { bytes: audio::nova_pop_sfx_wav().into() }),
         nova_up: sources.add(AudioSource { bytes: audio::nova_up_sfx_wav().into() }),
+        lance_charge: sources.add(AudioSource { bytes: audio::lance_charge_wav().into() }),
+        lance_fire: sources.add(AudioSource { bytes: audio::lance_fire_wav().into() }),
         achievement: sources.add(AudioSource { bytes: audio::achievement_sfx_wav().into() }),
         life: sources.add(AudioSource { bytes: audio::life_sfx_wav().into() }),
         toggle: sources.add(AudioSource { bytes: audio::toggle_sfx_wav().into() }),
@@ -11357,8 +11784,8 @@ fn play_sfx(mut commands: Commands, bank: Option<Res<SfxBank>>, mut events: Even
         events.clear();
         return;
     };
-    let (mut fire, mut mine, mut death, mut eshot, mut edie, mut warp, mut toggle, mut haunt, mut npop, mut nup, mut bdown, mut vortex) =
-        (false, false, false, false, false, false, false, false, false, false, false, false);
+    let (mut fire, mut mine, mut death, mut eshot, mut edie, mut warp, mut toggle, mut haunt, mut npop, mut nup, mut bdown, mut vortex, mut lcharge, mut lfire) =
+        (false, false, false, false, false, false, false, false, false, false, false, false, false, false);
     let mut brk: Option<u8> = None; // deepest (largest) rock that broke this frame
     for e in events.read() {
         match e {
@@ -11373,12 +11800,22 @@ fn play_sfx(mut commands: Commands, bank: Option<Res<SfxBank>>, mut events: Even
             SoundFx::Haunt => haunt = true,
             SoundFx::NovaPop => npop = true,
             SoundFx::NovaUp => nup = true,
+            SoundFx::LanceCharge => lcharge = true,
+            SoundFx::LanceFire => lfire = true,
             SoundFx::BossDown => bdown = true,
             SoundFx::Vortex => vortex = true,
         }
     }
     if fire {
         one_shot(&mut commands, bank.fire.clone(), 0.3);
+    }
+    // the Lance: the spool is loud enough to be a commitment you HEAR yourself make, and the release
+    // is the biggest player-fired sound in the game (it's a once-every-ten-seconds event)
+    if lcharge {
+        one_shot(&mut commands, bank.lance_charge.clone(), 0.5);
+    }
+    if lfire {
+        one_shot(&mut commands, bank.lance_fire.clone(), 0.62);
     }
     if let Some(sz) = brk {
         // one break sound per frame (the biggest rock's), kept well under the music (0.55) —
@@ -11535,6 +11972,7 @@ fn main() {
         .insert_resource(GalleryPage::default())
         .insert_resource(TenderClock::default())
         .insert_resource(Gorge::default())
+        .insert_resource(Lance::default())
         .insert_resource(NewGamePlus::default())
         .insert_resource(PacifistWatch::default())
         .insert_resource(RunFlags::default())
@@ -11575,6 +12013,9 @@ fn main() {
                 (
                     ship_control,
                     fire,
+                    lance_fire,
+                    lance_damage,
+                    lance_boss_damage,
                     chain_fire,
                     warp_fire,
                     integrate,
@@ -15032,6 +15473,7 @@ mod tests {
         app.insert_resource(MassShot { unlocked: true, active: true });
         app.insert_resource(Warhead { unlocked: true, active: true });
         app.insert_resource(Gorge { unlocked: true, active: true });
+        app.insert_resource(Lance { unlocked: true, cooldown: 3.0, ..default() });
         app.insert_resource(RunFlags { powerup_used: true });
         app.insert_resource(GoldRush { active: true, forfeited: false, cooldown: 0.0 });
         app.insert_resource(Stats { runs: 9, ..default() });
@@ -15049,6 +15491,8 @@ mod tests {
         assert!(!app.world().resource::<MassShot>().unlocked, "Start relocks the mass shot");
         assert!(!app.world().resource::<Warhead>().unlocked, "Start relocks the Warhead rounds");
         assert!(!app.world().resource::<Gorge>().unlocked, "Start relocks the Gorge round");
+        assert!(!app.world().resource::<Lance>().unlocked, "Start relocks the Lance");
+        assert_eq!(app.world().resource::<Lance>().cooldown, 0.0, "and clears its cooldown — never start a run mid-recharge");
         assert!(!app.world().resource::<GoldRush>().active, "Start clears any stale gold hunt");
         assert_eq!(app.world().resource::<Stats>().runs, 10, "every Start counts a lifetime run (the restart ladder)");
         assert_eq!(app.world_mut().query::<&Ship>().iter(app.world()).count(), 1, "a fresh ship spawns");
@@ -15480,6 +15924,135 @@ mod tests {
     // compile-time asserts next to the STAR_* constants — they're pure const arithmetic, so proving
     // them at build time beats a test that can be skipped. What actually needs a runtime test is the
     // WRAP above, because that one is fed an unbounded elapsed time.
+
+    // THE LANCE reaches the arena edge from wherever it's fired (user requirement), so its length is
+    // geometry rather than a constant. Every one of these cases is a real firing position.
+    #[test]
+    fn the_lance_always_reaches_the_edge() {
+        let h = Vec2::new(700.0, 400.0);
+        // straight along each axis from the centre
+        assert!((ray_to_edge(Vec2::ZERO, Vec2::X, h) - 700.0).abs() < 0.01);
+        assert!((ray_to_edge(Vec2::ZERO, Vec2::NEG_Y, h) - 400.0).abs() < 0.01);
+        // fired from near a wall, pointing AT it: short but still exactly to the edge
+        assert!((ray_to_edge(Vec2::new(650.0, 0.0), Vec2::X, h) - 50.0).abs() < 0.01);
+        // fired from near a wall, pointing AWAY: nearly the full span
+        assert!((ray_to_edge(Vec2::new(650.0, 0.0), Vec2::NEG_X, h) - 1350.0).abs() < 0.01);
+        // a corner shot across the diagonal exits through whichever wall comes first, never past it
+        let d = ray_to_edge(Vec2::new(-700.0, -400.0), Vec2::new(1.0, 1.0).normalize(), h);
+        let end = Vec2::new(-700.0, -400.0) + Vec2::new(1.0, 1.0).normalize() * d;
+        assert!(end.x <= h.x + 0.01 && end.y <= h.y + 0.01, "the beam stops at the arena, got {end:?}");
+        assert!((end.x - h.x).abs() < 0.01 || (end.y - h.y).abs() < 0.01, "and it actually REACHES it");
+        // a degenerate direction can't produce a NaN-length beam
+        assert_eq!(ray_to_edge(Vec2::ZERO, Vec2::ZERO, h), 0.0);
+        // whatever the angle, the beam never stops short inside the box
+        let mut rng = rand::thread_rng();
+        for _ in 0..200 {
+            let o = Vec2::new(rng.gen_range(-690.0..690.0), rng.gen_range(-390.0..390.0));
+            let dir = Vec2::from_angle(rng.gen_range(0.0..TAU));
+            let e = o + dir * ray_to_edge(o, dir, h);
+            assert!(e.x.abs() <= h.x + 0.05 && e.y.abs() <= h.y + 0.05, "overshot to {e:?}");
+            assert!((e.x.abs() - h.x).abs() < 0.05 || (e.y.abs() - h.y).abs() < 0.05, "stopped short at {e:?}");
+        }
+    }
+
+    // The Lance's entire cost is that you CANNOT MOVE while it charges and fires. If that root ever
+    // stops working it silently becomes the best weapon in the game with no downside at all.
+    #[test]
+    fn the_lance_roots_the_ship_in_place_and_facing() {
+        for state in [LanceState::Charging, LanceState::Firing] {
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins);
+            app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_millis(50)));
+            app.insert_resource(Lance { unlocked: true, state, t: 1.0, ..default() });
+            // full throttle and hard over: neither may do anything
+            app.insert_resource(ActionState { turn: 1.0, thrust: 1.0, ..default() });
+            let ship = app.world_mut().spawn((Ship { angle: 0.7, cooldown: 0.0, invuln: 0.0, flame: 0.0 }, Velocity(Vec2::new(300.0, -200.0)))).id();
+            app.add_systems(Update, ship_control);
+            app.update();
+            app.update();
+            let (s, v) = {
+                let e = app.world().entity(ship);
+                (e.get::<Ship>().unwrap().angle, e.get::<Velocity>().unwrap().0)
+            };
+            assert!((s - 0.7).abs() < 1e-4, "{state:?}: facing is locked — steering mid-charge would make it a free sweeping beam");
+            assert_eq!(v, Vec2::ZERO, "{state:?}: the ship is ANCHORED, not merely slowed — that root is the weapon's entire cost");
+        }
+        // …and with the Lance idle, the ship flies normally again
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_millis(50)));
+        app.insert_resource(Lance { unlocked: true, state: LanceState::Idle, ..default() });
+        app.insert_resource(ActionState { turn: 1.0, thrust: 1.0, ..default() });
+        let ship = app.world_mut().spawn((Ship { angle: 0.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 }, Velocity(Vec2::ZERO))).id();
+        app.add_systems(Update, ship_control);
+        app.update();
+        app.update();
+        assert!(app.world().entity(ship).get::<Ship>().unwrap().angle > 0.0, "idle: the ship answers the controls again");
+        assert!(app.world().entity(ship).get::<Velocity>().unwrap().0.length() > 1.0, "idle: and thrust works");
+    }
+
+    // The cycle: trigger → spool → beam → a long cooldown. It must not be re-triggerable mid-shot,
+    // and the line must be locked at TRIGGER time so the wind-up is an honest commitment.
+    #[test]
+    fn the_lance_cycles_once_per_cooldown() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_event::<SoundFx>();
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_millis(50)));
+        app.insert_resource(Lance { unlocked: true, ..default() });
+        app.insert_resource(Run { lives: 3, respawn: 0.0, ..default() });
+        app.insert_resource(ActionState { lance: true, ..default() });
+        app.world_mut().spawn((Ship { angle: 0.0, cooldown: 0.0, invuln: 0.0, flame: 0.0 }, Transform::from_xyz(10.0, 20.0, 0.0)));
+        app.add_systems(Update, lance_fire);
+        app.update();
+        {
+            let l = app.world().resource::<Lance>();
+            assert_eq!(l.state, LanceState::Charging, "the trigger starts a spool, not a shot");
+            assert_eq!(l.origin, Vec2::new(10.0, 20.0), "the line is locked where you fired it…");
+            assert!((l.dir - Vec2::X).length() < 1e-5, "…pointing where you were facing");
+        }
+        // hold the trigger down the whole way through — it must still be exactly one shot
+        let mut saw_firing = false;
+        for _ in 0..((LANCE_CHARGE + LANCE_FIRE) / 0.05) as i32 + 4 {
+            app.update();
+            if app.world().resource::<Lance>().state == LanceState::Firing {
+                saw_firing = true;
+            }
+        }
+        assert!(saw_firing, "the beam actually fires");
+        let l = app.world().resource::<Lance>();
+        assert_eq!(l.state, LanceState::Idle, "and it ends");
+        assert!(l.cooldown > LANCE_COOLDOWN * 0.9, "straight onto a long cooldown, held trigger or not");
+        assert!(!l.ready(), "so it cannot be fired again immediately");
+    }
+
+    #[test]
+    fn the_lance_cuts_everything_on_its_line_but_nothing_off_it() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_event::<SoundFx>();
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_millis(50)));
+        app.insert_resource(Arena { half: Vec2::new(700.0, 400.0) });
+        app.insert_resource(Score(0));
+        app.insert_resource(Stats::default());
+        app.insert_resource(Lance { unlocked: true, state: LanceState::Firing, t: LANCE_FIRE, origin: Vec2::ZERO, dir: Vec2::X, dmg_tick: 0.0, cooldown: 0.0 });
+        // one rock dead on the line, one well off it
+        for (x, y) in [(300.0, 0.0), (300.0, 260.0)] {
+            app.world_mut().spawn((
+                Asteroid { size: 2, verts: vec![Vec2::X * asteroid_radius(2)], rot: 0.0, spin: 0.0, dense: false, hp: 1 },
+                Velocity(Vec2::ZERO),
+                Transform::from_xyz(x, y, 0.0),
+            ));
+        }
+        app.add_systems(Update, lance_damage);
+        app.update();
+        let left: Vec<f32> = {
+            let mut q = app.world_mut().query::<(&Asteroid, &Transform)>();
+            q.iter(app.world()).map(|(_, t)| t.translation.y).collect()
+        };
+        assert_eq!(left.len(), 1, "the rock on the line is cut, the one beside it is untouched");
+        assert!(left[0] > 100.0, "and it's the off-line one that survived");
+    }
 
     #[test]
     fn boss_wave_detection() {
