@@ -5,6 +5,21 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
+- **THE BINARY — two rocks and the thing between them** (NG+, debuts wave 11). A bound pair turning
+  about a point in the empty space between them, except that space isn't empty: there's a **bar** there,
+  and it will kill you. The rocks are ordinary. The bar is the hazard, and because the whole assembly
+  spins, it's a lane you have to *time* rather than an obstacle you steer around. Break either rock and
+  the bond snaps — the survivor goes tumbling off free, and the problem becomes an ordinary drifting
+  rock. New achievement: **Irreconcilable Differences** (break 250 bonds).
+- **THE SUNDER — it's been holding its breath** (NG+, debuts wave 13). It does nothing at all until you
+  kill it, and then it lets go: a shove that throws every loose rock near it, and you with them. It does
+  **no damage**. It doesn't need to — it just puts three rocks where you were about to be. Your own kills
+  become positioning decisions, which is a very different kind of pressure to "more rocks".
+  New achievement: **You Started It** (set off 300).
+- **THE SLINGER+ takes your cover** (NG+ wave 15). Its tractor beam now grabs the rock nearest to *you*
+  rather than the one nearest to itself — so the rock you're hiding behind is the one it fires at you.
+  Rocks stop mob fire, which makes hugging one a genuinely good tactic; this is the fight that answers it.
+
 - **THE LANCE — a beam you have to stand still for** (the Slinger+'s drop, NG+ wave 15). Press **E** and
   the ship anchors itself, sparks come screaming inward onto the muzzle for three quarters of a second,
   and then a white-hot beam opens along your nose and stays open for **two full seconds**, cutting
