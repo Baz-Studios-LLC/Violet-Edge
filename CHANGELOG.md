@@ -3,7 +3,7 @@
 Patch notes for the Rust + Bevy build. Newest first. (Releases are cut to GitHub and picked up by the
 Baz Studios launcher.) **Keep this current with every change** — it's the record testers read.
 
-## Unreleased
+## v0.7.0 — The Lance, the Binary and the Sunder (2026-08-04)
 
 - **The first life rock is actually random now.** It was appearing on the opening frame of wave 2 in
   every single run — and the reason turned out to be that its timer was never what triggered it. The
