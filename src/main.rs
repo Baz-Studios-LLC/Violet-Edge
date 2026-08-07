@@ -549,7 +549,12 @@ const DESIGN_HALF_H: f32 = DESIGN_H * 0.5;
 const START_LIVES: i32 = 3;
 const LIFE_CAP: i32 = START_LIVES; // gold restores a LOST life only — never above the starting count
 // The gold 1UP rock drifts in at a randomized time during play (a countdown), not at wave starts.
-const GOLD_INITIAL_DELAY: f32 = 40.0; // grace before the first gold rock can appear in a run (scaled with the 100s waves)
+// Grace before the FIRST gold of a run, rolled fresh every time. It used to be a flat 40s, which
+// combined with the wave-1 gate to make the first life rock utterly predictable — see `gold_spawn`.
+// The window straddles the end of wave 2, so most runs see it during wave 2 and some not until wave 3.
+const GOLD_FIRST_MIN: f32 = 25.0;
+const GOLD_FIRST_MAX: f32 = 110.0;
+const _: () = assert!(GOLD_FIRST_MAX - GOLD_FIRST_MIN > 60.0); // a wide enough window that it can't be learned
 // Gap from when a gold rock APPEARS to the earliest the next one may. WAVE-DEPENDENT: short (frequent
 // life rocks) through the early game — a spare life is most useful then — tapering LONG (rare) by the
 // wave-30 finale. A fresh random value in the wave's [min..max] is rolled on each spawn.
@@ -4748,11 +4753,22 @@ fn wave_timer(
 // may appear on any wave (boss waves included — the Devourer won't eat it and a rock the Warden grabs
 // is just a shoot-it-off-the-shield target).
 fn gold_spawn(time: Res<Time>, wave: Res<Wave>, arena: Res<Arena>, mut rush: ResMut<GoldRush>, mut commands: Commands) {
+    // ⭐ THE COUNTDOWN ONLY RUNS WHILE A GOLD COULD ACTUALLY APPEAR.
+    // This used to tick unconditionally, and the result was a bug you could set your watch by: the
+    // flat 40s initial delay expired ~40s into wave 1, sat there BANKED while the wave-1 gate held it
+    // back, and then fired on the very first frame of wave 2 — every single run. The timer was never
+    // gating anything; the WAVE was. Freezing it while blocked makes the number mean what it says
+    // (time until the next gold) rather than time until the next opportunity.
+    //
+    // No gold in wave 1: a spare life that early is wasted (nothing is threatening yet). The
+    // post-boss calm is kept clear for the reward orb, and it's excluded for the same reason —
+    // otherwise a gold that came due mid-calm would pop the instant the calm ended.
+    if wave.level < 2 || wave.calm > 0.0 {
+        return;
+    }
     rush.cooldown -= time.delta_secs(); // counts down from the last APPEARANCE (keeps ticking during a hunt)
-    // No gold in wave 1 — a spare life that early is wasted (nothing threatening yet), so it felt
-    // pointless. The first life rock now arrives in wave 2.
-    if rush.active || rush.cooldown > 0.0 || wave.calm > 0.0 || wave.level < 2 {
-        return; // a hunt's running, the gap hasn't elapsed, the post-boss field is kept clear, or it's wave 1
+    if rush.active || rush.cooldown > 0.0 {
+        return; // a hunt's already running, or the gap hasn't elapsed yet
     }
     let mut rng = rand::thread_rng();
     spawn_gold_rock(&mut commands, arena.half, &mut rng);
@@ -10096,7 +10112,7 @@ fn reset_run(
     *lance = Lance::default(); // …and the Lance (state, cooldown and all — never start a run mid-charge)
     *flags = RunFlags::default(); // fresh "no powerups used" flag for Purist
     *gold = GoldRush::default(); // no stale gold hunt carried into the new run…
-    gold.cooldown = GOLD_INITIAL_DELAY; // …and a grace before the first gold rock can appear
+    gold.cooldown = rand::thread_rng().gen_range(GOLD_FIRST_MIN..GOLD_FIRST_MAX); // …and a RANDOM grace before the first gold (never a fixed schedule — see `gold_spawn`)
     spawn_player(commands);
 }
 
@@ -12932,6 +12948,47 @@ mod tests {
         assert!(rush.cooldown >= GOLD_GAP_EARLY_MIN, "a long gap to the next gold is armed at spawn (no back-to-back)");
     }
 
+    // THE BUG THIS FIXES: the countdown used to tick through wave 1 while the gate blocked spawning,
+    // so it banked a big negative and the gold appeared on the first frame of wave 2 in EVERY run.
+    // The timer has to be frozen while a gold couldn't appear, or the gate becomes the trigger.
+    #[test]
+    fn the_gold_countdown_does_not_bank_while_it_is_blocked() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_millis(100)));
+        app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
+        app.insert_resource(Wave { level: 1, timer: WAVE_SECS, calm: 0.0 }); // blocked: wave 1
+        app.insert_resource(GoldRush { active: false, forfeited: false, cooldown: 3.0 });
+        app.add_systems(Update, gold_spawn);
+        for _ in 0..80 {
+            app.update(); // ~8s of wave 1 — far longer than the 3s cooldown
+        }
+        assert_eq!(app.world().resource::<GoldRush>().cooldown, 3.0, "the countdown is FROZEN while gold can't spawn");
+        // now let wave 2 begin: it must still take the full remaining delay, not appear instantly
+        app.world_mut().resource_mut::<Wave>().level = 2;
+        app.update();
+        assert_eq!(app.world_mut().query_filtered::<(), With<Gold>>().iter(app.world()).count(), 0, "wave 2 starting is NOT itself the trigger");
+        for _ in 0..40 {
+            app.update(); // 4s — past the remaining 3s
+        }
+        assert_eq!(app.world_mut().query_filtered::<(), With<Gold>>().iter(app.world()).count(), 1, "…it arrives when its own timer says so");
+    }
+
+    // The first gold of a run is ROLLED, so two runs don't put it in the same place.
+    #[test]
+    fn the_first_gold_of_a_run_is_randomly_timed() {
+        let mut rng = rand::thread_rng();
+        let rolls: Vec<f32> = (0..200).map(|_| rng.gen_range(GOLD_FIRST_MIN..GOLD_FIRST_MAX)).collect();
+        let (lo, hi) = (rolls.iter().cloned().fold(f32::MAX, f32::min), rolls.iter().cloned().fold(f32::MIN, f32::max));
+        assert!(hi - lo > 50.0, "the first gold's timing genuinely varies run to run, got a {}s spread", hi - lo);
+        assert!(lo >= GOLD_FIRST_MIN && hi < GOLD_FIRST_MAX, "and stays inside its window");
+        // it should USUALLY land in wave 2 (that's the design intent) but not always — predictability
+        // is the thing being fixed here
+        let in_wave_2 = rolls.iter().filter(|&&r| r < WAVE_SECS).count();
+        assert!(in_wave_2 > rolls.len() / 2, "most runs still see it in wave 2");
+        assert!(in_wave_2 < rolls.len(), "but not every run — sometimes it slips to wave 3");
+    }
+
     #[test]
     fn gold_never_spawns_in_wave_one() {
         // A spare life in wave 1 was useless (nothing threatening yet), so gold is gated to wave 2+.
@@ -12951,7 +13008,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
-        app.insert_resource(Wave { level: 1, timer: WAVE_SECS, calm: 0.0 });
+        app.insert_resource(Wave { level: 2, timer: WAVE_SECS, calm: 0.0 }); // eligible — the COOLDOWN is what holds it
         app.insert_resource(GoldRush { active: false, forfeited: false, cooldown: 30.0 }); // still waiting
         app.add_systems(Update, gold_spawn);
         for _ in 0..5 {
@@ -12962,11 +13019,13 @@ mod tests {
 
     #[test]
     fn gold_spawn_is_blocked_during_a_hunt_or_the_calm() {
+        // wave 2+, or the wave-1 gate would block these on its own and the test would pass without
+        // ever exercising the hunt / calm gates it names
         for (active, calm) in [(true, 0.0f32), (false, 5.0f32)] {
             let mut app = App::new();
             app.add_plugins(MinimalPlugins);
             app.insert_resource(Arena { half: Vec2::new(640.0, 400.0) });
-            app.insert_resource(Wave { level: 1, timer: WAVE_SECS, calm });
+            app.insert_resource(Wave { level: 2, timer: WAVE_SECS, calm });
             app.insert_resource(GoldRush { active, forfeited: false, cooldown: 0.0 });
             app.add_systems(Update, gold_spawn);
             app.update();

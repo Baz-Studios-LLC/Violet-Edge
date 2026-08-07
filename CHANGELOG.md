@@ -5,6 +5,13 @@ Baz Studios launcher.) **Keep this current with every change** — it's the reco
 
 ## Unreleased
 
+- **The first life rock is actually random now.** It was appearing on the opening frame of wave 2 in
+  every single run — and the reason turned out to be that its timer was never what triggered it. The
+  countdown ran during wave 1, where gold is deliberately blocked, so it expired early, sat at zero,
+  and the wave-2 gate lifting was what let it through. The clock only runs while a life rock could
+  actually appear now, and the delay before the first one is rolled fresh each run: usually somewhere
+  in wave 2, occasionally not until wave 3.
+
 - **THE BINARY — two rocks and the thing between them** (NG+, debuts wave 11). A bound pair turning
   about a point in the empty space between them, except that space isn't empty: there's a **bar** there,
   and it will kill you. The rocks are ordinary. The bar is the hazard, and because the whole assembly
